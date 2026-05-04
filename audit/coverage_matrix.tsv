@@ -1,0 +1,19 @@
+path	size_bytes	endian	bigtiff	width	height	samples	bits_per_sample	photometric	compression	predictor	planar	layout	rows_per_strip	tile_w	tile_h	ifd_count	has_icc	has_exif	has_geo	notes
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/lzw-single-strip.tiff	76264	little	no	7795	3122	1	1	min-is-white	LZW	-	single image plane	stripped	3122	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/cramps.tif	194176	big	no	800	607	1	8	min-is-white	PackBits	-	single image plane	stripped	12	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/quad-tile.tif	209220	big	no	512	384	3	8	RGB color	LZW	-	single image plane	tiled	128	128	128	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/strike.tif	110644	big	no	256	200	4	8	RGB color	LZW	-	single image plane	stripped	8	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/at3_1m4_01_rgb.tif	310202	little	no	640	480	1	8	min-is-black	PackBits	-	single image plane	stripped	12	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/deflate-last-strip.tiff	12789	little	no	500	500	1	8	min-is-black	AdobeDeflate	none 1 (0x1)	single image plane	stripped	16	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/bali.tif	179378	big	no	725	489	1	8	palette color (RGB from colormap)	LZW	-	single image plane	stripped	11	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/cramps-tile.tif	786758	big	no	800	607	1	8	min-is-white	None	-	single image plane	tiled	256	256	256	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/ycbcr-cat.tif	72766	big	no	250	325	3	8	YCbCr	LZW	-	single image plane	stripped	10	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/minisblack-1c-8b.tiff	24001	big	no	157	151	1	8	min-is-black	None	-	single image plane	stripped	52	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/quad-lzw.tif	214342	big	no	512	384	3	8	RGB color	LZW	-	single image plane	stripped	5	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/palette-1c-8b.tiff	25548	big	no	157	151	1	8	palette color (RGB from colormap)	None	-	single image plane	stripped	52	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/rgb-3c-8b.tiff	71470	big	no	157	151	3	8	RGB color	None	-	single image plane	stripped	17	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/pc260001.tif	936524	little	no	640	480	3	8	RGB color	None	-	single image plane	stripped	32	-	-	2	no	yes	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/tiff/fax2d.tif	32817	big	no	1728	1082	1	1	min-is-white	CCITT Group 3	-	single image plane	stripped	(infinite)	-	-	1	no	no	no	-
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/dng/L1006922_leica_M11.DNG	78877156	little	no	9536	6336	1	16	32803 (0x8023)	JPEG	-	single image plane	stripped	6336	-	-	7	no	yes	no	dng,cfa
+/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/dng/blackmagic_micro_cinema.dng	1228096	little	no	1952	1104	1	12	32803 (0x8023)	JPEG	-	single image plane	tiled	-	976	1104	1	no	no	no	dng,cfa
+/Volumes/Fileserver/Pictures/scan from pete's book.tif	1281676	big	no	11059	15671	1	1	min-is-white	CCITT Group 4	-	single image plane	stripped	15671	-	-	1	no	no	no	-
