@@ -5,35 +5,29 @@ completions for continuity. See `SPEC.md` for the milestone roadmap and
 `docs/superpowers/specs/2026-05-04-tiffz-api-design.md` for the frozen
 public API design.
 
-## In flight
+## Next up
 
-- [ ] **Task #3 — flake.nix + .envrc** (active). Devshell with Zig +
-      libtiff + imagemagick + gdal + netpbm + vips + exiftool +
-      hyperfine. `.envrc` runs `use flake` and adds `zig-out/bin` to
-      PATH.
-
-## Next up (this session)
-
-- [ ] **Task #4 — Audit corpus + coverage matrix.** Per SPEC §2. Walk
-      `~/Documents-CloudManaged/validate/ground_truth_examples/tiff`
-      and `.../dng`, plus `/Volumes/Fileserver/Pictures/scan from
-      pete's book.tif`. Emit `audit/coverage_matrix.tsv` with per-file
-      variant axes (compression, photometric, predictor, planar
-      config, strip-vs-tile, BigTIFF, etc.) and a "zigimg verdict"
-      column.
-
-- [ ] **Task #5 — Skeleton (milestone 2 from SPEC §9).**
-      `build.zig`, `build.zig.zon`, `src/core/`, `ffi/c_api.zig`,
-      `ffi/tiffz_core.h`, `cli/main.c`, hello-world FFI roundtrip,
-      packages.default + checks.test wired into `flake.nix`. Garnix
-      green on the empty scaffold.
+- [ ] **M3: Classic TIFF, uncompressed.** First real implementation
+      milestone. Parse magic byte / TIFF header / IFD0 / strip-based
+      uncompressed reads for RGB / gray / palette photometrics.
+      Implement `Source.fromBuffer` first (smallest adapter), drive
+      it through `Decoder.open` → `decodeStrip`, oracle assertions
+      against `tiff2rgba` reference output for the corpus's
+      uncompressed fixtures (4 files: `cramps-tile`,
+      `minisblack-1c-8b`, `palette-1c-8b`, `rgb-3c-8b`).
 
 ## Milestones (from SPEC §9 — implement in order)
 
 - [ ] M1: Audit + spec freeze (no code). Spec frozen 2026-05-04.
       Audit pending (task #4).
-- [ ] M2: Skeleton — repo bootstrap, build.zig, flake, hello-world
-      FFI, CI. (task #5)
+- [x] **M2: Skeleton** (2026-05-04). build.zig + build.zig.zon, Zig
+      core (errors, limits, source, workspace, decoder, version, ffi,
+      lib), C FFI (`tiffz_version` exported), C CLI (--version /
+      --about / --help) dogfooding the FFI, packages.default +
+      checks.test in flake.nix, ./build + ./test driver scripts,
+      Zig+CLI integration tests passing under sandboxed nix. Zig
+      pinned to 0.15.2 via mitchellh/zig-overlay (per portfolio
+      "wait for 0.16.1" convention).
 - [ ] M3: Classic TIFF, uncompressed. Strip-based RGB/gray/palette.
 - [ ] M4: Compressions, in order:
   - [ ] PackBits
@@ -59,6 +53,15 @@ public API design.
 
 ## Recently completed
 
+- [x] **M2 skeleton** (2026-05-04). See M2 above.
+- [x] **Audit corpus + coverage matrix** (2026-05-04). 18 TIFFs from
+      validate's ground_truth + the marquee CCITT G4 reproducer
+      scan. `audit/coverage_matrix.tsv` and `audit/AUDIT_SUMMARY.md`
+      capture variant axes + gaps for synthetic fixture generation
+      in later milestones.
+- [x] **Bootstrap flake.nix + .envrc** (2026-05-04). Zig + libtiff +
+      imagemagick + gdal (with check phase neutralized) + netpbm +
+      vips + exiftool + hyperfine. `.envrc` activates the flake.
 - [x] **Brainstorm + freeze public API design** (2026-05-04). Five
       open questions resolved (access patterns / allocation / errors
       / JPEG-in-TIFF / forward-only adapter + safety limits). Design

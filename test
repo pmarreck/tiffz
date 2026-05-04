@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Run the entire tiffz test suite (unit tests + CLI integration tests).
+#
+# Per CLAUDE.md: "one simple command to run the ENTIRE suite — `./test`,
+# which is a script executable written in Bash which accumulates all
+# subtest errors and returns that as the exit code." Excludes
+# benchmarks (`./bm`) and fuzzing (`./fuzz`) by convention.
+#
+# Per CLAUDE.md: NEVER `set -euo pipefail` in test scripts. We use
+# `set -u` only — the test runner itself reports failures.
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+failures=0
+
+run_subtest() {
+    local label="$1"
+    shift
+    printf '\n=== %s ===\n' "$label"
+    if "$@"; then
+        printf '\n[PASS] %s\n' "$label"
+    else
+        printf '\n[FAIL] %s\n' "$label"
+        failures=$((failures + 1))
+    fi
+}
+
+# Suite 1: Zig unit tests + CLI integration tests via
+# `nix build .#checks.<system>.test`. Canonical "tests pass" gate
+# that Garnix CI also runs on every push.
+SYSTEM="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+run_subtest "zig build test (sandboxed via nix)" \
+    nix build ".#checks.${SYSTEM}.test" --print-out-paths --no-link
+
+# Suite 2: any future bash-driven CLI tests would slot in here.
+# Currently the CLI surface is small enough that the Zig-driven cli_test.zig
+# (in suite 1) covers it. Add `./tests/cli/*.sh` when the surface grows.
+
+if [[ "$failures" -gt 0 ]]; then
+    printf '\n%d test suite(s) failed.\n' "$failures" >&2
+    exit "$failures"
+fi
+printf '\nAll test suites passed.\n'

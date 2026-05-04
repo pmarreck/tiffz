@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Build tiffz via nix build (sandboxed, deterministic).
+#
+# Per CLAUDE.md, we don't use `nix develop -c zig build` for native
+# macOS builds — Zig 0.15.2's bundled libSystem stubs don't always
+# cover newer macOS versions, and the sandboxed Nix path avoids host
+# OS detection issues entirely. Cross-compilation (e.g. -Dtarget=...)
+# still works through `nix develop -c zig build` because Zig uses
+# its own sysroot for non-native targets.
+#
+# Usage:
+#   ./build              # ReleaseFast native build (default)
+#   ./build --debug      # Debug build (loudly announces itself)
+#   ./build --test       # Build the unit + CLI test binaries
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+mode="release"
+for arg in "$@"; do
+    case "$arg" in
+        --debug) mode="debug" ;;
+        --test)  mode="test" ;;
+        *) printf 'unknown arg: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+
+case "$mode" in
+    release)
+        nix build .#default --print-out-paths
+        # Mirror artifacts to the conventional zig-out/ path so other
+        # tooling (and .envrc PATH_add) can find them.
+        if [[ -L result ]]; then
+            mkdir -p zig-out/bin zig-out/lib zig-out/include
+            cp -fR result/bin/. zig-out/bin/ 2>/dev/null || true
+            cp -fR result/lib/. zig-out/lib/ 2>/dev/null || true
+            cp -fR result/include/. zig-out/include/ 2>/dev/null || true
+            chmod -R u+w zig-out
+        fi
+        ;;
+    debug)
+        # Debug builds must announce themselves — see CLAUDE.md
+        # "Debug builds of CLI tooling should loudly note that in
+        # yellow to stderr". The Zig core checks comptime mode at
+        # CLI startup; this build path just sets it.
+        nix develop -c zig build -Doptimize=Debug
+        ;;
+    test)
+        nix develop -c zig build test
+        ;;
+esac

@@ -1,0 +1,34 @@
+//! tiffz — pure-Zig spec-complete TIFF reader (and eventually
+//! writer).
+//!
+//! Architecture (per project convention): pure Zig core (no I/O) →
+//! C FFI → C CLI dogfooding the FFI. See README.md and
+//! `docs/superpowers/specs/2026-05-04-tiffz-api-design.md`.
+
+pub const errors = @import("errors.zig");
+pub const limits = @import("limits.zig");
+pub const source = @import("source.zig");
+pub const workspace = @import("workspace.zig");
+pub const decoder = @import("decoder.zig");
+pub const version = @import("version.zig");
+pub const ffi = @import("ffi.zig");
+
+// Re-export the core public types at the top level for ergonomic
+// Zig consumers: `tiffz.Decoder`, `tiffz.Source`, etc.
+pub const Error = errors.Error;
+pub const Limits = limits.Limits;
+pub const Source = source.Source;
+pub const Workspace = workspace.Workspace;
+pub const Decoder = decoder.Decoder;
+
+// Force comptime analysis of the C FFI module so its `export`
+// symbols are emitted into the static library. Without this, the
+// FFI module is dead code from the Zig compiler's perspective.
+comptime {
+    _ = ffi;
+}
+
+test {
+    const std = @import("std");
+    std.testing.refAllDecls(@This());
+}
