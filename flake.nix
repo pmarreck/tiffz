@@ -24,6 +24,24 @@
         isLinux = pkgs.stdenv.isLinux;
         zig = zig-overlay.packages.${system}."0.15.2";
 
+        # On Linux, we use a musl target explicitly. Two reasons:
+        # (1) zig-overlay ships vanilla Zig (no Nix-sandbox patches),
+        #     so its host-ABI detection fails inside Garnix's
+        #     sandbox: "warning: Encountered error: FileNotFound,
+        #     falling back to default ABI and dynamic linker." That
+        #     fallback is broken — spawned subprocesses can't find
+        #     their dynamic linker.
+        # (2) musl produces fully static binaries, which is the
+        #     project portfolio's Linux convention (CLAUDE.md
+        #     "Better static linking support").
+        # macOS handles its own dynamic linker via apple-sdk and
+        # doesn't have this issue.
+        zigTarget =
+          if system == "x86_64-linux"  then "x86_64-linux-musl"
+          else if system == "aarch64-linux" then "aarch64-linux-musl"
+          else null;
+        zigTargetFlag = if zigTarget == null then "" else "-Dtarget=${zigTarget}";
+
         # GDAL's pytest suite segfaults on aarch64-darwin against
         # nixpkgs-unstable as of 2026-05-04 (Python 3.13 + GDAL 3.12.4
         # in gcore/hdf4multidim.py). We don't need GDAL's own tests,
@@ -63,7 +81,7 @@
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
-            zig build --prefix $out -Doptimize=ReleaseFast
+            zig build --prefix $out -Doptimize=ReleaseFast ${zigTargetFlag}
           '';
 
           dontInstall = true;
@@ -94,7 +112,7 @@
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
             export TERM=dumb
-            timeout 600 zig build test 2>&1 || {
+            timeout 600 zig build test ${zigTargetFlag} 2>&1 || {
               echo "Tests failed or timed out after 10 minutes"
               exit 1
             }
