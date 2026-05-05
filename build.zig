@@ -79,7 +79,22 @@ pub fn build(b: *std.Build) void {
     const run_cli_tests = b.addRunArtifact(cli_tests);
     run_cli_tests.step.dependOn(&install_cli.step);
 
-    const test_step = b.step("test", "Run unit and CLI integration tests");
+    // --- Fixture tests (decode real TIFFs from tests/fixtures/) ---
+    // Imports the tiffz module directly; no CLI binary needed.
+    const fixture_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fixture_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    fixture_tests.root_module.addImport("tiffz", lib_module);
+
+    const run_fixture_tests = b.addRunArtifact(fixture_tests);
+
+    const test_step = b.step("test", "Run unit, CLI, and fixture tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_cli_tests.step);
+    test_step.dependOn(&run_fixture_tests.step);
 }

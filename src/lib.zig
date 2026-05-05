@@ -11,6 +11,7 @@ pub const source = @import("source.zig");
 pub const workspace = @import("workspace.zig");
 pub const header = @import("header.zig");
 pub const ifd = @import("ifd.zig");
+pub const tags = @import("tags.zig");
 pub const decoder = @import("decoder.zig");
 pub const version = @import("version.zig");
 pub const ffi = @import("ffi.zig");

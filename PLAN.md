@@ -7,14 +7,19 @@ public API design.
 
 ## Next up
 
-- [ ] **M3: Classic TIFF, uncompressed.** First real implementation
-      milestone. Parse magic byte / TIFF header / IFD0 / strip-based
-      uncompressed reads for RGB / gray / palette photometrics.
-      Implement `Source.fromBuffer` first (smallest adapter), drive
-      it through `Decoder.open` → `decodeStrip`, oracle assertions
-      against `tiff2rgba` reference output for the corpus's
-      uncompressed fixtures (4 files: `cramps-tile`,
-      `minisblack-1c-8b`, `palette-1c-8b`, `rgb-3c-8b`).
+- [ ] **M3 follow-up: photometric expansion + tiff2rgba oracle.**
+      Add an `expandToRgba` helper that consumes decoded strip bytes
+      + IFD metadata (photometric, bits, samples, palette, planar
+      config) and produces RGBA output. Generate `tiff2rgba` reference
+      images for each uncompressed fixture, commit the .rgba files
+      alongside the TIFFs, and assert byte-equivalence in the
+      fixture tests.
+
+- [ ] **M4: Compressions in order.** PackBits → LZW → Deflate →
+      CCITT T.4 → CCITT T.6. Each lands as a separate
+      `decompressors/<scheme>.zig` driven from `decodeStrip`'s switch
+      on Compression tag. Marquee target at the end (T.6): the
+      11059×15671 scan that drifts after row 1030 in zigimg's PR #321.
 
 ## Milestones (from SPEC §9 — implement in order)
 
@@ -28,7 +33,13 @@ public API design.
       Zig+CLI integration tests passing under sandboxed nix. Zig
       pinned to 0.15.2 via mitchellh/zig-overlay (per portfolio
       "wait for 0.16.1" convention).
-- [ ] M3: Classic TIFF, uncompressed. Strip-based RGB/gray/palette.
+- [x] **M3: Classic TIFF, uncompressed (core)** (2026-05-05).
+      Source.fromBuffer + BufferHandle, header parser (classic +
+      BigTIFF magic detect + reject), IFD parser with lazy values
+      and limit enforcement, Decoder.open/decodeStrip wired
+      end-to-end, real-fixture tests (rgb-3c-8b, minisblack-1c-8b,
+      palette-1c-8b) passing the sandboxed gate. Photometric
+      expansion + tiff2rgba oracle deferred to a follow-up.
 - [ ] M4: Compressions, in order:
   - [ ] PackBits
   - [ ] LZW

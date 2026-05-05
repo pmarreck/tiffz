@@ -62,14 +62,36 @@ src/
                              introduction; will drive build-time C enum gen)
   limits.zig                 Limits struct + .default for resource-exhaustion /
                              decompression-bomb defense
-  source.zig                 Source vtable type (read_at + size); concrete adapters
-                             (fromBuffer / fromMmap / fromFile / fromBufferedReader)
-                             land in M3+
+  source.zig                 Source vtable + fromBuffer/BufferHandle (zero-alloc
+                             in-memory adapter; tests cover full/partial/EOF/empty).
+                             fromMmap / fromFile / fromBufferedReader stay as M5+
+                             work since fromBuffer covers all M3-M4 needs.
+  header.zig                 Header parser: II/MM byte order, magic 42 (classic) +
+                             magic 43 (BigTIFF, structurally parsed but rejected at
+                             Decoder level until M7), endian-aware u16/u32/u64 readers
+                             reused by ifd.zig + decoder.zig
+  ifd.zig                    Classic-TIFF IFD parser: u16 entry_count + 12-byte
+                             Entries + u32 next_offset. FieldType enum (BYTE..DOUBLE
+                             + unknown). Ifd.get(tag) lookup. readEntryValue handles
+                             inline-vs-offset (≤4-byte values inline; larger via
+                             u32 offset → Source.read_at). Limits enforced on
+                             max_tags_per_ifd + max_tag_value_bytes.
+  tags.zig                   Named TIFF 6.0 tag constants (the M3 set: ImageWidth,
+                             ImageLength, BitsPerSample, Compression, Photometric,
+                             StripOffsets/ByteCounts, SamplesPerPixel, RowsPerStrip,
+                             PlanarConfiguration, Predictor, ColorMap, Tile* tags)
+                             plus compression / photometric / planar enum values.
+                             Accretes as later milestones land.
   workspace.zig              Per-call codec scratch holder (skeleton; populates as
                              compression schemes land in M4+)
-  decoder.zig                Public Decoder primitive (open / openWithLimits / deinit
-                             / ifdCount); open is M2 stub — wires real header
-                             parsing in M3
+  decoder.zig                Decoder.open parses header + IFD0 eagerly (lazy IFD
+                             chain — sibling IFDs materialize on first ifd(N) call).
+                             decodeStrip handles compression=1 (none): reads
+                             StripOffsets[i] / StripByteCounts[i], pread's the strip
+                             into caller's dest. Tiled layout rejected (M6).
+                             readScalarU16 / readArrayElementU32 helpers handle
+                             inline-vs-offset SHORT/LONG arrays. All Limits
+                             checked before any Source read.
   version.zig                Single-source-of-truth version string
   ffi.zig                    C FFI exports — tiffz_version() proves the FFI roundtrip;
                              rest of the surface lands alongside its M3+ impl
@@ -79,6 +101,15 @@ cli/
 tests/
   cli/cli_test.zig           Spawns zig-out/bin/tiffz, asserts stdout/stderr/exit code
                              for the four CLI surfaces (version/about/help/unknown)
+  fixture_test.zig           Decodes real TIFFs from tests/fixtures/, asserts the
+                             cumulative decoded byte count matches expected raw
+                             pixel size (width × height × samples × bits/8). Strong
+                             oracle that the open→IFD→strip pipeline produces
+                             intact bytes; pinned-hash byte-equivalence assertions
+                             land alongside photometric expansion in a follow-up.
+  fixtures/
+    uncompressed/            Real ground-truth fixtures from validate's corpus
+                             (rgb-3c-8b, minisblack-1c-8b, palette-1c-8b).
 audit/
   coverage_matrix.tsv        Empirical TIFF variant matrix from real-world corpus
   AUDIT_SUMMARY.md           Analysis + gap insights for fixture generation per milestone
