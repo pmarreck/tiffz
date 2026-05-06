@@ -53,8 +53,24 @@ public API design.
 - [ ] M6: Tile-based layout. Refactor strip path to share with tile path.
 - [ ] M7: BigTIFF — comptime offset-width abstraction.
 - [ ] M8: DNG — predictor 3, CFA tags, opcode list parser.
+      *Schedule risk:* DNG raw streams use lossless JPEG (SOF3) with
+      12/14/16-bit precision. jpegz's M1.4b (the 12/16-bit lossless
+      path) is not yet shipped (per
+      `inbox/2026-05-05-jpegz-phase1-ready.md`). Likely path: ship M8
+      partial — DNG metadata + CFA + opcode list + 8-bit JPEG
+      previews — and defer raw pixel decode until jpegz M1.4b lands.
 - [ ] M9: Pro photometrics — CMYK, YCbCr, CIE Lab.
 - [ ] M9.5: JPEG-in-TIFF (compression=7) once `jpegz` sibling is ready.
+      *Status:* jpegz Phase 1 (M1.1–M1.7) shipped; baseline / extended
+      sequential / progressive / lossless 8-bit / arithmetic SOF9-11
+      all available via `jpegz_decode(uint8_t*, size_t)`. ABI shape
+      matches what we want (materialize via Source.read_at → hand to
+      jpegz). **Brainstorm trigger at M9.5 entry:** how to feed
+      JPEGTables (tag 347) — the shared quant + Huffman tables stored
+      once per IFD and referenced by each strip. Two options: (a)
+      tiffz prepends JPEGTables to each strip before jpegz_decode
+      (simpler, small per-strip overhead) — current lean. (b) jpegz
+      grows a (tables, strip) entry point (cleaner ABI, more code).
 - [ ] M10: Validate integration — replace zigimg dep in validate's
       TIFF deep-validation. Drop a note in
       `~/Documents-CloudManaged/validate/inbox/` with the
@@ -84,6 +100,14 @@ public API design.
       autocommit was staging gitignored Obsidian-vault doc symlinks
       (jj_cheatsheet, ZIG_RECENT_API_CHANGES, ZIG_0.15_TO_0.16). Now
       gitignored AND `jj file untrack`'d.
+
+## External signals received
+
+- **2026-05-06 — jpegz Phase 1 ready** (see
+  `inbox/2026-05-05-jpegz-phase1-ready.md`). Acknowledged via reply
+  in `~/Documents-CloudManaged/jpegz/inbox/2026-05-06-from-tiffz-ack.md`.
+  Constraints captured in M8 (DNG schedule risk on lossless raw) and
+  M9.5 (JPEGTables tag 347 integration brainstorm) above.
 
 ## Curiosity pokes / open questions for later
 
