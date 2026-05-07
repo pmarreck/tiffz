@@ -121,6 +121,13 @@ public API design.
       the strip-relative offset, then add the strip's TIFF offset to
       get the absolute file position. Build that into the integration
       shim's finding-translation step.
+      *Hash-pin floor captured 2026-05-07:* jpegz's corpus soak hit
+      99.5% pixel-perfect against libjpeg-turbo (3828/3848) on
+      baseline JPEGs after five cleanroom-internal fixes shipped that
+      day. No ABI changes — Phase 1 wrapper / dispatcher / C FFI
+      surface unchanged. Pin `build.zig.zon` `.jpegz.url` at any
+      commit hash ≥ `17e70d3` to get the full pixel-parity plus the
+      NotImplemented → wrapper fallback for progressive (SOF2) JPEGs.
 - [ ] M10: Validate integration — replace zigimg dep in validate's
       TIFF deep-validation. Validate is *actively waiting on this*
       (per Peter 2026-05-07). When tiffz is M9-complete:
