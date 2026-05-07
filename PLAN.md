@@ -71,6 +71,13 @@ public API design.
       APPn / trailing-after-EOI in JPEGTables) we can surface before
       a strip even reaches the decoder. No further blockers from
       jpegz's side.
+      *Implementation detail captured 2026-05-06:* `jpegz_validate`'s
+      `findings[i].offset` is relative to the buffer handed in. When
+      we hand it a spliced (tables ++ strip) buffer, subtract
+      `spliced_table_prefix_len` from each finding's offset to recover
+      the strip-relative offset, then add the strip's TIFF offset to
+      get the absolute file position. Build that into the integration
+      shim's finding-translation step.
 - [ ] M10: Validate integration — replace zigimg dep in validate's
       TIFF deep-validation. Drop a note in
       `~/Documents-CloudManaged/validate/inbox/` with the
@@ -115,15 +122,16 @@ public API design.
   jpegz emits RGB/gray/CMYK; tiffz handles photometric→RGBA
   (CFA mosaic, palette, YCbCr sub-sampling). Captured below.
 
-## Brainstorm trigger at M3-end
+## Decided design choices
 
-- **Photometric helper split** (proposed by jpegz): jpegz emits
-  RGB/gray/CMYK; tiffz owns photometric→RGBA mappings that know
-  about TIFF semantics (CFA mosaic for raw sensors, palette
-  lookups, YCbCr sub-sampling rules per TIFF revisions). Brainstorm
-  whether the helper lives entirely inside tiffz or surfaces as a
-  shared sibling utility. Trigger this brainstorm before starting
-  M4.
+- **Photometric helper split** (decided 2026-05-06, both sides
+  aligned): tiffz owns the photometric→RGBA layer because it knows
+  TIFF semantics (CFA mosaic for raw sensors, palette lookups,
+  per-revision YCbCr sub-sampling). jpegz stays decode-only and
+  emits raw RGB / gray / CMYK that tiffz then transforms. Clean
+  separation; can revisit if a sibling JPEG-only consumer ever wants
+  the same RGBA helper. No further brainstorm needed; lock this in
+  as the M3 follow-up shape.
 
 ## Curiosity pokes / open questions for later
 
