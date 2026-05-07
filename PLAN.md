@@ -60,13 +60,23 @@ public API design.
           • quad-lzw.tif → Malformed under both variants. Likely needs
             a libtiff-style header sniff (LZWFixupTags) or a third
             variant combo. Test commented out with TODO.
-          • strike.tif → decode succeeds but bytes differ. Root cause
-            confirmed: ExtraSamples=1 (assoc-alpha = pre-multiplied
-            alpha per TIFF 6.0 §18). My output stores literal
-            stored bytes; ImageMagick un-pre-multiplies in the oracle.
-            Needs an un-pre-multiply step keyed on ExtraSamples.
-            Belongs in M9 (Pro photometrics) where assoc/unassoc
-            alpha lands properly.
+          • strike.tif → decode succeeds but bytes differ from the
+            ImageMagick oracle. Confirmed 2026-05-07 by validate:
+            *tiffz's output is the spec-correct one* (ExtraSamples=1
+            stores associated/pre-multiplied alpha; ImageMagick's
+            RGBA: output un-pre-multiplies as a presentation choice).
+            tiffz should NOT un-pre-multiply during decode. The fix
+            is (a) regenerate the strike oracle preserving assoc-alpha
+            (or use a tiffz-native byte-correct oracle), and
+            (b) emit an INFO finding (`pre_multiplied_alpha = true`)
+            at validate-integration time. INFO finding work lands at
+            M10 alongside the validate finding mapping table.
+          • quad-lzw.tif → validate flagged 2026-05-07 that this is
+            libtiff's *third* LZW variant: pre-emptive code-width
+            bump (separate from new/old style timing). Libtiff sniffs
+            it from the first few bytes of the codestream. Adding a
+            third Variant member + heuristic detection is a future
+            follow-up.
   - [x] Deflate (2026-05-07): src/compressions/deflate.zig.
         compression=8 (Deflate) and compression=32946 (AdobeDeflate)
         — same on-disk zlib-framed format, separate registrations
@@ -113,12 +123,26 @@ public API design.
       shim's finding-translation step.
 - [ ] M10: Validate integration — replace zigimg dep in validate's
       TIFF deep-validation. Validate is *actively waiting on this*
-      (per Peter 2026-05-07). When tiffz is M9-complete, drop:
-      (a) a status note in `~/Documents-CloudManaged/validate/inbox/`
-          with the `build.zig.zon` dep URL + commit hash to pin, AND
-      (b) a tmux notification to the `validate` session via the kitty
-          CSI u escape (`tmux send-keys -t validate "<msg>" ; send-keys $'\e[13u'`)
-          per the cross-project messaging convention.
+      (per Peter 2026-05-07). When tiffz is M9-complete:
+      (a) Use the LLMsend skill to drop a status note in validate's
+          inbox + tmux ping with the `build.zig.zon` dep URL +
+          commit hash to pin.
+      (b) Ship a `tiffz_findings_mapping.md` modeled on jpegz's
+          `2026-05-06-jpegz-mapping-table.md` (in validate's inbox
+          archive). Format: routing taxonomy table (FindingCode,
+          severity, routes-to: error_code/info/warning/malformation),
+          short prose on info/warning/malformation distinction, and
+          a ready-to-paste `mapping.zig` snippet with a
+          `RoutedFinding` union(enum). Validate drops it verbatim
+          into `src/core/tiffz_shim.zig` at integration time.
+      (c) Initial INFO finding set to seed the mapping:
+            • bigtiff_format (M7-gated)
+            • multi_ifd_chain (DNG, multi-page faxes)
+            • old_style_lzw_codes (LZW Malformed-fallback fired)
+            • pre_multiplied_alpha (ExtraSamples=1 — covers strike.tif
+              et al.; resolves the "skipped fixture" follow-up from M4-B)
+            • predictor_applied = N (M5-gated)
+            • geotiff_tags_present (M11-gated)
 - [ ] M11: GeoTIFF, TIFF/EP as needed.
 - [ ] M12: Modern compressions (LERC, ZSTD-in-TIFF) as needed.
 
@@ -144,6 +168,23 @@ public API design.
       autocommit was staging gitignored Obsidian-vault doc symlinks
       (jj_cheatsheet, ZIG_RECENT_API_CHANGES, ZIG_0.15_TO_0.16). Now
       gitignored AND `jj file untrack`'d.
+
+## Real-world reproducer pointers (from validate 2026-05-07)
+
+- **`/Volumes/Fileserver/Pictures/scan from pete's book.tif`** —
+  CCITT G4, 11059×15671, 1-bit MinIsWhite. **M4-E marquee target**
+  (zigimg PR #321 drifts after row 1030). Already captured.
+- **`/Volumes/Fileserver/Pictures/scan20050424_162904.tiff`** —
+  uncompressed RGB, 21 MB, 2364×2951. Was a zigimg false-positive;
+  M3 should validate it cleanly. Pull into fixtures when convenient
+  to extend the M3 oracle suite to a larger image.
+- **`/Volumes/Fileserver/Pictures/scan20041120_160518.tiff`** —
+  uncompressed RGB, 9.7 MB, 2129×1486. Same class as above.
+- Old-scanner TIFFs with non-standard RowsPerStrip → flag at M5
+  (predictor edge cases).
+- Photoshop CMYK proof TIFFs in `/Volumes/Fileserver/Documents/`
+  and `/Volumes/Fileserver/Textfiles & PDF & eBook/` → M9 targets
+  (CMYK photometric + Adobe ICC profile + DotRange tags).
 
 ## External signals received
 
