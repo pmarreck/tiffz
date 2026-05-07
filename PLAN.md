@@ -7,18 +7,10 @@ public API design.
 
 ## Next up
 
-- [ ] **M3 follow-up: photometric expansion + tiff2rgba oracle.**
-      Add an `expandToRgba` helper that consumes decoded strip bytes
-      + IFD metadata (photometric, bits, samples, palette, planar
-      config) and produces RGBA output. Generate `tiff2rgba` reference
-      images for each uncompressed fixture, commit the .rgba files
-      alongside the TIFFs, and assert byte-equivalence in the
-      fixture tests.
-
 - [ ] **M4: Compressions in order.** PackBits → LZW → Deflate →
       CCITT T.4 → CCITT T.6. Each lands as a separate
-      `decompressors/<scheme>.zig` driven from `decodeStrip`'s switch
-      on Compression tag. Marquee target at the end (T.6): the
+      `compressions/<scheme>.zig` driven from `decodeStrip`'s switch
+      on the Compression tag. Marquee target at the end (T.6): the
       11059×15671 scan that drifts after row 1030 in zigimg's PR #321.
 
 ## Milestones (from SPEC §9 — implement in order)
@@ -38,8 +30,18 @@ public API design.
       BigTIFF magic detect + reject), IFD parser with lazy values
       and limit enforcement, Decoder.open/decodeStrip wired
       end-to-end, real-fixture tests (rgb-3c-8b, minisblack-1c-8b,
-      palette-1c-8b) passing the sandboxed gate. Photometric
-      expansion + tiff2rgba oracle deferred to a follow-up.
+      palette-1c-8b) passing the sandboxed gate.
+- [x] **M3 follow-up: photometric expansion + RGBA oracle**
+      (2026-05-06). expandRowsToRgba in src/photometrics.zig handles
+      photometric ∈ {0 MinIsWhite, 1 MinIsBlack, 2 RGB, 3 Palette}
+      for 8-bit chunky planar input. Canonical u16→u8 downscale
+      `(x*255 + 32767)/65535` matches ImageMagick's
+      ScaleQuantumToChar (catch: plain `>> 8` truncation off-by-ones
+      whenever ColorMap low byte ≥ 0x80, e.g. 0x49E8 trunc 0x49 vs
+      correct 0x4A). Three real-fixture tests assert byte-exact
+      match against committed .rgba oracles generated via `magick
+      ... RGBA:...`. Decoder/IFD pipeline now produces full RGBA
+      images for the uncompressed cases.
 - [ ] M4: Compressions, in order:
   - [ ] PackBits
   - [ ] LZW

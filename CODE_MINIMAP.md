@@ -84,6 +84,15 @@ src/
                              Accretes as later milestones land.
   workspace.zig              Per-call codec scratch holder (skeleton; populates as
                              compression schemes land in M4+)
+  photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
+                             pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
+                             MinIsBlack, 2 RGB, 3 Palette}. Palette uses the
+                             canonical `(u16 * 255 + 32767) / 65535` downscale
+                             on ColorMap entries (matches ImageMagick's
+                             ScaleQuantumToChar; plain `>> 8` truncation
+                             off-by-ones whenever the low byte ≥ 0x80).
+                             Other photometrics + non-8-bit + planar=separate
+                             land in later milestones.
   decoder.zig                Decoder.open parses header + IFD0 eagerly (lazy IFD
                              chain — sibling IFDs materialize on first ifd(N) call).
                              decodeStrip handles compression=1 (none): reads
@@ -101,15 +110,22 @@ cli/
 tests/
   cli/cli_test.zig           Spawns zig-out/bin/tiffz, asserts stdout/stderr/exit code
                              for the four CLI surfaces (version/about/help/unknown)
-  fixture_test.zig           Decodes real TIFFs from tests/fixtures/, asserts the
+  fixture_test.zig           Decodes real TIFFs from tests/fixtures/, asserts (a)
                              cumulative decoded byte count matches expected raw
-                             pixel size (width × height × samples × bits/8). Strong
-                             oracle that the open→IFD→strip pipeline produces
-                             intact bytes; pinned-hash byte-equivalence assertions
-                             land alongside photometric expansion in a follow-up.
+                             pixel size, AND (b) full image after photometric
+                             expansion matches the .rgba oracle byte-for-byte.
+                             ifdScalarU16/ifdScalarU32 helpers extract typed
+                             values from IFD entries; decodeFixtureToRgba
+                             stitches Decoder + photometrics into a complete
+                             "open file → RGBA buffer" pipeline.
   fixtures/
     uncompressed/            Real ground-truth fixtures from validate's corpus
                              (rgb-3c-8b, minisblack-1c-8b, palette-1c-8b).
+    uncompressed_oracle/     Raw RGBA byte streams produced by ImageMagick:
+                             `magick <fixture>.tiff -depth 8 RGBA:<oracle>.rgba`.
+                             Each is exactly width*height*4 bytes (94828 for the
+                             three 157×151 fixtures). Regenerable; committed so
+                             the test suite is hermetic in the Nix sandbox.
 audit/
   coverage_matrix.tsv        Empirical TIFF variant matrix from real-world corpus
   AUDIT_SUMMARY.md           Analysis + gap insights for fixture generation per milestone
