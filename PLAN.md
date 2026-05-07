@@ -43,7 +43,11 @@ public API design.
       ... RGBA:...`. Decoder/IFD pipeline now produces full RGBA
       images for the uncompressed cases.
 - [ ] M4: Compressions, in order:
-  - [ ] PackBits
+  - [x] PackBits (2026-05-07): src/compressions/packbits.zig + dispatch in
+        Decoder.decodeStrip on Compression=32773. Two real-fixture oracle
+        tests pass byte-exact: cramps.tif (800×607 MinIsWhite, big-endian)
+        and at3_1m4_01_rgb.tif (640×480 MinIsBlack, little-endian). Workspace
+        gained ensureScratch(min_bytes) for compressed-input staging.
   - [ ] LZW
   - [ ] ZLib Deflate
   - [ ] CCITT T.4 (Group 3)
@@ -81,9 +85,13 @@ public API design.
       get the absolute file position. Build that into the integration
       shim's finding-translation step.
 - [ ] M10: Validate integration — replace zigimg dep in validate's
-      TIFF deep-validation. Drop a note in
-      `~/Documents-CloudManaged/validate/inbox/` with the
-      `build.zig.zon` dep URL.
+      TIFF deep-validation. Validate is *actively waiting on this*
+      (per Peter 2026-05-07). When tiffz is M9-complete, drop:
+      (a) a status note in `~/Documents-CloudManaged/validate/inbox/`
+          with the `build.zig.zon` dep URL + commit hash to pin, AND
+      (b) a tmux notification to the `validate` session via the kitty
+          CSI u escape (`tmux send-keys -t validate "<msg>" ; send-keys $'\e[13u'`)
+          per the cross-project messaging convention.
 - [ ] M11: GeoTIFF, TIFF/EP as needed.
 - [ ] M12: Modern compressions (LERC, ZSTD-in-TIFF) as needed.
 

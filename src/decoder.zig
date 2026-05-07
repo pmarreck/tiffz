@@ -20,6 +20,8 @@ const Endian = header_mod.Endian;
 const ifd_mod = @import("ifd.zig");
 const Ifd = ifd_mod.Ifd;
 const tags = @import("tags.zig");
+const compressions_none = @import("compressions/none.zig");
+const compressions_packbits = @import("compressions/packbits.zig");
 
 pub const Decoder = struct {
     allocator: Allocator,
@@ -96,15 +98,20 @@ pub const Decoder = struct {
         return &self.ifds.items[index];
     }
 
-    /// Decode one strip into dest. M3 supports compression=1 (none)
-    /// only — strip bytes are copied verbatim from the source. Tiled
-    /// layout is M6; other compressions are M4+; photometric
-    /// expansion is the consumer's job (raw bytes returned here).
+    /// Decode one strip into dest. Dispatches on the IFD's
+    /// Compression tag:
+    ///   1     (none)     — bytes copied verbatim from source
+    ///   32773 (PackBits) — TIFF 6.0 §9 RLE
+    ///   others           — UnsupportedCompression for now (M4+)
+    ///
+    /// Tiled layout is M6; photometric expansion is the consumer's
+    /// job (raw decoded bytes are returned here).
     pub fn decodeStrip(
         self: *Decoder,
         ifd_index: usize,
         strip_index: u32,
         dest: []u8,
+        workspace: *Workspace,
     ) errors.Error!usize {
         const dir = try self.ifd(ifd_index);
 
@@ -112,11 +119,9 @@ pub const Decoder = struct {
         // no StripOffsets. M6 implements decodeTile.
         if (dir.get(tags.tile_offsets) != null) return error.UnsupportedTagType;
 
-        // Compression must be 1 (none) for M3.
         const comp = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse 1;
-        if (comp != tags.compression_none) return error.UnsupportedCompression;
 
-        // Read the strip metadata arrays.
+        // Read the strip metadata arrays. Both can be SHORT or LONG.
         const offsets_entry = dir.get(tags.strip_offsets) orelse return error.Malformed;
         const counts_entry = dir.get(tags.strip_byte_counts) orelse return error.Malformed;
 
@@ -127,8 +132,6 @@ pub const Decoder = struct {
             return error.LimitExceededStripCount;
         }
 
-        // StripOffsets and StripByteCounts can be SHORT or LONG per
-        // TIFF 6.0; we accept either.
         const offset = try readArrayElementU32(
             offsets_entry.*,
             strip_index,
@@ -147,15 +150,28 @@ pub const Decoder = struct {
         if (byte_count > self.limits.max_compressed_strip_bytes) {
             return error.LimitExceededCompressedStripBytes;
         }
-        if (byte_count > self.limits.max_decompressed_strip_bytes) {
-            // For uncompressed, decompressed == compressed.
-            return error.LimitExceededDecompressedStripBytes;
-        }
-        if (byte_count > dest.len) return error.DestTooSmall;
 
-        const n = self.source.readAt(dest[0..byte_count], offset) catch return error.Io;
-        if (n < byte_count) return error.SourceShortRead;
-        return n;
+        return switch (comp) {
+            tags.compression_none => blk: {
+                if (byte_count > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk compressions_none.decode(self.source, offset, byte_count, dest);
+            },
+            tags.compression_packbits => blk: {
+                // PackBits: read compressed strip bytes into workspace
+                // scratch, then expand into dest.
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = compressions_packbits.decode(scratch, dest) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
+            else => error.UnsupportedCompression,
+        };
     }
 };
 
@@ -288,8 +304,11 @@ test "decodeStrip: uncompressed RGB single strip" {
 
     try std.testing.expectEqual(@as(usize, 1), dec.ifdCount());
 
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+
     var dest: [12]u8 = undefined;
-    const n = try dec.decodeStrip(0, 0, &dest);
+    const n = try dec.decodeStrip(0, 0, &dest, &ws);
     try std.testing.expectEqual(@as(usize, 12), n);
     try std.testing.expectEqualSlices(u8, &strip, dest[0..12]);
 }
@@ -310,10 +329,13 @@ test "decodeStrip: compression=2 rejected as Unsupported" {
     var dec = try Decoder.open(std.testing.allocator, src);
     defer dec.deinit();
 
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+
     var dest: [4]u8 = undefined;
     try std.testing.expectError(
         error.UnsupportedCompression,
-        dec.decodeStrip(0, 0, &dest),
+        dec.decodeStrip(0, 0, &dest, &ws),
     );
 }
 

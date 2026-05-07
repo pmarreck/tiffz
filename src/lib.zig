@@ -13,6 +13,10 @@ pub const header = @import("header.zig");
 pub const ifd = @import("ifd.zig");
 pub const tags = @import("tags.zig");
 pub const photometrics = @import("photometrics.zig");
+pub const compressions = struct {
+    pub const none = @import("compressions/none.zig");
+    pub const packbits = @import("compressions/packbits.zig");
+};
 pub const decoder = @import("decoder.zig");
 pub const version = @import("version.zig");
 pub const ffi = @import("ffi.zig");

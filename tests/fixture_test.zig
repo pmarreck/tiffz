@@ -111,17 +111,22 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
     const rgba = try allocator.alloc(u8, rgba_total);
     errdefer allocator.free(rgba);
 
-    // Strip scratch — large enough for any single strip in our fixtures.
+    // Strip scratch — sized to the maximum decompressed strip
+    // (rows_per_strip × width × samples × bits/8). Compressed-input
+    // staging lives in Workspace.
     const strip_max: usize = @as(usize, width) * rows_per_strip * samples_per_pixel * (bits_per_sample / 8);
     const strip_buf = try allocator.alloc(u8, strip_max);
     defer allocator.free(strip_buf);
+
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
 
     const sbc_entry = dir.get(tiffz.tags.strip_byte_counts) orelse return error.Malformed;
     var rgba_offset: usize = 0;
     var strip_index: u32 = 0;
     var rows_done: u32 = 0;
     while (strip_index < sbc_entry.count) : (strip_index += 1) {
-        const n = try dec.decodeStrip(0, strip_index, strip_buf);
+        const n = try dec.decodeStrip(0, strip_index, strip_buf, &ws);
         const this_strip_rows: u32 = blk: {
             const remaining = height - rows_done;
             break :blk @min(rows_per_strip, remaining);
@@ -171,10 +176,13 @@ fn decodeAllStrips(allocator: std.mem.Allocator, fixture_path: []const u8) !Fixt
     const scratch = try allocator.alloc(u8, 1 << 20);
     defer allocator.free(scratch);
 
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+
     var total: u64 = 0;
     var i: u32 = 0;
     while (i < sbc_entry.count) : (i += 1) {
-        const n = try dec.decodeStrip(0, i, scratch);
+        const n = try dec.decodeStrip(0, i, scratch, &ws);
         total += n;
     }
     return .{ .strip_count = sbc_entry.count, .total_bytes = total };
@@ -228,5 +236,21 @@ test "palette-1c-8b.tiff: photometric-expanded RGBA matches ImageMagick oracle" 
         std.testing.allocator,
         "tests/fixtures/uncompressed/palette-1c-8b.tiff",
         "tests/fixtures/uncompressed_oracle/palette-1c-8b.rgba",
+    );
+}
+
+test "cramps.tif (PackBits, 800x607 MinIsWhite): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/packbits/cramps.tif",
+        "tests/fixtures/packbits_oracle/cramps.rgba",
+    );
+}
+
+test "at3_1m4_01_rgb.tif (PackBits, 640x480 MinIsBlack): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/packbits/at3_1m4_01_rgb.tif",
+        "tests/fixtures/packbits_oracle/at3_1m4_01_rgb.rgba",
     );
 }

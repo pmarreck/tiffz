@@ -82,8 +82,19 @@ src/
                              PlanarConfiguration, Predictor, ColorMap, Tile* tags)
                              plus compression / photometric / planar enum values.
                              Accretes as later milestones land.
-  workspace.zig              Per-call codec scratch holder (skeleton; populates as
-                             compression schemes land in M4+)
+  workspace.zig              Per-call codec scratch holder. ensureScratch(min_bytes)
+                             returns a slice of the requested size; underlying
+                             buffer grows monotonically (never shrinks). Used by
+                             compressed decoders to stage compressed strip bytes
+                             before expansion. Single-threaded — never share
+                             across threads.
+  compressions/
+    none.zig                 Compression=1: source.read_at into dest, no expansion.
+    packbits.zig             Compression=32773: TIFF 6.0 §9 RLE. Header byte n is
+                             signed int8: n in [0,127] → copy n+1 literal bytes;
+                             n in [-127,-1] → repeat next byte 1-n times; n=-128
+                             → no-op. Pure function over (compressed src,
+                             dest); caller stages bytes via Workspace.
   photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
                              pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
                              MinIsBlack, 2 RGB, 3 Palette}. Palette uses the
@@ -126,6 +137,10 @@ tests/
                              Each is exactly width*height*4 bytes (94828 for the
                              three 157×151 fixtures). Regenerable; committed so
                              the test suite is hermetic in the Nix sandbox.
+    packbits/                Real TIFF fixtures with compression=32773:
+                             cramps.tif (800×607 MinIsWhite, big-endian) and
+                             at3_1m4_01_rgb.tif (640×480 MinIsBlack, little-endian).
+    packbits_oracle/         Matching .rgba ground truth from ImageMagick.
 audit/
   coverage_matrix.tsv        Empirical TIFF variant matrix from real-world corpus
   AUDIT_SUMMARY.md           Analysis + gap insights for fixture generation per milestone
