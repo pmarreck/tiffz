@@ -48,6 +48,25 @@ public API design.
         tests pass byte-exact: cramps.tif (800×607 MinIsWhite, big-endian)
         and at3_1m4_01_rgb.tif (640×480 MinIsBlack, little-endian). Workspace
         gained ensureScratch(min_bytes) for compressed-input staging.
+  - [x] LZW (2026-05-07, partial): src/compressions/lzw.zig (algorithm
+        adapted from validate's tiff_lzw_decoder.zig with attribution
+        + tiffz API shape — caller-supplied dest, no allocation, tiffz
+        error set). Variant enum supports new_style (TIFF 6.0 spec:
+        MSB-first + early code-width change) and old_style (Sun/Adobe
+        legacy: LSB-first + late change); strip dispatcher tries
+        new_style first, falls back to old_style on Malformed.
+        bali.tif (725×489 LZW palette, big-endian) oracle passes.
+        Two follow-ups deferred:
+          • quad-lzw.tif → Malformed under both variants. Likely needs
+            a libtiff-style header sniff (LZWFixupTags) or a third
+            variant combo. Test commented out with TODO.
+          • strike.tif → decode succeeds but bytes differ. Root cause
+            confirmed: ExtraSamples=1 (assoc-alpha = pre-multiplied
+            alpha per TIFF 6.0 §18). My output stores literal
+            stored bytes; ImageMagick un-pre-multiplies in the oracle.
+            Needs an un-pre-multiply step keyed on ExtraSamples.
+            Belongs in M9 (Pro photometrics) where assoc/unassoc
+            alpha lands properly.
   - [ ] LZW
   - [ ] ZLib Deflate
   - [ ] CCITT T.4 (Group 3)

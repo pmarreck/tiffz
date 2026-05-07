@@ -22,6 +22,7 @@ const Ifd = ifd_mod.Ifd;
 const tags = @import("tags.zig");
 const compressions_none = @import("compressions/none.zig");
 const compressions_packbits = @import("compressions/packbits.zig");
+const compressions_lzw = @import("compressions/lzw.zig");
 
 pub const Decoder = struct {
     allocator: Allocator,
@@ -170,6 +171,23 @@ pub const Decoder = struct {
                 }
                 break :blk written;
             },
+            tags.compression_lzw => blk: {
+                // LZW: try TIFF 6.0 new-style first; if Malformed,
+                // retry with old-style (Adobe/Sun original timing,
+                // common in 1990s TIFF writers — libtiff's
+                // "Old-style LZW codes" warning territory).
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = if (compressions_lzw.decodeVariant(scratch, dest, .new_style)) |n| n else |first_err| switch (first_err) {
+                    error.Malformed => compressions_lzw.decodeVariant(scratch, dest, .old_style) catch |e| break :blk e,
+                    else => break :blk first_err,
+                };
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
             else => error.UnsupportedCompression,
         };
     }
@@ -313,10 +331,10 @@ test "decodeStrip: uncompressed RGB single strip" {
     try std.testing.expectEqualSlices(u8, &strip, dest[0..12]);
 }
 
-test "decodeStrip: compression=2 rejected as Unsupported" {
+test "decodeStrip: compression=8 (Deflate, M4-C) rejected as Unsupported" {
     const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
     const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
-    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00 }; // Compression = 5 (LZW)
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00 }; // Compression = 8 (Deflate, not yet supported)
     const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00 };
     const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 };
 

@@ -95,6 +95,18 @@ src/
                              n in [-127,-1] → repeat next byte 1-n times; n=-128
                              → no-op. Pure function over (compressed src,
                              dest); caller stages bytes via Workspace.
+    lzw.zig                  Compression=5: LZW per TIFF 6.0 §13. Variant enum
+                             lets callers choose new_style (MSB-first packing,
+                             early code-width change at (1<<bits)-1, TIFF 6.0
+                             default) or old_style (LSB-first, late change at
+                             (1<<bits), Sun/Adobe legacy "compat" path).
+                             Prefix-chain dictionary (each entry stores
+                             prefix-id + suffix-byte + total length); emit
+                             walks the chain backwards filling dest from the
+                             end. Algorithm adapted from validate's
+                             tiff_lzw_decoder.zig (Peter's MIT project) with
+                             attribution; API rewritten to caller-supplied
+                             dest (no allocation) and tiffz's shared error set.
   photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
                              pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
                              MinIsBlack, 2 RGB, 3 Palette}. Palette uses the
@@ -141,6 +153,12 @@ tests/
                              cramps.tif (800×607 MinIsWhite, big-endian) and
                              at3_1m4_01_rgb.tif (640×480 MinIsBlack, little-endian).
     packbits_oracle/         Matching .rgba ground truth from ImageMagick.
+    lzw/                     Real TIFF fixtures with compression=5: bali.tif
+                             (725×489 palette, big-endian — passes oracle),
+                             quad-lzw.tif (deferred: needs LZWFixupTags-style
+                             variant detection), strike.tif (deferred:
+                             needs assoc-alpha un-pre-multiply, M9).
+    lzw_oracle/              Matching .rgba ground truth from ImageMagick.
 audit/
   coverage_matrix.tsv        Empirical TIFF variant matrix from real-world corpus
   AUDIT_SUMMARY.md           Analysis + gap insights for fixture generation per milestone

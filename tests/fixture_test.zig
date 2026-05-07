@@ -254,3 +254,26 @@ test "at3_1m4_01_rgb.tif (PackBits, 640x480 MinIsBlack): RGBA matches ImageMagic
         "tests/fixtures/packbits_oracle/at3_1m4_01_rgb.rgba",
     );
 }
+
+test "bali.tif (LZW, 725x489 palette, big-endian): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/lzw/bali.tif",
+        "tests/fixtures/lzw_oracle/bali.rgba",
+    );
+}
+
+// quad-lzw.tif: deferred. Triggers ImageMagick's "Old-style LZW codes,
+// convert file" warning. Both my new-style (MSB-first + early-change)
+// and old-style (LSB-first + late-change) decode paths return Malformed
+// on this file. Likely needs an additional variant combination or a
+// libtiff-style pre-decode header sniff (the LZWFixupTags path in
+// tif_lzw.c) to pick the right combo. Deferred to a follow-up; bali
+// + strike's other-issue prove the basic LZW path works.
+//
+// strike.tif: deferred. Has ExtraSamples=1 (assoc-alpha = pre-multiplied
+// alpha per TIFF 6.0 §18). My LZW decode produces the literal stored
+// bytes (e.g. R = 0x80 × A = 0x02 / 255 ≈ 0x01); ImageMagick's RGBA:
+// output un-pre-multiplies (so R = 0x80 stays 0x80). Need un-pre-multiply
+// step keyed on ExtraSamples tag. Deferred to M9 (Pro photometrics)
+// where assoc/unassoc alpha lands properly.
