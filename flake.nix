@@ -57,10 +57,40 @@
           installCheckPhase = "true";
           nativeCheckInputs = [];
         });
+        # Pre-fetched Zig dependencies (fixed-output derivation).
+        # Update zigDepsHash when build.zig.zon changes:
+        #   1. Set zigDepsHash = pkgs.lib.fakeHash;
+        #   2. Run `nix build` — it fails with the correct hash;
+        #   3. Replace zigDepsHash with that printed hash.
+        zigDepsHash = "sha256-69D2hMUHER3UmXFRGRqmr+C2Q+K/KoMD4y2zXZhlWU4=";
+
+        zigDeps = pkgs.stdenv.mkDerivation {
+          pname = "tiffz-zig-deps";
+          version = "0.1.0";
+          src = self;
+
+          nativeBuildInputs = with pkgs; [ zig git cacert ];
+
+          outputHashMode = "recursive";
+          outputHashAlgo = "sha256";
+          outputHash = zigDepsHash;
+
+          buildPhase = ''
+            export HOME=$TMPDIR
+            export ZIG_GLOBAL_CACHE_DIR=$out
+            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+            export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+            zig build --fetch=all
+          '';
+
+          dontInstall = true;
+          dontFixup = true;
+        };
+
         # Build the tiffz static lib + C CLI in a sandboxed Nix
-        # derivation. tiffz has no dependencies yet, so we don't need
-        # the fixed-output `zigDeps` machinery — `--system` cache is
-        # empty and zig build runs offline.
+        # derivation. Pre-fetched zlib dep is staged into the Zig
+        # global cache before invoking zig build (the build itself
+        # runs offline within the sandbox).
         tiffzPkg = pkgs.stdenv.mkDerivation {
           pname = "tiffz";
           version = "0.1.0";
@@ -78,6 +108,8 @@
             export HOME="$TMPDIR"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
@@ -108,6 +140,8 @@
             export HOME="$TMPDIR"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}

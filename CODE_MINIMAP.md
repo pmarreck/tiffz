@@ -107,6 +107,14 @@ src/
                              tiff_lzw_decoder.zig (Peter's MIT project) with
                              attribution; API rewritten to caller-supplied
                              dest (no allocation) and tiffz's shared error set.
+    deflate.zig              Compression=8 (Deflate) / 32946 (AdobeDeflate):
+                             zlib-framed deflate per TIFF/EP + TIFF Technical
+                             Note 2. Both compression codes mean the same
+                             on-disk format. Thin wrapper over the C zlib
+                             API (inflateInit2 with windowBits=15 → zlib-
+                             framed). Uses the allyourcodebase/zlib dep
+                             (community Zig wrapper around upstream C zlib,
+                             zlib license; same dep validate ships).
   photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
                              pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
                              MinIsBlack, 2 RGB, 3 Palette}. Palette uses the
@@ -159,6 +167,10 @@ tests/
                              variant detection), strike.tif (deferred:
                              needs assoc-alpha un-pre-multiply, M9).
     lzw_oracle/              Matching .rgba ground truth from ImageMagick.
+    deflate/                 deflate-last-strip.tiff (500×500 MinIsBlack,
+                             little-endian, compression=8/Deflate). Oracle
+                             passes byte-exact.
+    deflate_oracle/          Matching .rgba ground truth.
 audit/
   coverage_matrix.tsv        Empirical TIFF variant matrix from real-world corpus
   AUDIT_SUMMARY.md           Analysis + gap insights for fixture generation per milestone

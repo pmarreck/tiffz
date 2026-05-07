@@ -3,7 +3,16 @@
     .version = "0.1.0",
     .fingerprint = 0x4373ea0a0149ebaa,
     .minimum_zig_version = "0.15.0",
-    .dependencies = .{},
+    .dependencies = .{
+        // zlib — used for compression=8 (Deflate) and compression=32946
+        // (AdobeDeflate, same algorithm). The community Zig wrapper around
+        // upstream C zlib (zlib license). Same dep validate uses; matches
+        // the project portfolio's zlib posture.
+        .zlib = .{
+            .url = "https://github.com/allyourcodebase/zlib/archive/refs/heads/main.tar.gz",
+            .hash = "zlib-1.3.2-ZZQ7lc8NAAAHm9MDfplvwoesXvk4tVm6VCsiI8KnIbT0",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

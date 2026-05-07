@@ -67,6 +67,14 @@ public API design.
             Needs an un-pre-multiply step keyed on ExtraSamples.
             Belongs in M9 (Pro photometrics) where assoc/unassoc
             alpha lands properly.
+  - [x] Deflate (2026-05-07): src/compressions/deflate.zig.
+        compression=8 (Deflate) and compression=32946 (AdobeDeflate)
+        — same on-disk zlib-framed format, separate registrations
+        per TIFF Technical Note 2. Wraps allyourcodebase/zlib
+        (community Zig wrapper around upstream C zlib, zlib license,
+        same dep validate uses). flake.nix gained the fixed-output
+        zigDeps pattern for sandboxed Nix builds. deflate-last-strip.tiff
+        (500×500 MinIsBlack, little-endian) oracle passes byte-exact.
   - [ ] LZW
   - [ ] ZLib Deflate
   - [ ] CCITT T.4 (Group 3)

@@ -255,6 +255,14 @@ test "at3_1m4_01_rgb.tif (PackBits, 640x480 MinIsBlack): RGBA matches ImageMagic
     );
 }
 
+test "deflate-last-strip.tiff (Deflate, 500x500 MinIsBlack, little-endian): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/deflate/deflate-last-strip.tiff",
+        "tests/fixtures/deflate_oracle/deflate-last-strip.rgba",
+    );
+}
+
 test "bali.tif (LZW, 725x489 palette, big-endian): RGBA matches ImageMagick oracle" {
     try assertOracleMatch(
         std.testing.allocator,

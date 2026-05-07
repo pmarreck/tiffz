@@ -23,6 +23,7 @@ const tags = @import("tags.zig");
 const compressions_none = @import("compressions/none.zig");
 const compressions_packbits = @import("compressions/packbits.zig");
 const compressions_lzw = @import("compressions/lzw.zig");
+const compressions_deflate = @import("compressions/deflate.zig");
 
 pub const Decoder = struct {
     allocator: Allocator,
@@ -188,6 +189,20 @@ pub const Decoder = struct {
                 }
                 break :blk written;
             },
+            tags.compression_deflate, tags.compression_deflate_adobe => blk: {
+                // Deflate / AdobeDeflate (compression=8 / 32946): zlib-
+                // framed stream. Both codes mean the same on-disk format
+                // per TIFF Technical Note 2; AdobeDeflate is just a
+                // separate registration.
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = compressions_deflate.decode(scratch, dest) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
             else => error.UnsupportedCompression,
         };
     }
@@ -331,10 +346,10 @@ test "decodeStrip: uncompressed RGB single strip" {
     try std.testing.expectEqualSlices(u8, &strip, dest[0..12]);
 }
 
-test "decodeStrip: compression=8 (Deflate, M4-C) rejected as Unsupported" {
+test "decodeStrip: compression=3 (CCITT G3, M4-D) rejected as Unsupported" {
     const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
     const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
-    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00 }; // Compression = 8 (Deflate, not yet supported)
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00 }; // Compression = 3 (CCITT G3, not yet supported)
     const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00 };
     const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 };
 

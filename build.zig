@@ -20,21 +20,33 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // zlib for compression=8 / compression=32946 (Deflate / AdobeDeflate).
+    // allyourcodebase/zlib is a Zig-built wrapper around upstream C zlib;
+    // produces a static archive we link into tiffz's static lib.
+    const zlib_dep = b.dependency("zlib", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zlib_lib = zlib_dep.artifact("z");
+    lib_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
+
     const lib = b.addLibrary(.{
         .name = "tiffz",
         .linkage = .static,
         .root_module = lib_module,
     });
+    lib.linkLibrary(zlib_lib);
     b.installArtifact(lib);
 
     // Expose a named module for downstream Zig consumers:
     //     dep.module("tiffz") — full Zig API surface.
-    _ = b.addModule("tiffz", .{
+    const tiffz_named_module = b.addModule("tiffz", .{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    tiffz_named_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
 
     // --- C CLI executable (dogfoods the C FFI per project convention) ---
     const cli = b.addExecutable(.{
@@ -58,14 +70,15 @@ pub fn build(b: *std.Build) void {
     b.installFile("include/tiffz.h", "include/tiffz.h");
 
     // --- Unit tests ---
-    const unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
+    const unit_tests_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
     });
+    unit_tests_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
+    const unit_tests = b.addTest(.{ .root_module = unit_tests_module });
+    unit_tests.linkLibrary(zlib_lib);
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
     // --- CLI integration tests (spawn the CLI binary, assert output) ---
@@ -81,16 +94,16 @@ pub fn build(b: *std.Build) void {
 
     // --- Fixture tests (decode real TIFFs from tests/fixtures/) ---
     // Imports the tiffz module directly; no CLI binary needed.
-    const fixture_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fixture_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
+    const fixture_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/fixture_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
     });
-    fixture_tests.root_module.addImport("tiffz", lib_module);
-
+    fixture_tests_module.addImport("tiffz", lib_module);
+    fixture_tests_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
+    const fixture_tests = b.addTest(.{ .root_module = fixture_tests_module });
+    fixture_tests.linkLibrary(zlib_lib);
     const run_fixture_tests = b.addRunArtifact(fixture_tests);
 
     const test_step = b.step("test", "Run unit, CLI, and fixture tests");
