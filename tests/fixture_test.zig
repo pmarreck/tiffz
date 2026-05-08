@@ -66,7 +66,12 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
     const height = ifdScalarU32(dir, tiffz.tags.image_length, dec.endian) orelse return error.Malformed;
     const photometric = ifdScalarU16(dir, tiffz.tags.photometric, dec.endian) orelse return error.Malformed;
     const samples_per_pixel = ifdScalarU16(dir, tiffz.tags.samples_per_pixel, dec.endian) orelse 1;
-    const rows_per_strip = ifdScalarU32(dir, tiffz.tags.rows_per_strip, dec.endian) orelse height;
+    // RowsPerStrip = (uint32)-1 means "all rows in one strip" (the
+    // fax convention via the "(infinite)" tiffinfo display).
+    // Clamp to the image height so downstream allocations don't
+    // try to reserve 4 GB × bytes-per-row.
+    const rps_raw = ifdScalarU32(dir, tiffz.tags.rows_per_strip, dec.endian) orelse height;
+    const rows_per_strip: u32 = if (rps_raw > height) height else rps_raw;
 
     // BitsPerSample: per-sample SHORT array. Take the first; assume
     // uniform across samples for M3 (SamplesPerPixel ≤ 4).
