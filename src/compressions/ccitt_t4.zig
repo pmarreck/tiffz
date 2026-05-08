@@ -121,36 +121,71 @@ const Match = struct {
     kind: CodeKind,
 };
 
+/// Comptime-built lookup table indexed by `len * 8192 + acc`.
+/// `len` ∈ 2..13 (white codes start at 4 bits, black at 2). Entries
+/// for unmatched (len, acc) pairs are sentinel-filled. The result of
+/// a lookup is either a valid Match or `null` (encoded via the
+/// sentinel run = 0xFFFF).
+///
+/// Total entries: 14 × 8192 = 114688 per color = 229376 across both,
+/// plus 14 × 8192 = 114688 for extended (color-independent) — three
+/// flat u16 arrays of 229376 entries each. ~700 KB total but
+/// compile-time-initialized into the static binary, zero runtime
+/// cost to construct.
+const Lookup = struct {
+    /// run value, or 0xFFFF = no match.
+    run: u16,
+    kind: u8, // 0 = terminating, 1 = makeup, 2 = extended_makeup, 0xFF = none
+};
+
+const NO_MATCH: Lookup = .{ .run = 0xFFFF, .kind = 0xFF };
+
+const white_lookup: [14][1 << 13]Lookup = buildLookupForColor(.white);
+const black_lookup: [14][1 << 13]Lookup = buildLookupForColor(.black);
+
+fn buildLookupForColor(comptime color: Color) [14][1 << 13]Lookup {
+    @setEvalBranchQuota(2_000_000);
+    var t: [14][1 << 13]Lookup = .{.{NO_MATCH} ** (1 << 13)} ** 14;
+
+    const table = switch (color) {
+        .white => &white_codes,
+        .black => &black_codes,
+    };
+    for (table) |entry| {
+        const kind: u8 = if (entry.run < 64) 0 else 1;
+        t[entry.length][entry.bits] = .{ .run = entry.run, .kind = kind };
+    }
+
+    // Extended make-up codes are color-independent — included in both tables.
+    for (extended_codes) |entry| {
+        t[entry.length][entry.bits] = .{ .run = entry.run, .kind = 2 };
+    }
+
+    return t;
+}
+
 /// Read bits one at a time, accumulating MSB-first into a u16, and
-/// look up against the per-color tables. Returns the matched run +
-/// kind, or Malformed if no code matches within 13 bits.
+/// look up against precomputed (len, acc)-keyed tables. Returns the
+/// matched run + kind, or Malformed if no code matches within 13 bits.
 fn matchCode(reader: *BitReader, color: Color) errors.Error!Match {
     var acc: u16 = 0;
     var len: u4 = 0;
+    const table_ptr: *const [14][1 << 13]Lookup = switch (color) {
+        .white => &white_lookup,
+        .black => &black_lookup,
+    };
     while (len < 13) {
         acc = (acc << 1) | (try reader.readBit());
         len += 1;
-
-        // Extended-make-up codes are color-independent (per T.4).
-        if (len == 11 or len == 12) {
-            for (extended_codes) |e| {
-                if (e.length == len and e.bits == acc) {
-                    return .{ .run = e.run, .kind = .extended_makeup };
-                }
-            }
-        }
-
-        const table: []const TableEntry = switch (color) {
-            .white => &white_codes,
-            .black => &black_codes,
-        };
-        for (table) |entry| {
-            if (entry.length == len and entry.bits == acc) {
-                return .{
-                    .run = entry.run,
-                    .kind = if (entry.run < 64) .terminating else .makeup,
-                };
-            }
+        const hit = table_ptr[len][acc];
+        if (hit.run != 0xFFFF) {
+            const kind: CodeKind = switch (hit.kind) {
+                0 => .terminating,
+                1 => .makeup,
+                2 => .extended_makeup,
+                else => unreachable,
+            };
+            return .{ .run = hit.run, .kind = kind };
         }
     }
     return error.Malformed;
