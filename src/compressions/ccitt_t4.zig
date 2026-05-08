@@ -604,7 +604,7 @@ test "ccitt_t4.decode: full fax2d.tif strip (1728x1082) hashes deterministically
     // platforms, the platform-divergence is somewhere upstream
     // (file read, photometric expand, slice compare). If it fails
     // on one platform, the divergence is the decoder itself.
-    const tiff_bytes = @embedFile("../../tests/fixtures/ccitt_g3/fax2d.tif");
+    const tiff_bytes = @embedFile(".fax2d.tif");
     // strip 0 lives at file offset 8, length 32525 (per tiffinfo).
     const strip = tiff_bytes[8..][0..32525];
 
