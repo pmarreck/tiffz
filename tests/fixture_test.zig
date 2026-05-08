@@ -111,10 +111,13 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
     const rgba = try allocator.alloc(u8, rgba_total);
     errdefer allocator.free(rgba);
 
-    // Strip scratch — sized to the maximum decompressed strip
-    // (rows_per_strip × width × samples × bits/8). Compressed-input
-    // staging lives in Workspace.
-    const strip_max: usize = @as(usize, width) * rows_per_strip * samples_per_pixel * (bits_per_sample / 8);
+    // Strip scratch — sized to the maximum decompressed strip.
+    // bytes-per-row = ceil(width * samples * bits / 8); strip-bytes
+    // = rows_per_strip × that. Sub-byte bits_per_sample (1 for fax)
+    // would round to zero with naive `(bits/8)` integer arithmetic.
+    const row_bits: usize = @as(usize, width) * @as(usize, samples_per_pixel) * @as(usize, bits_per_sample);
+    const row_bytes: usize = (row_bits + 7) / 8;
+    const strip_max: usize = row_bytes * rows_per_strip;
     const strip_buf = try allocator.alloc(u8, strip_max);
     defer allocator.free(strip_buf);
 
@@ -252,6 +255,14 @@ test "at3_1m4_01_rgb.tif (PackBits, 640x480 MinIsBlack): RGBA matches ImageMagic
         std.testing.allocator,
         "tests/fixtures/packbits/at3_1m4_01_rgb.tif",
         "tests/fixtures/packbits_oracle/at3_1m4_01_rgb.rgba",
+    );
+}
+
+test "fax2d.tif (CCITT G3 1D, 1728x1082 MinIsWhite LSB-first): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/ccitt_g3/fax2d.tif",
+        "tests/fixtures/ccitt_g3_oracle/fax2d.rgba",
     );
 }
 

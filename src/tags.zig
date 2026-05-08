@@ -7,11 +7,14 @@ pub const image_length: u16 = 257;           // 0x0101
 pub const bits_per_sample: u16 = 258;        // 0x0102
 pub const compression: u16 = 259;            // 0x0103
 pub const photometric: u16 = 262;            // 0x0106
+pub const fill_order: u16 = 266;             // 0x010A; 1 = MSB-first, 2 = LSB-first
 pub const strip_offsets: u16 = 273;          // 0x0111
 pub const samples_per_pixel: u16 = 277;      // 0x0115
 pub const rows_per_strip: u16 = 278;         // 0x0116
 pub const strip_byte_counts: u16 = 279;      // 0x0117
 pub const planar_configuration: u16 = 284;   // 0x011C
+pub const t4_options: u16 = 292;             // 0x0124; bit 0 = 2D, bit 1 = uncompressed, bit 2 = EOL byte align
+pub const t6_options: u16 = 293;             // 0x0125; bit 1 = uncompressed
 pub const predictor: u16 = 317;              // 0x013D
 pub const colormap: u16 = 320;               // 0x0140
 pub const tile_width: u16 = 322;             // 0x0142

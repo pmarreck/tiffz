@@ -42,11 +42,20 @@ pub fn expandRowsToRgba(
     fmt: PixelFormat,
     dest: []u8,
 ) errors.Error!void {
-    if (fmt.bits_per_sample != 8) return error.UnsupportedBitDepth;
+    if (fmt.bits_per_sample != 1 and fmt.bits_per_sample != 8) return error.UnsupportedBitDepth;
 
     const out_bytes_per_row: usize = @as(usize, fmt.width) * 4;
     const need_dest = out_bytes_per_row * src_rows;
     if (dest.len < need_dest) return error.DestTooSmall;
+
+    if (fmt.bits_per_sample == 1) {
+        // 1-bit per sample is grayscale-only by spec (samples_per_pixel = 1).
+        return switch (fmt.photometric) {
+            tags.photometric_white_is_zero => expandGray1bit(src_bytes, src_rows, fmt, dest, .invert),
+            tags.photometric_black_is_zero => expandGray1bit(src_bytes, src_rows, fmt, dest, .direct),
+            else => error.UnsupportedPhotometric,
+        };
+    }
 
     return switch (fmt.photometric) {
         tags.photometric_white_is_zero => expandGray(src_bytes, src_rows, fmt, dest, .invert),
@@ -55,6 +64,48 @@ pub fn expandRowsToRgba(
         tags.photometric_palette => expandPalette(src_bytes, src_rows, fmt, dest),
         else => error.UnsupportedPhotometric,
     };
+}
+
+/// 1-bit-per-pixel grayscale expansion. Source bytes are packed
+/// MSB-first within each byte (bit 7 = leftmost pixel of those 8) —
+/// the conventional in-memory layout after CCITT decode normalizes
+/// FillOrder. `direct` mode: bit=0 → black (0x00), bit=1 → white (0xFF)
+/// (PhotometricInterpretation = 1 / MinIsBlack). `invert` flips both
+/// sides (PhotometricInterpretation = 0 / MinIsWhite, the fax default).
+fn expandGray1bit(
+    src_bytes: []const u8,
+    src_rows: u32,
+    fmt: PixelFormat,
+    dest: []u8,
+    mode: GrayMode,
+) errors.Error!void {
+    if (fmt.samples_per_pixel != 1) return error.UnsupportedPhotometric;
+
+    const bytes_per_row: usize = (@as(usize, fmt.width) + 7) / 8;
+    if (src_bytes.len < bytes_per_row * src_rows) return error.SourceShortRead;
+
+    var di: usize = 0;
+    var rows_done: u32 = 0;
+    while (rows_done < src_rows) : (rows_done += 1) {
+        const row = src_bytes[rows_done * bytes_per_row ..][0..bytes_per_row];
+        var x: u32 = 0;
+        while (x < fmt.width) : (x += 1) {
+            const byte_idx: usize = x / 8;
+            const bit_idx: u3 = @intCast(7 - (x % 8));
+            const bit: u1 = @intCast((row[byte_idx] >> bit_idx) & 1);
+            // bit=1 means "set" (black under MinIsBlack, white under MinIsWhite);
+            // bit=0 means "unset". `mode` flips the intensity polarity.
+            const v: u8 = switch (mode) {
+                .direct => if (bit == 1) 0xFF else 0x00,
+                .invert => if (bit == 1) 0x00 else 0xFF,
+            };
+            dest[di + 0] = v;
+            dest[di + 1] = v;
+            dest[di + 2] = v;
+            dest[di + 3] = 0xFF;
+            di += 4;
+        }
+    }
 }
 
 const GrayMode = enum { direct, invert };
@@ -263,6 +314,79 @@ test "expandRowsToRgba rejects unsupported bit depth" {
         .width = 1,
         .colormap = null,
     }, &dest));
+}
+
+test "expandGray1bit MinIsWhite (fax default): 0-bits → white, 1-bits → black" {
+    // 8-pixel row, MSB-first packed: 0b10110000 = 0xB0.
+    // Pixels: 1 0 1 1 0 0 0 0 → black white black black white white white white.
+    // Under MinIsWhite (invert): 1=black=0, 0=white=255.
+    const src = [_]u8{0xB0};
+    var dest: [32]u8 = undefined;
+    try expandRowsToRgba(&src, 1, .{
+        .photometric = tags.photometric_white_is_zero,
+        .bits_per_sample = 1,
+        .samples_per_pixel = 1,
+        .width = 8,
+        .colormap = null,
+    }, &dest);
+    // pixel 0 (bit=1) → black; pixel 1 (bit=0) → white; …
+    try std.testing.expectEqualSlices(u8, &.{
+        0x00, 0x00, 0x00, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0x00, 0x00, 0x00, 0xFF,
+        0x00, 0x00, 0x00, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+    }, &dest);
+}
+
+test "expandGray1bit MinIsBlack (direct): 0=black, 1=white" {
+    // 4 pixels worth in the high nibble: 0b1010_0000.
+    const src = [_]u8{0xA0};
+    var dest: [16]u8 = undefined;
+    try expandRowsToRgba(&src, 1, .{
+        .photometric = tags.photometric_black_is_zero,
+        .bits_per_sample = 1,
+        .samples_per_pixel = 1,
+        .width = 4,
+        .colormap = null,
+    }, &dest);
+    try std.testing.expectEqualSlices(u8, &.{
+        0xFF, 0xFF, 0xFF, 0xFF, // bit 1 = white
+        0x00, 0x00, 0x00, 0xFF, // bit 0 = black
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0x00, 0x00, 0x00, 0xFF,
+    }, &dest);
+}
+
+test "expandGray1bit handles non-byte-aligned width" {
+    // 12 pixels, 2 bytes-per-row. Bits: 1100_1010_1111_xxxx (last 4 ignored).
+    const src = [_]u8{ 0xCA, 0xF0 };
+    var dest: [48]u8 = undefined;
+    try expandRowsToRgba(&src, 1, .{
+        .photometric = tags.photometric_black_is_zero,
+        .bits_per_sample = 1,
+        .samples_per_pixel = 1,
+        .width = 12,
+        .colormap = null,
+    }, &dest);
+    const expected = [_]u8{
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0x00, 0x00, 0x00, 0xFF,
+        0x00, 0x00, 0x00, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0x00, 0x00, 0x00, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0x00, 0x00, 0x00, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+    };
+    try std.testing.expectEqualSlices(u8, &expected, &dest);
 }
 
 test "expandRowsToRgba rejects unsupported photometric" {

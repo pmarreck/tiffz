@@ -77,6 +77,20 @@ public API design.
             it from the first few bytes of the codestream. Adding a
             third Variant member + heuristic detection is a future
             follow-up.
+  - [x] CCITT G3 1D / T.4 (2026-05-07): src/compressions/ccitt_t4.zig.
+        Modified-Huffman tables (white runs, black runs, color-
+        independent extended make-up codes) transcribed from ITU-T
+        T.4 §4.1.4 Tables 1-3. BitReader supports both FillOrder
+        values (1=MSB-first, 2=LSB-first per TIFF tag 266).
+        T4Options bit 2 (EOL byte alignment) honored. Two-channel
+        decode loop: syncToEol + alignToByte (if option set) at row
+        start, then alternate white/black runs summing to ImageWidth.
+        2D mode (T4Options bit 0) rejected — that's M4-E territory.
+        fax2d.tif (1728×1082, FillOrder=2, EOL byte-aligned, single
+        strip via RowsPerStrip=infinite) oracle passes byte-exact.
+        Photometrics also gained 1-bit-per-sample expansion
+        (MinIsWhite invert + MinIsBlack direct, 1-bit packed
+        MSB-first → RGBA).
   - [x] Deflate (2026-05-07): src/compressions/deflate.zig.
         compression=8 (Deflate) and compression=32946 (AdobeDeflate)
         — same on-disk zlib-framed format, separate registrations
@@ -94,6 +108,18 @@ public API design.
   - [ ] (JPEG-in-TIFF deferred to M9.5 — needs sibling `jpegz`)
 - [ ] M5: Predictors (None / Horizontal / Floating-point).
 - [ ] M6: Tile-based layout. Refactor strip path to share with tile path.
+      *Threading-convention design captured 2026-05-07* (validate +
+      jpegz aligning on the same shape; see "Decided design choices"
+      below): when parallel strip / tile decode lands at this
+      milestone, surface a `DecodeOptions { threads: u8 = 1 }`
+      parameter on the convenience APIs (`validateAll`,
+      `decodeStreaming`, `decodeAll`). Default `1` = sequential.
+      `0` = explicit caller-opted-in auto-detect. `Decoder.decodeStrip`
+      itself stays a single-threaded primitive — caller distributes
+      strips across threads. No globals, no env vars, no
+      auto-detection on the default path. C ABI mirrors with
+      `tiffz_decode_all_ex(opts*)` plus an inline default-options
+      wrapper.
 - [ ] M7: BigTIFF — comptime offset-width abstraction.
 - [ ] M8: DNG — predictor 3, CFA tags, opcode list parser.
       *Schedule risk resolved 2026-05-06:* jpegz M1.4b shipped with a
@@ -217,6 +243,19 @@ public API design.
   separation; can revisit if a sibling JPEG-only consumer ever wants
   the same RGBA helper. No further brainstorm needed; lock this in
   as the M3 follow-up shape.
+- **Threading control convention** (aligned with validate + jpegz
+  2026-05-07): convenience APIs gain a
+  `DecodeOptions { threads: u8 = 1 }` parameter. Default `1` =
+  sequential in calling thread. Explicit `0` = caller-opted-in
+  auto-detect (uncommon — usually only standalone CLI tools).
+  No globals, no env vars, no library-level auto-detection on the
+  default path. The library passes `options.threads` through to any
+  underlying multi-threaded deps (jpegz at M9.5, openjpeg if it
+  ever lands). C ABI mirrors with an `_ex(opts*)` form plus an
+  inline default-options wrapper. Validate's call sites read
+  `tiffz.decode(source, .{ .threads = 1 })` — symmetric with
+  `jpegz.decode(data, .{ .threads = 1 })`. Wired in at M6 alongside
+  parallel strip/tile decode.
 
 ## Curiosity pokes / open questions for later
 

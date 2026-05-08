@@ -24,6 +24,7 @@ const compressions_none = @import("compressions/none.zig");
 const compressions_packbits = @import("compressions/packbits.zig");
 const compressions_lzw = @import("compressions/lzw.zig");
 const compressions_deflate = @import("compressions/deflate.zig");
+const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
 
 pub const Decoder = struct {
     allocator: Allocator,
@@ -189,6 +190,53 @@ pub const Decoder = struct {
                 }
                 break :blk written;
             },
+            tags.compression_ccitt_t4 => blk: {
+                // CCITT G3 (T.4) 1D modified Huffman. Read T4Options
+                // (default 0 = 1D non-byte-aligned) and FillOrder
+                // (default 1 = MSB-first). Reject 2D mode for now —
+                // M4-E (CCITT G4 / T.6) shares the 2D state machine
+                // and that's where 2D lands.
+                const t4_opts: u32 = (try readScalarU32(dir.*, tags.t4_options, self.endian)) orelse 0;
+                if ((t4_opts & 0x1) != 0) break :blk error.UnsupportedCompression; // 2D
+                if ((t4_opts & 0x2) != 0) break :blk error.UnsupportedCompression; // uncompressed mode
+                const eol_byte_align: bool = (t4_opts & 0x4) != 0;
+
+                const fill_raw = (try readScalarU16(dir.*, tags.fill_order, self.endian)) orelse 1;
+                const fill: compressions_ccitt_t4.FillOrder = switch (fill_raw) {
+                    1 => .msb_first,
+                    2 => .lsb_first,
+                    else => break :blk error.Malformed,
+                };
+
+                const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse {
+                    break :blk error.Malformed;
+                };
+                const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse {
+                    break :blk error.Malformed;
+                };
+                const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
+                // RowsPerStrip = (uint32) -1 means "all rows in one strip" for fax.
+                const rps: u32 = if (rps_raw > length) length else rps_raw;
+                const remaining_rows: u32 = length - strip_index * rps;
+                const this_rows: u32 = @min(rps, remaining_rows);
+
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                if (got < byte_count) break :blk error.SourceShortRead;
+
+                const written = compressions_ccitt_t4.decode(
+                    scratch,
+                    dest,
+                    width,
+                    this_rows,
+                    fill,
+                    eol_byte_align,
+                ) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
             tags.compression_deflate, tags.compression_deflate_adobe => blk: {
                 // Deflate / AdobeDeflate (compression=8 / 32946): zlib-
                 // framed stream. Both codes mean the same on-disk format
@@ -207,6 +255,19 @@ pub const Decoder = struct {
         };
     }
 };
+
+/// Read a single u32-shaped scalar tag (ImageWidth / ImageLength /
+/// RowsPerStrip / etc.). Tolerates SHORT-typed encoders too.
+/// Returns null if the tag isn't present.
+fn readScalarU32(dir: Ifd, tag: u16, endian: Endian) errors.Error!?u32 {
+    const e = dir.get(tag) orelse return null;
+    if (e.count != 1) return error.Malformed;
+    return switch (e.field_type) {
+        .short => @intCast(header_mod.readU16(e.raw_value_or_offset[0..2], endian)),
+        .long => header_mod.readU32(&e.raw_value_or_offset, endian),
+        else => error.UnsupportedTagType,
+    };
+}
 
 /// Read a single u16-shaped scalar tag (BitsPerSample / Compression /
 /// Photometric / etc.). Returns null if the tag isn't present.
@@ -346,10 +407,10 @@ test "decodeStrip: uncompressed RGB single strip" {
     try std.testing.expectEqualSlices(u8, &strip, dest[0..12]);
 }
 
-test "decodeStrip: compression=3 (CCITT G3, M4-D) rejected as Unsupported" {
+test "decodeStrip: compression=4 (CCITT G4, M4-E) rejected as Unsupported" {
     const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
     const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
-    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00 }; // Compression = 3 (CCITT G3, not yet supported)
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 }; // Compression = 4 (CCITT G4, not yet supported)
     const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00 };
     const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 };
 

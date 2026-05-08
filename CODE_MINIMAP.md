@@ -107,6 +107,15 @@ src/
                              tiff_lzw_decoder.zig (Peter's MIT project) with
                              attribution; API rewritten to caller-supplied
                              dest (no allocation) and tiffz's shared error set.
+    ccitt_t4.zig             Compression=3: CCITT Group 3 (T.4) 1D modified-
+                             Huffman fax codec. Per-color tables (white runs,
+                             black runs) plus color-independent extended
+                             make-up codes (1792..2560). BitReader supports
+                             both FillOrder values (MSB-first per TIFF default,
+                             LSB-first common in fax-origin data). T4Options
+                             bit 2 (EOL byte alignment) honored via per-row
+                             alignToByte after EOL sync. 2D mode rejected;
+                             that's M4-E territory shared with G4/T.6.
     deflate.zig              Compression=8 (Deflate) / 32946 (AdobeDeflate):
                              zlib-framed deflate per TIFF/EP + TIFF Technical
                              Note 2. Both compression codes mean the same
@@ -171,6 +180,11 @@ tests/
                              little-endian, compression=8/Deflate). Oracle
                              passes byte-exact.
     deflate_oracle/          Matching .rgba ground truth.
+    ccitt_g3/                fax2d.tif (1728×1082 MinIsWhite, FillOrder=2
+                             LSB-first, T4Options=4 = EOL byte-aligned, single
+                             strip via RowsPerStrip=infinite). G3 1D modified
+                             Huffman; oracle passes byte-exact.
+    ccitt_g3_oracle/         Matching .rgba ground truth (~7.1 MB).
 audit/
   coverage_matrix.tsv        Empirical TIFF variant matrix from real-world corpus
   AUDIT_SUMMARY.md           Analysis + gap insights for fixture generation per milestone
