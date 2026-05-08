@@ -622,9 +622,9 @@ test "ccitt_t4.decode: full fax2d.tif strip (1728x1082) hashes deterministically
     // platform-divergent.
     const expected_hex = "PINME" ++ "00000000000000000000000000000000000000000000000000000000000";
     _ = expected_hex;
-    var hex: [64]u8 = undefined;
-    _ = std.fmt.bufPrint(&hex, "{x}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
-    std.debug.print("\nZZ_FAX2D_DECODE_SHA256 {s}\n", .{hex});
+    std.debug.print("\nZZ_FAX2D_DECODE_SHA256 ", .{});
+    for (digest) |b| std.debug.print("{x:0>2}", .{b});
+    std.debug.print("\n", .{});
     std.debug.print("ZZ_FAX2D_FIRST32", .{});
     for (dest[0..@min(32, n)]) |b| std.debug.print(" {x:0>2}", .{b});
     std.debug.print("\n", .{});
