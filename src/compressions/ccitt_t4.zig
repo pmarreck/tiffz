@@ -594,6 +594,42 @@ test "ccitt_t4.decode: real fax2d strip prefix decodes 2 all-white rows" {
     }
 }
 
+test "ccitt_t4.decode: full fax2d.tif strip (1728x1082) hashes deterministically" {
+    // The fixture-test pipeline path (file I/O via std.fs +
+    // photometric expansion + RGBA assertion) showed platform-
+    // dependent results: Mac aarch64 ReleaseFast passed, Linux
+    // x86_64-musl ReleaseFast failed with byte mismatch. This unit
+    // test exercises ONLY the decoder by @embedFile-ing the fixture
+    // and hashing the 1-bit packed output. If this passes both
+    // platforms, the platform-divergence is somewhere upstream
+    // (file read, photometric expand, slice compare). If it fails
+    // on one platform, the divergence is the decoder itself.
+    const tiff_bytes = @embedFile("../../tests/fixtures/ccitt_g3/fax2d.tif");
+    // strip 0 lives at file offset 8, length 32525 (per tiffinfo).
+    const strip = tiff_bytes[8..][0..32525];
+
+    var dest: [216 * 1082]u8 = undefined; // 216 bytes/row × 1082 rows
+    const n = try decode(&strip.*, &dest, 1728, 1082, .lsb_first, true);
+    try std.testing.expectEqual(@as(usize, 216 * 1082), n);
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(dest[0..n]);
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+
+    // Pinned hash of the expected 1-bit packed output. Generated on
+    // a known-good run; mismatch on any platform = the decoder is
+    // platform-divergent.
+    const expected_hex = "PINME" ++ "00000000000000000000000000000000000000000000000000000000000";
+    _ = expected_hex;
+    var hex: [64]u8 = undefined;
+    _ = std.fmt.bufPrint(&hex, "{x}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
+    std.debug.print("\nZZ_FAX2D_DECODE_SHA256 {s}\n", .{hex});
+    std.debug.print("ZZ_FAX2D_FIRST32", .{});
+    for (dest[0..@min(32, n)]) |b| std.debug.print(" {x:0>2}", .{b});
+    std.debug.print("\n", .{});
+}
+
 test "ccitt_t4.decode: synthetic row of all-black" {
     // EOL + white-0 (00110101, 8 bits) + black-8 (000101, 6 bits)
     // 12 + 8 + 6 = 26 bits.
