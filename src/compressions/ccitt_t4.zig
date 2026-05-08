@@ -54,15 +54,19 @@ pub fn decode(
     @memset(dest[0..total_out], 0);
 
     var reader = BitReader.init(src, fill_order);
+    // Per TIFF 6.0 §11 + T.4: when T4Options bit 2 ("EOL byte aligned") is
+    // set, the encoder pads zero bits BEFORE each EOL so that the EOL
+    // itself starts at a byte boundary. syncToEol absorbs the leading
+    // zeros (both the padding and the EOL prefix). After it returns, we
+    // are mid-byte (12 bits past the byte boundary) and the next
+    // line's data starts immediately — NO post-EOL alignment. The
+    // `eol_byte_align` flag is therefore informational only at the
+    // decoder's level; the syncToEol logic itself handles arbitrary
+    // pre-EOL padding identically.
+    _ = eol_byte_align;
     var rows_done: u32 = 0;
     while (rows_done < rows) : (rows_done += 1) {
-        // Sync to EOL — needed at the start (encoders emit it before
-        // every line, including the first) and serves as our recovery
-        // anchor for in-band errors.
         try reader.syncToEol();
-
-        if (eol_byte_align) reader.alignToByte();
-
         const row_dest = dest[rows_done * bytes_per_row ..][0..bytes_per_row];
         try decodeRow(&reader, row_dest, width);
     }
@@ -76,15 +80,27 @@ fn decodeRow(reader: *BitReader, row_dest: []u8, width: u32) errors.Error!void {
     var x: u32 = 0;
     var color: Color = .white; // every row starts with a white run
 
+    // Loop-progress guard: a malformed code stream that decodes as
+    // alternating zero-runs would infinite-loop without this. Cap
+    // total iterations at width × 2 (worst case: every pixel its own
+    // alternating run).
+    var safety_iters: u32 = 0;
+    const safety_cap: u32 = (width + 1) * 2;
+
     while (x < width) {
+        if (safety_iters > safety_cap) return error.Malformed;
+        safety_iters += 1;
+
         var run: u32 = 0;
         // A make-up + terminating pair encodes one logical run.
         // Loop until a terminating code (run < 64) lands.
+        var inner_iters: u32 = 0;
         while (true) {
+            inner_iters += 1;
+            if (inner_iters > 64) return error.Malformed; // > 64 make-ups in a single run is pathological
             const m = try matchCode(reader, color);
             run += m.run;
             if (m.kind == .terminating) break;
-            // make-up or extended-make-up: keep reading
             if (run > std.math.maxInt(u24)) return error.Malformed; // sanity
         }
         if (x + run > width) return error.Malformed;
@@ -516,6 +532,31 @@ test "ccitt_t4.decode: synthetic 8-pixel row of all-white" {
     const n = try decode(&src, &dest, 8, 1, .msb_first, false);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 0x00), dest[0]); // all bits = white = 0
+}
+
+test "ccitt_t4.decode: real fax2d strip prefix decodes 2 all-white rows" {
+    // Bytes lifted from /Volumes/Fileserver/.../fax2d.tif strip 0
+    // (FillOrder=2, T4Options=4=EOL byte aligned, width=1728).
+    // First 8 bytes of the strip:
+    //   0x00 0x80   (LSB-first): 4 zero pad + 12-bit EOL
+    //   0xb2 0x59 0x01 0x80   (LSB-first): white-1728 makeup +
+    //                                      white-0 term + EOL pad +
+    //                                      12-bit EOL
+    //   0xb2 0x59   continues into row 2's data
+    //
+    // Decoding 2 rows of width=1728 should produce 2 × 216 = 432
+    // bytes of all-zero output (all-white rows under the 1-bit
+    // packed convention; photometric inversion happens later).
+    const strip_prefix = [_]u8{ 0x00, 0x80, 0xb2, 0x59, 0x01, 0x80, 0xb2, 0x59, 0x01, 0x80 };
+    var dest: [432]u8 = .{0xAA} ** 432; // poisoned to detect missed writes
+    const n = try decode(&strip_prefix, &dest, 1728, 2, .lsb_first, true);
+    try std.testing.expectEqual(@as(usize, 432), n);
+    for (dest, 0..) |b, idx| {
+        if (b != 0x00) {
+            std.debug.print("row-0/1 byte {d} = {x:0>2} (expected 0x00)\n", .{ idx, b });
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "ccitt_t4.decode: synthetic row of all-black" {

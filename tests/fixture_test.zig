@@ -152,29 +152,6 @@ fn assertOracleMatch(allocator: std.mem.Allocator, fixture_path: []const u8, ora
     defer allocator.free(got);
     const expected = try loadFile(allocator, oracle_path);
     defer allocator.free(expected);
-
-    if (got.len != expected.len or !std.mem.eql(u8, got, expected)) {
-        var first_diff: usize = 0;
-        const min_len = @min(got.len, expected.len);
-        while (first_diff < min_len and got[first_diff] == expected[first_diff]) {
-            first_diff += 1;
-        }
-        // Loud marker prefix so we can grep through truncated CI logs.
-        std.debug.print("\nZZZDIAG_ORACLE_MISMATCH path={s} got_len={d} expected_len={d} first_diff={d}\n", .{ fixture_path, got.len, expected.len, first_diff });
-        const ctx_start = first_diff -| 4;
-        const ctx_end = @min(first_diff + 24, min_len);
-        std.debug.print("ZZZDIAG_GOT", .{});
-        for (got[ctx_start..ctx_end]) |b| std.debug.print(" {x:0>2}", .{b});
-        std.debug.print("\nZZZDIAG_EXP", .{});
-        for (expected[ctx_start..ctx_end]) |b| std.debug.print(" {x:0>2}", .{b});
-        std.debug.print("\nZZZDIAG_GOT_HEAD", .{});
-        const head_n = @min(got.len, 48);
-        for (got[0..head_n]) |b| std.debug.print(" {x:0>2}", .{b});
-        std.debug.print("\nZZZDIAG_EXP_HEAD", .{});
-        const head_e = @min(expected.len, 48);
-        for (expected[0..head_e]) |b| std.debug.print(" {x:0>2}", .{b});
-        std.debug.print("\n", .{});
-    }
     try std.testing.expectEqualSlices(u8, expected, got);
 }
 
