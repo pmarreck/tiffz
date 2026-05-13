@@ -165,12 +165,22 @@ src/
                              land in later milestones.
   decoder.zig                Decoder.open parses header + IFD0 eagerly (lazy IFD
                              chain — sibling IFDs materialize on first ifd(N) call).
-                             decodeStrip handles compression=1 (none): reads
-                             StripOffsets[i] / StripByteCounts[i], pread's the strip
-                             into caller's dest. Tiled layout rejected (M6).
-                             readScalarU16 / readArrayElementU32 helpers handle
-                             inline-vs-offset SHORT/LONG arrays. All Limits
-                             checked before any Source read.
+                             decodeStrip / decodeTile are sibling primitives (M6):
+                             both dispatch through the shared decodeBytes(dir,
+                             ChunkExtent, dest, ws) helper which switches on the
+                             Compression tag. ChunkExtent carries
+                             offset/byte_count/width/rows so CCITT codecs can use
+                             scan-line geometry regardless of layout. decodeStrip
+                             rejects tile-tag dirs; decodeTile rejects strip-tag
+                             dirs (caller routes by `is_tiled`). Predictor pass
+                             runs after the codec via applyPredictorStrip /
+                             applyPredictorTile (extents differ: ImageWidth ×
+                             clamped RowsPerStrip × strip_index vs TileWidth ×
+                             TileLength); readPredictorMeta factors the shared
+                             per-IFD metadata read. readScalarU16 /
+                             readArrayElementU32 helpers handle inline-vs-offset
+                             SHORT/LONG arrays. All Limits checked before any
+                             Source read.
   version.zig                Single-source-of-truth version string
   ffi.zig                    C FFI exports — tiffz_version() proves the FFI roundtrip;
                              rest of the surface lands alongside its M3+ impl
@@ -221,6 +231,13 @@ tests/
                              (LZW + horizontal differencing), predictor2_deflate.tif
                              (Deflate + horizontal differencing).
     predictor_oracle/        Matching .rgba ground truth.
+    tiled/                   M6 tile-layout fixtures: cramps-tile.tif (800×607
+                             MinIsWhite, 256×256 tiles, uncompressed) and
+                             quad-tile.tif (512×384 RGB, 128×128 tiles, LZW).
+                             Both generated via `tiffcp -t -w <w> -l <h>` so
+                             they use TileOffsets/TileByteCounts (the proper
+                             tiled-TIFF tags) rather than aliased StripOffsets.
+    tiled_oracle/            Matching .rgba ground truth.
     ccitt_g4/                scan_petes_book.tif (11059×15671 MinIsWhite,
                              FillOrder=1 MSB-first, single strip via
                              RowsPerStrip=15671). The marquee target — fax-

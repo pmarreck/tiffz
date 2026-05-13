@@ -61,20 +61,19 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
 
     const dir = try dec.ifd(0);
 
-    // Required scalars for M3 photometric expansion.
     const width = ifdScalarU32(dir, tiffz.tags.image_width, dec.endian) orelse return error.Malformed;
     const height = ifdScalarU32(dir, tiffz.tags.image_length, dec.endian) orelse return error.Malformed;
     const photometric = ifdScalarU16(dir, tiffz.tags.photometric, dec.endian) orelse return error.Malformed;
     const samples_per_pixel = ifdScalarU16(dir, tiffz.tags.samples_per_pixel, dec.endian) orelse 1;
     // RowsPerStrip = (uint32)-1 means "all rows in one strip" (the
-    // fax convention via the "(infinite)" tiffinfo display).
-    // Clamp to the image height so downstream allocations don't
-    // try to reserve 4 GB × bytes-per-row.
+    // fax convention via the "(infinite)" tiffinfo display). Clamp to
+    // the image height so downstream allocations don't try to reserve
+    // 4 GB × bytes-per-row.
     const rps_raw = ifdScalarU32(dir, tiffz.tags.rows_per_strip, dec.endian) orelse height;
     const rows_per_strip: u32 = if (rps_raw > height) height else rps_raw;
 
     // BitsPerSample: per-sample SHORT array. Take the first; assume
-    // uniform across samples for M3 (SamplesPerPixel ≤ 4).
+    // uniform across samples (SamplesPerPixel ≤ 4).
     var bits_per_sample: u16 = 8;
     if (dir.get(tiffz.tags.bits_per_sample)) |bps_entry| {
         var buf: [16]u8 = undefined;
@@ -116,25 +115,45 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
     const rgba = try allocator.alloc(u8, rgba_total);
     errdefer allocator.free(rgba);
 
-    // Strip scratch — sized to the maximum decompressed strip.
-    // bytes-per-row = ceil(width * samples * bits / 8); strip-bytes
-    // = rows_per_strip × that. Sub-byte bits_per_sample (1 for fax)
-    // would round to zero with naive `(bits/8)` integer arithmetic.
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+
+    // Detect tile vs strip layout. TIFF doesn't allow both.
+    const is_tiled = dir.get(tiffz.tags.tile_offsets) != null;
+    if (is_tiled) {
+        try decodeTiledIntoRgba(allocator, &dec, fmt, rgba, &ws, width, height, samples_per_pixel, bits_per_sample);
+    } else {
+        try decodeStrippedIntoRgba(allocator, &dec, fmt, rgba, &ws, width, height, samples_per_pixel, bits_per_sample, rows_per_strip);
+    }
+
+    return rgba;
+}
+
+fn decodeStrippedIntoRgba(
+    allocator: std.mem.Allocator,
+    dec: *tiffz.Decoder,
+    fmt: tiffz.photometrics.PixelFormat,
+    rgba: []u8,
+    ws: *tiffz.Workspace,
+    width: u32,
+    height: u32,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    rows_per_strip: u32,
+) !void {
     const row_bits: usize = @as(usize, width) * @as(usize, samples_per_pixel) * @as(usize, bits_per_sample);
     const row_bytes: usize = (row_bits + 7) / 8;
     const strip_max: usize = row_bytes * rows_per_strip;
     const strip_buf = try allocator.alloc(u8, strip_max);
     defer allocator.free(strip_buf);
 
-    var ws = tiffz.Workspace.init(allocator);
-    defer ws.deinit();
-
+    const dir = try dec.ifd(0);
     const sbc_entry = dir.get(tiffz.tags.strip_byte_counts) orelse return error.Malformed;
     var rgba_offset: usize = 0;
     var strip_index: u32 = 0;
     var rows_done: u32 = 0;
     while (strip_index < sbc_entry.count) : (strip_index += 1) {
-        const n = try dec.decodeStrip(0, strip_index, strip_buf, &ws);
+        const n = try dec.decodeStrip(0, strip_index, strip_buf, ws);
         const this_strip_rows: u32 = blk: {
             const remaining = height - rows_done;
             break :blk @min(rows_per_strip, remaining);
@@ -148,8 +167,69 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
         rgba_offset += @as(usize, this_strip_rows) * width * 4;
         rows_done += this_strip_rows;
     }
+}
 
-    return rgba;
+fn decodeTiledIntoRgba(
+    allocator: std.mem.Allocator,
+    dec: *tiffz.Decoder,
+    fmt: tiffz.photometrics.PixelFormat,
+    rgba: []u8,
+    ws: *tiffz.Workspace,
+    width: u32,
+    height: u32,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+) !void {
+    const dir = try dec.ifd(0);
+    const tile_w = ifdScalarU32(dir, tiffz.tags.tile_width, dec.endian) orelse return error.Malformed;
+    const tile_h = ifdScalarU32(dir, tiffz.tags.tile_length, dec.endian) orelse return error.Malformed;
+
+    // Per-tile scratch buffers: decoded bytes + RGBA expansion.
+    const tile_row_bits: usize = @as(usize, tile_w) * @as(usize, samples_per_pixel) * @as(usize, bits_per_sample);
+    const tile_row_bytes: usize = (tile_row_bits + 7) / 8;
+    const tile_decoded_bytes: usize = tile_row_bytes * tile_h;
+    const tile_buf = try allocator.alloc(u8, tile_decoded_bytes);
+    defer allocator.free(tile_buf);
+
+    const tile_rgba_bytes: usize = @as(usize, tile_w) * tile_h * 4;
+    const tile_rgba = try allocator.alloc(u8, tile_rgba_bytes);
+    defer allocator.free(tile_rgba);
+
+    // PixelFormat for tile expansion — same as image fmt but width
+    // is tile_w (so expandRowsToRgba knows the per-row pixel count).
+    var tile_fmt = fmt;
+    tile_fmt.width = tile_w;
+
+    const tiles_across: u32 = (width + tile_w - 1) / tile_w;
+    const tiles_down: u32 = (height + tile_h - 1) / tile_h;
+
+    var ty: u32 = 0;
+    while (ty < tiles_down) : (ty += 1) {
+        var tx: u32 = 0;
+        while (tx < tiles_across) : (tx += 1) {
+            const tile_index = ty * tiles_across + tx;
+            const n = try dec.decodeTile(0, tile_index, tile_buf, ws);
+            try tiffz.photometrics.expandRowsToRgba(
+                tile_buf[0..n],
+                tile_h,
+                tile_fmt,
+                tile_rgba,
+            );
+            // Copy in-image portion of the tile RGBA into the full
+            // image RGBA. Edge tiles may have less than tile_w/tile_h
+            // pixels visible.
+            const origin_x = tx * tile_w;
+            const origin_y = ty * tile_h;
+            const visible_w: u32 = @min(tile_w, width - origin_x);
+            const visible_h: u32 = @min(tile_h, height - origin_y);
+            var row: u32 = 0;
+            while (row < visible_h) : (row += 1) {
+                const src_off = @as(usize, row) * tile_w * 4;
+                const dst_off = (@as(usize, origin_y + row) * width + origin_x) * 4;
+                @memcpy(rgba[dst_off..][0 .. @as(usize, visible_w) * 4], tile_rgba[src_off..][0 .. @as(usize, visible_w) * 4]);
+            }
+        }
+    }
 }
 
 fn assertOracleMatch(allocator: std.mem.Allocator, fixture_path: []const u8, oracle_path: []const u8) !void {
@@ -157,7 +237,24 @@ fn assertOracleMatch(allocator: std.mem.Allocator, fixture_path: []const u8, ora
     defer allocator.free(got);
     const expected = try loadFile(allocator, oracle_path);
     defer allocator.free(expected);
-    try std.testing.expectEqualSlices(u8, expected, got);
+
+    if (got.len != expected.len) {
+        std.debug.print("\n[mismatch-len] {s}: got_len={d} exp_len={d}\n", .{ fixture_path, got.len, expected.len });
+        return error.TestExpectedEqual;
+    }
+    if (!std.mem.eql(u8, got, expected)) {
+        var first_diff: usize = 0;
+        while (first_diff < got.len and got[first_diff] == expected[first_diff]) first_diff += 1;
+        std.debug.print("\n[mismatch] {s}: len={d} first_diff={d} (0x{x})\n", .{ fixture_path, got.len, first_diff, first_diff });
+        const cs = first_diff -| 4;
+        const ce = @min(first_diff + 24, got.len);
+        std.debug.print("  got     [{d}..{d}]: ", .{ cs, ce });
+        for (got[cs..ce]) |b| std.debug.print("{x:0>2} ", .{b});
+        std.debug.print("\n  expected[{d}..{d}]: ", .{ cs, ce });
+        for (expected[cs..ce]) |b| std.debug.print("{x:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        return error.TestExpectedEqual;
+    }
 }
 
 /// Hash-pinned oracle for fixtures whose .rgba is too large to
@@ -311,6 +408,22 @@ test "predictor2_deflate.tif (Deflate + Predictor=2 horizontal, 32x32 RGB): RGBA
         std.testing.allocator,
         "tests/fixtures/predictor/predictor2_deflate.tif",
         "tests/fixtures/predictor_oracle/predictor2_deflate.rgba",
+    );
+}
+
+test "cramps-tile.tif (uncompressed tiled, 800x607 MinIsWhite, 256x256 tiles): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/tiled/cramps-tile.tif",
+        "tests/fixtures/tiled_oracle/cramps-tile.rgba",
+    );
+}
+
+test "quad-tile.tif (LZW tiled, 512x384 RGB, 128x128 tiles): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/tiled/quad-tile.tif",
+        "tests/fixtures/tiled_oracle/quad-tile.rgba",
     );
 }
 

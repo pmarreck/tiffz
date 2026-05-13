@@ -152,19 +152,43 @@ public API design.
       Predictor=3 floating-point (TIFF Tech Note 3, byte-plane
       interleaved differencing) returns UnsupportedPredictor; lands
       with M8 DNG raw work.
-- [ ] M6: Tile-based layout. Refactor strip path to share with tile path.
+- [x] **M6: Tile-based layout** (2026-05-13). Decoder grew a
+      `decodeTile(ifd_index, tile_index, dest, workspace)` primitive
+      that mirrors `decodeStrip` for tiled images. Strip and tile
+      paths share a single codec dispatch via the new private
+      `decodeBytes(dir, ChunkExtent, dest, workspace)` helper; the
+      per-chunk extent carries `offset/byte_count/width/rows` so
+      CCITT (which needs scan-line geometry) works the same whether
+      the chunk is a strip or a tile. `readPredictorMeta` factors the
+      shared per-IFD predictor metadata; `applyPredictorStrip` /
+      `applyPredictorTile` differ only in width/rows source
+      (ImageWidth × clamped RowsPerStrip vs TileWidth × TileLength).
+      decodeStrip rejects tile-tag dirs and decodeTile rejects
+      strip-tag dirs (caller routes by `is_tiled`). Two real-fixture
+      oracle tests pass byte-exact: cramps-tile.tif (800×607
+      MinIsWhite, 256×256 tiles, uncompressed) and quad-tile.tif
+      (512×384 RGB, 128×128 tiles, LZW). Tile edge cropping uses
+      `@min(tile_w, width - origin_x)` and `@min(tile_h,
+      height - origin_y)` — encoder pads the full tile, decoder
+      copies just the in-image portion to the output RGBA.
+      *Bug caught during impl:* the first cramps-tile fixture was a
+      malformed tiled-TIFF where TileWidth/TileLength were set but
+      data offsets lived in StripOffsets/StripByteCounts (libtiff
+      tolerates this aliasing; tiffz won't). Regenerated both
+      fixtures via `tiffcp -t -w … -l …` so they use the proper
+      TileOffsets/TileByteCounts tags.
       *Threading-convention design captured 2026-05-07* (validate +
       jpegz aligning on the same shape; see "Decided design choices"
-      below): when parallel strip / tile decode lands at this
-      milestone, surface a `DecodeOptions { threads: u8 = 1 }`
+      below): when parallel strip / tile decode lands as a follow-up
+      to this milestone, surface a `DecodeOptions { threads: u8 = 1 }`
       parameter on the convenience APIs (`validateAll`,
       `decodeStreaming`, `decodeAll`). Default `1` = sequential.
       `0` = explicit caller-opted-in auto-detect. `Decoder.decodeStrip`
-      itself stays a single-threaded primitive — caller distributes
-      strips across threads. No globals, no env vars, no
-      auto-detection on the default path. C ABI mirrors with
-      `tiffz_decode_all_ex(opts*)` plus an inline default-options
-      wrapper.
+      / `Decoder.decodeTile` themselves stay single-threaded
+      primitives — caller distributes chunks across threads. No
+      globals, no env vars, no auto-detection on the default path.
+      C ABI mirrors with `tiffz_decode_all_ex(opts*)` plus an inline
+      default-options wrapper.
 - [ ] M7: BigTIFF — comptime offset-width abstraction.
 - [ ] M8: DNG — predictor 3, CFA tags, opcode list parser.
       *Schedule risk resolved 2026-05-06:* jpegz M1.4b shipped with a

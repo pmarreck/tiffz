@@ -105,10 +105,8 @@ pub const Decoder = struct {
 
     /// Decode one strip into dest. Dispatches on the IFD's
     /// Compression tag, then reverses any predictor transform per
-    /// the Predictor tag (default 1 = no-op).
-    ///
-    /// Tiled layout is M6; photometric expansion is the consumer's
-    /// job (raw decoded bytes are returned here).
+    /// the Predictor tag (default 1 = no-op). Photometric expansion
+    /// is the consumer's job (raw decoded bytes are returned here).
     pub fn decodeStrip(
         self: *Decoder,
         ifd_index: usize,
@@ -117,21 +115,44 @@ pub const Decoder = struct {
         workspace: *Workspace,
     ) errors.Error!usize {
         const written = try self.decodeStripRaw(ifd_index, strip_index, dest, workspace);
-        try self.applyPredictor(ifd_index, strip_index, dest[0..written]);
+        try self.applyPredictorStrip(ifd_index, strip_index, dest[0..written]);
         return written;
     }
 
-    /// Run the inverse Predictor transform over the just-decoded
-    /// strip bytes. No-op when Predictor=1 (the default). Reads
-    /// Predictor (317), PlanarConfiguration (284), ImageWidth (256),
-    /// SamplesPerPixel (277), BitsPerSample (258) from the IFD.
-    fn applyPredictor(self: *Decoder, ifd_index: usize, strip_index: u32, bytes: []u8) errors.Error!void {
+    /// Decode one tile into dest. Same compression dispatch as
+    /// decodeStrip; the only difference is the metadata layer
+    /// (TileOffsets/TileByteCounts instead of StripOffsets/Counts,
+    /// fixed-size tiles instead of variable RowsPerStrip). Tiles on
+    /// the right/bottom image edge may decode to MORE bytes than
+    /// the in-image portion (encoder pads to a full TileWidth ×
+    /// TileLength); caller handles the crop during photometric
+    /// expansion.
+    pub fn decodeTile(
+        self: *Decoder,
+        ifd_index: usize,
+        tile_index: u32,
+        dest: []u8,
+        workspace: *Workspace,
+    ) errors.Error!usize {
+        const written = try self.decodeTileRaw(ifd_index, tile_index, dest, workspace);
+        try self.applyPredictorTile(ifd_index, dest[0..written]);
+        return written;
+    }
+
+    /// Common shared per-IFD metadata that both strip and tile
+    /// predictors need. Read once per call.
+    const PredictorMeta = struct {
+        predictor: predictors_mod.Predictor,
+        samples: u16,
+        bps: u16,
+        planar: predictors_mod.PlanarConfig,
+    };
+
+    fn readPredictorMeta(self: *Decoder, ifd_index: usize) errors.Error!?PredictorMeta {
         const dir = try self.ifd(ifd_index);
         const pred_raw = (try readScalarU16(dir.*, tags.predictor, self.endian)) orelse 1;
-        if (pred_raw == 1) return; // no-op fast path
+        if (pred_raw == 1) return null; // no-op fast path
 
-        const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
-        const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
         const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
         const planar_raw = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse 1;
         const planar: predictors_mod.PlanarConfig = @enumFromInt(planar_raw);
@@ -147,23 +168,51 @@ pub const Decoder = struct {
             bps = header_mod.readU16(buf[0..2], self.endian);
         }
 
-        // How many rows did THIS strip cover? RowsPerStrip clamped
-        // to remaining-rows, same logic as the codec branches above.
+        return .{
+            .predictor = predictors_mod.Predictor.fromU16(pred_raw),
+            .samples = samples,
+            .bps = bps,
+            .planar = planar,
+        };
+    }
+
+    /// Run the inverse Predictor transform over a just-decoded strip.
+    fn applyPredictorStrip(self: *Decoder, ifd_index: usize, strip_index: u32, bytes: []u8) errors.Error!void {
+        const meta = (try self.readPredictorMeta(ifd_index)) orelse return;
+        const dir = try self.ifd(ifd_index);
+        const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
+        const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
         const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
         const rps: u32 = if (rps_raw > length) length else rps_raw;
         const remaining_rows: u32 = length - strip_index * rps;
         const this_rows: u32 = @min(rps, remaining_rows);
-
-        try predictors_mod.applyInverse(
-            bytes,
-            predictors_mod.Predictor.fromU16(pred_raw),
-            width,
-            this_rows,
-            samples,
-            bps,
-            planar,
-        );
+        try predictors_mod.applyInverse(bytes, meta.predictor, width, this_rows, meta.samples, meta.bps, meta.planar);
     }
+
+    /// Run the inverse Predictor transform over a just-decoded tile.
+    /// Tile rows = TileLength regardless of image edge — the encoder
+    /// pads tile data past the image edge to the full tile dimensions,
+    /// so the predictor reverses across the FULL tile.
+    fn applyPredictorTile(self: *Decoder, ifd_index: usize, bytes: []u8) errors.Error!void {
+        const meta = (try self.readPredictorMeta(ifd_index)) orelse return;
+        const dir = try self.ifd(ifd_index);
+        const tile_w = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
+        const tile_h = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
+        try predictors_mod.applyInverse(bytes, meta.predictor, tile_w, tile_h, meta.samples, meta.bps, meta.planar);
+    }
+
+    /// Per-chunk extent for the shared codec dispatch.
+    const ChunkExtent = struct {
+        offset: u64,
+        byte_count: u32,
+        /// Pixel width per scan-line — for strip this is ImageWidth;
+        /// for tile this is TileWidth. Only used by CCITT.
+        width: u32,
+        /// Number of scan-lines in this chunk — for strip this is the
+        /// clamped RowsPerStrip; for tile this is TileLength. Only
+        /// used by CCITT.
+        rows: u32,
+    };
 
     /// Internal: the codec dispatch without predictor application.
     fn decodeStripRaw(
@@ -175,16 +224,12 @@ pub const Decoder = struct {
     ) errors.Error!usize {
         const dir = try self.ifd(ifd_index);
 
-        // Reject tiled layout — has TileOffsets/TileWidth/TileLength,
-        // no StripOffsets. M6 implements decodeTile.
+        // Reject tiled layout from the strip API — caller should
+        // route to decodeTile.
         if (dir.get(tags.tile_offsets) != null) return error.UnsupportedTagType;
 
-        const comp = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse 1;
-
-        // Read the strip metadata arrays. Both can be SHORT or LONG.
         const offsets_entry = dir.get(tags.strip_offsets) orelse return error.Malformed;
         const counts_entry = dir.get(tags.strip_byte_counts) orelse return error.Malformed;
-
         if (strip_index >= offsets_entry.count or strip_index >= counts_entry.count) {
             return error.InvalidArgument;
         }
@@ -192,20 +237,76 @@ pub const Decoder = struct {
             return error.LimitExceededStripCount;
         }
 
-        const offset = try readArrayElementU32(
-            offsets_entry.*,
-            strip_index,
-            self.endian,
-            self.source,
-            self.allocator,
-        );
-        const byte_count = try readArrayElementU32(
-            counts_entry.*,
-            strip_index,
-            self.endian,
-            self.source,
-            self.allocator,
-        );
+        const offset = try readArrayElementU32(offsets_entry.*, strip_index, self.endian, self.source, self.allocator);
+        const byte_count = try readArrayElementU32(counts_entry.*, strip_index, self.endian, self.source, self.allocator);
+
+        // CCITT needs to know the per-chunk row+width. For strips
+        // these come from ImageWidth + clamped RowsPerStrip × strip_index.
+        const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
+        const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
+        const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
+        const rps: u32 = if (rps_raw > length) length else rps_raw;
+        const remaining_rows: u32 = length - strip_index * rps;
+        const this_rows: u32 = @min(rps, remaining_rows);
+
+        return self.decodeBytes(dir, .{
+            .offset = offset,
+            .byte_count = byte_count,
+            .width = width,
+            .rows = this_rows,
+        }, dest, workspace);
+    }
+
+    /// Internal: codec dispatch for tile layout.
+    fn decodeTileRaw(
+        self: *Decoder,
+        ifd_index: usize,
+        tile_index: u32,
+        dest: []u8,
+        workspace: *Workspace,
+    ) errors.Error!usize {
+        const dir = try self.ifd(ifd_index);
+
+        // Reject strip layout from the tile API — caller should
+        // route to decodeStrip.
+        if (dir.get(tags.tile_offsets) == null) return error.UnsupportedTagType;
+
+        const offsets_entry = dir.get(tags.tile_offsets) orelse return error.Malformed;
+        const counts_entry = dir.get(tags.tile_byte_counts) orelse return error.Malformed;
+        if (tile_index >= offsets_entry.count or tile_index >= counts_entry.count) {
+            return error.InvalidArgument;
+        }
+        if (offsets_entry.count > self.limits.max_strips_or_tiles) {
+            return error.LimitExceededStripCount;
+        }
+
+        const offset = try readArrayElementU32(offsets_entry.*, tile_index, self.endian, self.source, self.allocator);
+        const byte_count = try readArrayElementU32(counts_entry.*, tile_index, self.endian, self.source, self.allocator);
+
+        const tile_w = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
+        const tile_h = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
+
+        return self.decodeBytes(dir, .{
+            .offset = offset,
+            .byte_count = byte_count,
+            .width = tile_w,
+            .rows = tile_h,
+        }, dest, workspace);
+    }
+
+    /// Shared codec dispatch. Reads Compression from dir, then
+    /// dispatches to the matching codec. The ChunkExtent carries the
+    /// per-chunk row/width (only used by CCITT).
+    fn decodeBytes(
+        self: *Decoder,
+        dir: *const Ifd,
+        ext: ChunkExtent,
+        dest: []u8,
+        workspace: *Workspace,
+    ) errors.Error!usize {
+        const comp = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse 1;
+        const offset = ext.offset;
+        const byte_count = ext.byte_count;
 
         if (byte_count > self.limits.max_compressed_strip_bytes) {
             return error.LimitExceededCompressedStripBytes;
@@ -248,11 +349,11 @@ pub const Decoder = struct {
                 break :blk written;
             },
             tags.compression_ccitt_t6 => blk: {
-                // CCITT G4 / T.6 2D modified-modified-Huffman. No
-                // T4Options to honor; T6Options bit 1 = uncompressed
-                // mode (deferred). FillOrder applies same as T.4.
+                // CCITT G4 / T.6 2D modified-modified-Huffman.
+                // T6Options bit 1 = uncompressed mode (deferred).
+                // FillOrder same as T.4.
                 const t6_opts: u32 = (try readScalarU32(dir.*, tags.t6_options, self.endian)) orelse 0;
-                if ((t6_opts & 0x2) != 0) break :blk error.UnsupportedCompression; // uncompressed mode
+                if ((t6_opts & 0x2) != 0) break :blk error.UnsupportedCompression;
 
                 const fill_raw = (try readScalarU16(dir.*, tags.fill_order, self.endian)) orelse 1;
                 const fill: compressions_ccitt_t6.FillOrder = switch (fill_raw) {
@@ -260,17 +361,6 @@ pub const Decoder = struct {
                     2 => .lsb_first,
                     else => break :blk error.Malformed,
                 };
-
-                const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse {
-                    break :blk error.Malformed;
-                };
-                const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse {
-                    break :blk error.Malformed;
-                };
-                const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
-                const rps: u32 = if (rps_raw > length) length else rps_raw;
-                const remaining_rows: u32 = length - strip_index * rps;
-                const this_rows: u32 = @min(rps, remaining_rows);
 
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
@@ -280,8 +370,8 @@ pub const Decoder = struct {
                     self.allocator,
                     scratch,
                     dest,
-                    width,
-                    this_rows,
+                    ext.width,
+                    ext.rows,
                     fill,
                 ) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
@@ -292,12 +382,11 @@ pub const Decoder = struct {
             tags.compression_ccitt_t4 => blk: {
                 // CCITT G3 (T.4) 1D modified Huffman. Read T4Options
                 // (default 0 = 1D non-byte-aligned) and FillOrder
-                // (default 1 = MSB-first). Reject 2D mode for now —
-                // M4-E (CCITT G4 / T.6) shares the 2D state machine
-                // and that's where 2D lands.
+                // (default 1 = MSB-first). 2D and uncompressed-mode
+                // bits rejected.
                 const t4_opts: u32 = (try readScalarU32(dir.*, tags.t4_options, self.endian)) orelse 0;
-                if ((t4_opts & 0x1) != 0) break :blk error.UnsupportedCompression; // 2D
-                if ((t4_opts & 0x2) != 0) break :blk error.UnsupportedCompression; // uncompressed mode
+                if ((t4_opts & 0x1) != 0) break :blk error.UnsupportedCompression;
+                if ((t4_opts & 0x2) != 0) break :blk error.UnsupportedCompression;
                 const eol_byte_align: bool = (t4_opts & 0x4) != 0;
 
                 const fill_raw = (try readScalarU16(dir.*, tags.fill_order, self.endian)) orelse 1;
@@ -307,18 +396,6 @@ pub const Decoder = struct {
                     else => break :blk error.Malformed,
                 };
 
-                const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse {
-                    break :blk error.Malformed;
-                };
-                const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse {
-                    break :blk error.Malformed;
-                };
-                const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
-                // RowsPerStrip = (uint32) -1 means "all rows in one strip" for fax.
-                const rps: u32 = if (rps_raw > length) length else rps_raw;
-                const remaining_rows: u32 = length - strip_index * rps;
-                const this_rows: u32 = @min(rps, remaining_rows);
-
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
                 if (got < byte_count) break :blk error.SourceShortRead;
@@ -326,8 +403,8 @@ pub const Decoder = struct {
                 const written = compressions_ccitt_t4.decode(
                     scratch,
                     dest,
-                    width,
-                    this_rows,
+                    ext.width,
+                    ext.rows,
                     fill,
                     eol_byte_align,
                 ) catch |e| break :blk e;
