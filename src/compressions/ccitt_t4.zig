@@ -595,15 +595,15 @@ test "ccitt_t4.decode: real fax2d strip prefix decodes 2 all-white rows" {
 }
 
 test "ccitt_t4.decode: full fax2d.tif strip (1728x1082) hashes deterministically" {
-    // The fixture-test pipeline path (file I/O via std.fs +
-    // photometric expansion + RGBA assertion) showed platform-
-    // dependent results: Mac aarch64 ReleaseFast passed, Linux
-    // x86_64-musl ReleaseFast failed with byte mismatch. This unit
-    // test exercises ONLY the decoder by @embedFile-ing the fixture
-    // and hashing the 1-bit packed output. If this passes both
-    // platforms, the platform-divergence is somewhere upstream
-    // (file read, photometric expand, slice compare). If it fails
-    // on one platform, the divergence is the decoder itself.
+    // Decoder regression guard for the M4-E marquee target. Uses
+    // @embedFile so the test is independent of the file-I/O +
+    // photometric pipeline that fixture_test.zig exercises. If this
+    // SHA changes on any platform without an intentional decoder
+    // change, the decoder has regressed (or has new UB).
+    //
+    // Pinned hash captured 2026-05-13 from a known-good run on both
+    // Mac aarch64-darwin and Linux x86_64-musl (both produce the
+    // same value).
     const tiff_bytes = @embedFile(".fax2d.tif");
     // strip 0 lives at file offset 8, length 32525 (per tiffinfo).
     const strip = tiff_bytes[8..][0..32525];
@@ -617,17 +617,13 @@ test "ccitt_t4.decode: full fax2d.tif strip (1728x1082) hashes deterministically
     var digest: [32]u8 = undefined;
     hasher.final(&digest);
 
-    // Pinned hash of the expected 1-bit packed output. Generated on
-    // a known-good run; mismatch on any platform = the decoder is
-    // platform-divergent.
-    const expected_hex = "PINME" ++ "00000000000000000000000000000000000000000000000000000000000";
-    _ = expected_hex;
-    std.debug.print("\nZZ_FAX2D_DECODE_SHA256 ", .{});
-    for (digest) |b| std.debug.print("{x:0>2}", .{b});
-    std.debug.print("\n", .{});
-    std.debug.print("ZZ_FAX2D_FIRST32", .{});
-    for (dest[0..@min(32, n)]) |b| std.debug.print(" {x:0>2}", .{b});
-    std.debug.print("\n", .{});
+    const expected: [32]u8 = .{
+        0xa2, 0x02, 0x4d, 0xd6, 0xe7, 0x90, 0xf7, 0x5a,
+        0xca, 0x2d, 0x7f, 0xd6, 0xe9, 0x6b, 0xea, 0x5c,
+        0x02, 0x52, 0x1e, 0x49, 0x6a, 0x0b, 0x7a, 0x1f,
+        0x7d, 0xae, 0xc4, 0x5c, 0xaa, 0xdb, 0xc4, 0x85,
+    };
+    try std.testing.expectEqualSlices(u8, &expected, &digest);
 }
 
 test "ccitt_t4.decode: synthetic row of all-black" {

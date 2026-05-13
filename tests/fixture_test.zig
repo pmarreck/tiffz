@@ -157,20 +157,6 @@ fn assertOracleMatch(allocator: std.mem.Allocator, fixture_path: []const u8, ora
     defer allocator.free(got);
     const expected = try loadFile(allocator, oracle_path);
     defer allocator.free(expected);
-
-    if (got.len != expected.len or !std.mem.eql(u8, got, expected)) {
-        var first_diff: usize = 0;
-        const min_len = @min(got.len, expected.len);
-        while (first_diff < min_len and got[first_diff] == expected[first_diff]) first_diff += 1;
-        std.debug.print("\nZZ {s}: got_len={d} exp_len={d} first_diff={d}\n", .{ fixture_path, got.len, expected.len, first_diff });
-        const cs = first_diff -| 4;
-        const ce = @min(first_diff + 24, min_len);
-        std.debug.print("ZZ G", .{});
-        for (got[cs..ce]) |b| std.debug.print(" {x:0>2}", .{b});
-        std.debug.print("\nZZ E", .{});
-        for (expected[cs..ce]) |b| std.debug.print(" {x:0>2}", .{b});
-        std.debug.print("\n", .{});
-    }
     try std.testing.expectEqualSlices(u8, expected, got);
 }
 

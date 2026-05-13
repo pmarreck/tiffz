@@ -112,10 +112,21 @@ src/
                              black runs) plus color-independent extended
                              make-up codes (1792..2560). BitReader supports
                              both FillOrder values (MSB-first per TIFF default,
-                             LSB-first common in fax-origin data). T4Options
-                             bit 2 (EOL byte alignment) honored via per-row
-                             alignToByte after EOL sync. 2D mode rejected;
-                             that's M4-E territory shared with G4/T.6.
+                             LSB-first common in fax-origin data). Comptime-
+                             built [14][8192] O(1) lookup tables keyed on
+                             (length, bits). T4Options bit 2 (EOL byte
+                             alignment) is informational at decode time —
+                             syncToEol absorbs arbitrary pre-EOL padding
+                             zeros directly. 2D mode rejected; that's M4-E
+                             territory shared with G4/T.6. Embedded-fixture
+                             unit test pins the decoder's SHA-256 against
+                             fax2d.tif as a regression guard independent
+                             of the file-I/O / photometric pipeline.
+    .fax2d.tif               Embedded copy of the fax2d.tif fixture, used by
+                             the @embedFile-backed regression-guard unit
+                             test in ccitt_t4.zig. Dotfile so it's
+                             unobtrusive in directory listings; same bytes
+                             as tests/fixtures/ccitt_g3/fax2d.tif.
     deflate.zig              Compression=8 (Deflate) / 32946 (AdobeDeflate):
                              zlib-framed deflate per TIFF/EP + TIFF Technical
                              Note 2. Both compression codes mean the same

@@ -77,20 +77,38 @@ public API design.
             it from the first few bytes of the codestream. Adding a
             third Variant member + heuristic detection is a future
             follow-up.
-  - [x] CCITT G3 1D / T.4 (2026-05-07): src/compressions/ccitt_t4.zig.
-        Modified-Huffman tables (white runs, black runs, color-
-        independent extended make-up codes) transcribed from ITU-T
-        T.4 §4.1.4 Tables 1-3. BitReader supports both FillOrder
-        values (1=MSB-first, 2=LSB-first per TIFF tag 266).
-        T4Options bit 2 (EOL byte alignment) honored. Two-channel
-        decode loop: syncToEol + alignToByte (if option set) at row
-        start, then alternate white/black runs summing to ImageWidth.
-        2D mode (T4Options bit 0) rejected — that's M4-E territory.
+  - [x] CCITT G3 1D / T.4 (2026-05-07 algorithm; 2026-05-13 Linux-
+        portable): src/compressions/ccitt_t4.zig. Modified-Huffman
+        tables (white runs, black runs, color-independent extended
+        make-up codes) transcribed from ITU-T T.4 §4.1.4 Tables 1-3.
+        BitReader supports both FillOrder values (1=MSB-first,
+        2=LSB-first per TIFF tag 266). Per-color comptime-built
+        [14][8192] O(1) lookup tables keyed on (length, bits).
+        Decode loop: syncToEol at row start (no post-EOL alignment —
+        T4Options bit 2 means EOL is pre-padded so it itself starts
+        at a byte boundary; reading the 12-bit EOL leaves us 4 bits
+        in and data continues from there). 2D mode rejected, that's
+        M4-E.
         fax2d.tif (1728×1082, FillOrder=2, EOL byte-aligned, single
-        strip via RowsPerStrip=infinite) oracle passes byte-exact.
-        Photometrics also gained 1-bit-per-sample expansion
-        (MinIsWhite invert + MinIsBlack direct, 1-bit packed
-        MSB-first → RGBA).
+        strip via RowsPerStrip=4294967295) oracle passes byte-exact
+        on both Mac aarch64-darwin and Linux x86_64-musl. Decoder
+        regression guard pinned via SHA-256 in a @embedFile-backed
+        unit test (independent of the fixture-pipeline). Photometrics
+        also gained 1-bit-per-sample expansion (MinIsWhite invert +
+        MinIsBlack direct, 1-bit packed MSB-first → RGBA).
+        Bug stack from the Linux-portability dig:
+          1. Initial decoder had a spurious post-EOL alignToByte —
+             I misread T4Options bit 2 as "align after EOL" when the
+             spec says "EOL is at byte boundary (encoder pads
+             before)." Removing the alignToByte fixed correctness.
+          2. Linear table scan was slow enough that Linux musl
+             exceeded the 10-min watchdog. Replaced with
+             comptime-built [14][8192] lookup tables; ~12× speedup.
+          3. fixture_test didn't clamp RowsPerStrip = 0xFFFFFFFF
+             ("infinite"), so strip_max = 216 × 4294967295 ≈ 927 GB.
+             Mac's lazy allocator tolerated the virtual reservation;
+             Linux musl rejected. Same clamp as Decoder.decodeStrip
+             already had internally now propagated into fixture_test.
   - [x] Deflate (2026-05-07): src/compressions/deflate.zig.
         compression=8 (Deflate) and compression=32946 (AdobeDeflate)
         — same on-disk zlib-framed format, separate registrations
