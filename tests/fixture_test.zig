@@ -290,6 +290,30 @@ test "fax2d.tif (CCITT G3 1D, 1728x1082 MinIsWhite LSB-first): RGBA matches Imag
     );
 }
 
+test "predictor1_lzw.tif (LZW + Predictor=1 no-op, 32x32 RGB): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/predictor/predictor1_lzw.tif",
+        "tests/fixtures/predictor_oracle/predictor1_lzw.rgba",
+    );
+}
+
+test "predictor2_lzw.tif (LZW + Predictor=2 horizontal, 32x32 RGB): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/predictor/predictor2_lzw.tif",
+        "tests/fixtures/predictor_oracle/predictor2_lzw.rgba",
+    );
+}
+
+test "predictor2_deflate.tif (Deflate + Predictor=2 horizontal, 32x32 RGB): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/predictor/predictor2_deflate.tif",
+        "tests/fixtures/predictor_oracle/predictor2_deflate.rgba",
+    );
+}
+
 test "scan_petes_book.tif (CCITT G4 marquee, 11059x15671): RGBA matches pinned ImageMagick oracle SHA-256" {
     // Marquee target for M4-E: 1-bit fax-style scan that drifts after
     // row 1030 in zigimg PR #321. ~1.3 MB compressed → ~693 MB RGBA

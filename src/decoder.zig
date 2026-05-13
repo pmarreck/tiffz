@@ -26,6 +26,7 @@ const compressions_lzw = @import("compressions/lzw.zig");
 const compressions_deflate = @import("compressions/deflate.zig");
 const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
 const compressions_ccitt_t6 = @import("compressions/ccitt_t6.zig");
+const predictors_mod = @import("predictors.zig");
 
 pub const Decoder = struct {
     allocator: Allocator,
@@ -103,14 +104,69 @@ pub const Decoder = struct {
     }
 
     /// Decode one strip into dest. Dispatches on the IFD's
-    /// Compression tag:
-    ///   1     (none)     — bytes copied verbatim from source
-    ///   32773 (PackBits) — TIFF 6.0 §9 RLE
-    ///   others           — UnsupportedCompression for now (M4+)
+    /// Compression tag, then reverses any predictor transform per
+    /// the Predictor tag (default 1 = no-op).
     ///
     /// Tiled layout is M6; photometric expansion is the consumer's
     /// job (raw decoded bytes are returned here).
     pub fn decodeStrip(
+        self: *Decoder,
+        ifd_index: usize,
+        strip_index: u32,
+        dest: []u8,
+        workspace: *Workspace,
+    ) errors.Error!usize {
+        const written = try self.decodeStripRaw(ifd_index, strip_index, dest, workspace);
+        try self.applyPredictor(ifd_index, strip_index, dest[0..written]);
+        return written;
+    }
+
+    /// Run the inverse Predictor transform over the just-decoded
+    /// strip bytes. No-op when Predictor=1 (the default). Reads
+    /// Predictor (317), PlanarConfiguration (284), ImageWidth (256),
+    /// SamplesPerPixel (277), BitsPerSample (258) from the IFD.
+    fn applyPredictor(self: *Decoder, ifd_index: usize, strip_index: u32, bytes: []u8) errors.Error!void {
+        const dir = try self.ifd(ifd_index);
+        const pred_raw = (try readScalarU16(dir.*, tags.predictor, self.endian)) orelse 1;
+        if (pred_raw == 1) return; // no-op fast path
+
+        const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
+        const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
+        const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+        const planar_raw = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse 1;
+        const planar: predictors_mod.PlanarConfig = @enumFromInt(planar_raw);
+
+        // BitsPerSample is technically per-sample; read the first
+        // value and assume uniform (M5 limitation).
+        var bps: u16 = 8;
+        if (dir.get(tags.bits_per_sample)) |bps_entry| {
+            var buf: [16]u8 = undefined;
+            const need: usize = @as(usize, bps_entry.field_type.elementBytes()) * @as(usize, bps_entry.count);
+            if (need > buf.len) return error.Malformed;
+            try ifd_mod.Ifd.readEntryValue(bps_entry.*, self.endian, self.source, buf[0..need]);
+            bps = header_mod.readU16(buf[0..2], self.endian);
+        }
+
+        // How many rows did THIS strip cover? RowsPerStrip clamped
+        // to remaining-rows, same logic as the codec branches above.
+        const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
+        const rps: u32 = if (rps_raw > length) length else rps_raw;
+        const remaining_rows: u32 = length - strip_index * rps;
+        const this_rows: u32 = @min(rps, remaining_rows);
+
+        try predictors_mod.applyInverse(
+            bytes,
+            predictors_mod.Predictor.fromU16(pred_raw),
+            width,
+            this_rows,
+            samples,
+            bps,
+            planar,
+        );
+    }
+
+    /// Internal: the codec dispatch without predictor application.
+    fn decodeStripRaw(
         self: *Decoder,
         ifd_index: usize,
         strip_index: u32,

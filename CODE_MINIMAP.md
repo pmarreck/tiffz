@@ -145,6 +145,15 @@ src/
                              framed). Uses the allyourcodebase/zlib dep
                              (community Zig wrapper around upstream C zlib,
                              zlib license; same dep validate ships).
+  predictors.zig             applyInverse reverses the TIFF Predictor tag
+                             (317) transform on post-codec strip bytes.
+                             Predictor=1 (none) is no-op; predictor=2
+                             (horizontal differencing) adds each sample to the
+                             previous same-channel sample in the row, wrapping
+                             mod 2^bits. 8-bit only in M5; 16-bit + floating-
+                             point predictor=3 deferred to M8 (DNG). Stride
+                             is samples_per_pixel for chunky planar, 1 for
+                             separate (per-plane strip).
   photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
                              pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
                              MinIsBlack, 2 RGB, 3 Palette}. Palette uses the
@@ -206,6 +215,12 @@ tests/
                              strip via RowsPerStrip=infinite). G3 1D modified
                              Huffman; oracle passes byte-exact.
     ccitt_g3_oracle/         Matching .rgba ground truth (~7.1 MB).
+    predictor/               Synthetic TIFFs generated via libtiff's tiffcp
+                             from a 32×32 plasma seed: predictor1_lzw.tif
+                             (LZW + no predictor), predictor2_lzw.tif
+                             (LZW + horizontal differencing), predictor2_deflate.tif
+                             (Deflate + horizontal differencing).
+    predictor_oracle/        Matching .rgba ground truth.
     ccitt_g4/                scan_petes_book.tif (11059×15671 MinIsWhite,
                              FillOrder=1 MSB-first, single strip via
                              RowsPerStrip=15671). The marquee target — fax-

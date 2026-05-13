@@ -134,7 +134,24 @@ public API design.
         rather than raw bytes). Test runs in seconds thanks to the
         O(1) lookup-table refactor shared with T.4.
   - [ ] (JPEG-in-TIFF deferred to M9.5 — needs sibling `jpegz`)
-- [ ] M5: Predictors (None / Horizontal / Floating-point).
+- [x] M5: Predictors (None / Horizontal) (2026-05-13).
+      src/predictors.zig: applyInverse handles Predictor tag 317 values
+      1 (none, no-op) and 2 (horizontal differencing). 8-bit-per-sample
+      fully supported in both chunky and separate planar configs;
+      stride = samples_per_pixel (chunky) or 1 (separate per-plane strip).
+      Wraps mod 256 via Zig's `+%` operator. Decoder.decodeStrip applies
+      the inverse via a new applyPredictor pass that runs after the
+      codec dispatch and before the strip is returned (predictor=1 is
+      a fast-path no-op). 3 real-fixture oracle tests pass byte-exact:
+      LZW+pred1, LZW+pred2, Deflate+pred2 (all 32×32 RGB from a
+      deterministic plasma seed). 6 unit tests cover the spec's
+      worked example plus wrap-around, multi-row boundary, separate
+      planar, 16-bit rejection, and floating-point rejection.
+      *Deferred:* 16-bit horizontal predictor (needs file-endian-aware
+      u16 reads — lands when 16-bit fixtures appear at M8 DNG).
+      Predictor=3 floating-point (TIFF Tech Note 3, byte-plane
+      interleaved differencing) returns UnsupportedPredictor; lands
+      with M8 DNG raw work.
 - [ ] M6: Tile-based layout. Refactor strip path to share with tile path.
       *Threading-convention design captured 2026-05-07* (validate +
       jpegz aligning on the same shape; see "Decided design choices"
