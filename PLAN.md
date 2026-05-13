@@ -120,9 +120,19 @@ public API design.
   - [ ] LZW
   - [ ] ZLib Deflate
   - [ ] CCITT T.4 (Group 3)
-  - [ ] CCITT T.6 (Group 4) — *target: pass on
-        `/Volumes/Fileserver/Pictures/scan from pete's book.tif`
-        (11059×15671) where zigimg PR #321 currently drifts after row 1030*
+  - [x] CCITT T.6 (Group 4) (2026-05-13). src/compressions/ccitt_t6.zig.
+        2D modified-modified-Huffman: pass / vertical (V0, VR1-3,
+        VL1-3) / horizontal mode codes; reference-line management
+        via changing-element lists; pair-step cursor (a0/b1/b2);
+        EOFB detection. Reuses T.4's modified-Huffman tables + bit
+        reader (made pub: Color, CodeKind, Match, BitReader,
+        matchCode).
+        **Marquee target passes byte-exact**: scan_petes_book.tif
+        (11059×15671, the file that drifts after row 1030 in zigimg
+        PR #321). Photometric-expanded RGBA hash-pinned to
+        SHA-256 4514c30c... (oracle is 693 MB so committed via hash
+        rather than raw bytes). Test runs in seconds thanks to the
+        O(1) lookup-table refactor shared with T.4.
   - [ ] (JPEG-in-TIFF deferred to M9.5 — needs sibling `jpegz`)
 - [ ] M5: Predictors (None / Horizontal / Floating-point).
 - [ ] M6: Tile-based layout. Refactor strip path to share with tile path.

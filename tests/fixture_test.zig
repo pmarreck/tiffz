@@ -160,6 +160,25 @@ fn assertOracleMatch(allocator: std.mem.Allocator, fixture_path: []const u8, ora
     try std.testing.expectEqualSlices(u8, expected, got);
 }
 
+/// Hash-pinned oracle for fixtures whose .rgba is too large to
+/// commit. Decodes + photometric-expands the fixture and compares
+/// the SHA-256 of the result to the pinned digest. Mismatch =
+/// decoder regression; regenerate by hashing the ImageMagick oracle
+/// output and updating the pinned digest.
+fn assertOracleHashMatch(
+    allocator: std.mem.Allocator,
+    fixture_path: []const u8,
+    expected_digest: [32]u8,
+) !void {
+    const got = try decodeFixtureToRgba(allocator, fixture_path);
+    defer allocator.free(got);
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(got);
+    var actual: [32]u8 = undefined;
+    hasher.final(&actual);
+    try std.testing.expectEqualSlices(u8, &expected_digest, &actual);
+}
+
 const FixtureProbe = struct {
     strip_count: u32,
     total_bytes: u64,
@@ -268,6 +287,25 @@ test "fax2d.tif (CCITT G3 1D, 1728x1082 MinIsWhite LSB-first): RGBA matches Imag
         std.testing.allocator,
         "tests/fixtures/ccitt_g3/fax2d.tif",
         "tests/fixtures/ccitt_g3_oracle/fax2d.rgba",
+    );
+}
+
+test "scan_petes_book.tif (CCITT G4 marquee, 11059x15671): RGBA matches pinned ImageMagick oracle SHA-256" {
+    // Marquee target for M4-E: 1-bit fax-style scan that drifts after
+    // row 1030 in zigimg PR #321. ~1.3 MB compressed → ~693 MB RGBA
+    // when expanded; oracle isn't committed (way too big) — pinned
+    // SHA-256 4514c30c… captured from a known-good `magick … RGBA:`
+    // run on 2026-05-13.
+    const expected_digest: [32]u8 = .{
+        0x45, 0x14, 0xc3, 0x0c, 0x83, 0xb6, 0x32, 0xe1,
+        0x7f, 0xff, 0xff, 0x95, 0xba, 0x72, 0xd4, 0x1e,
+        0x01, 0x97, 0xdd, 0x2d, 0xf9, 0x9c, 0xa7, 0x0d,
+        0x5e, 0xa4, 0xb3, 0x68, 0x47, 0xe1, 0x13, 0x7c,
+    };
+    try assertOracleHashMatch(
+        std.testing.allocator,
+        "tests/fixtures/ccitt_g4/scan_petes_book.tif",
+        expected_digest,
     );
 }
 

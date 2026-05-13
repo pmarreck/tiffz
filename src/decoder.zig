@@ -25,6 +25,7 @@ const compressions_packbits = @import("compressions/packbits.zig");
 const compressions_lzw = @import("compressions/lzw.zig");
 const compressions_deflate = @import("compressions/deflate.zig");
 const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
+const compressions_ccitt_t6 = @import("compressions/ccitt_t6.zig");
 
 pub const Decoder = struct {
     allocator: Allocator,
@@ -185,6 +186,48 @@ pub const Decoder = struct {
                     error.Malformed => compressions_lzw.decodeVariant(scratch, dest, .old_style) catch |e| break :blk e,
                     else => break :blk first_err,
                 };
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
+            tags.compression_ccitt_t6 => blk: {
+                // CCITT G4 / T.6 2D modified-modified-Huffman. No
+                // T4Options to honor; T6Options bit 1 = uncompressed
+                // mode (deferred). FillOrder applies same as T.4.
+                const t6_opts: u32 = (try readScalarU32(dir.*, tags.t6_options, self.endian)) orelse 0;
+                if ((t6_opts & 0x2) != 0) break :blk error.UnsupportedCompression; // uncompressed mode
+
+                const fill_raw = (try readScalarU16(dir.*, tags.fill_order, self.endian)) orelse 1;
+                const fill: compressions_ccitt_t6.FillOrder = switch (fill_raw) {
+                    1 => .msb_first,
+                    2 => .lsb_first,
+                    else => break :blk error.Malformed,
+                };
+
+                const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse {
+                    break :blk error.Malformed;
+                };
+                const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse {
+                    break :blk error.Malformed;
+                };
+                const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
+                const rps: u32 = if (rps_raw > length) length else rps_raw;
+                const remaining_rows: u32 = length - strip_index * rps;
+                const this_rows: u32 = @min(rps, remaining_rows);
+
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                if (got < byte_count) break :blk error.SourceShortRead;
+
+                const written = compressions_ccitt_t6.decode(
+                    self.allocator,
+                    scratch,
+                    dest,
+                    width,
+                    this_rows,
+                    fill,
+                ) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -407,10 +450,10 @@ test "decodeStrip: uncompressed RGB single strip" {
     try std.testing.expectEqualSlices(u8, &strip, dest[0..12]);
 }
 
-test "decodeStrip: compression=4 (CCITT G4, M4-E) rejected as Unsupported" {
+test "decodeStrip: compression=6 (OJPEG, never supported) rejected as Unsupported" {
     const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
     const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
-    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 }; // Compression = 4 (CCITT G4, not yet supported)
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00 }; // Compression = 6 (OJPEG, deprecated; per SPEC §3 we'll never support this)
     const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00 };
     const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 };
 

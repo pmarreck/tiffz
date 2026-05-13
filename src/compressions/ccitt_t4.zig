@@ -112,11 +112,17 @@ fn decodeRow(reader: *BitReader, row_dest: []u8, width: u32) errors.Error!void {
     }
 }
 
-const Color = enum { white, black };
+/// Color of the current run being decoded. White rows always start
+/// with a (possibly zero-length) white run; runs alternate after.
+/// T.6 (CCITT G4) shares this enum and the underlying tables.
+pub const Color = enum { white, black };
 
-const CodeKind = enum { terminating, makeup, extended_makeup };
+/// Kind of code matched by `matchCode`. Terminating ends a run;
+/// makeup needs another code following (terminating or another
+/// makeup of the same color).
+pub const CodeKind = enum { terminating, makeup, extended_makeup };
 
-const Match = struct {
+pub const Match = struct {
     run: u32,
     kind: CodeKind,
 };
@@ -167,7 +173,10 @@ fn buildLookupForColor(comptime color: Color) [14][1 << 13]Lookup {
 /// Read bits one at a time, accumulating MSB-first into a u16, and
 /// look up against precomputed (len, acc)-keyed tables. Returns the
 /// matched run + kind, or Malformed if no code matches within 13 bits.
-fn matchCode(reader: *BitReader, color: Color) errors.Error!Match {
+/// Pub so T.6 (CCITT G4) horizontal-mode decoder can reuse — the
+/// modified-Huffman white/black code tables are identical between
+/// T.4 1D and T.6.
+pub fn matchCode(reader: *BitReader, color: Color) errors.Error!Match {
     var acc: u16 = 0;
     var len: u4 = 0;
     const table_ptr: *const [14][1 << 13]Lookup = switch (color) {
@@ -201,18 +210,18 @@ fn setBitsBlack(row: []u8, start: u32, count: u32) void {
     }
 }
 
-const BitReader = struct {
+pub const BitReader = struct {
     data: []const u8,
     byte_pos: usize,
     bit_pos: u3,
     fill_order: FillOrder,
 
-    fn init(data: []const u8, fill_order: FillOrder) BitReader {
+    pub fn init(data: []const u8, fill_order: FillOrder) BitReader {
         return .{ .data = data, .byte_pos = 0, .bit_pos = 0, .fill_order = fill_order };
     }
 
     /// Read one bit. Returns the bit's value (0 or 1). Advances the cursor.
-    fn readBit(self: *BitReader) errors.Error!u1 {
+    pub fn readBit(self: *BitReader) errors.Error!u1 {
         if (self.byte_pos >= self.data.len) return error.SourceTooShort;
         const byte = self.data[self.byte_pos];
         const bit_idx: u3 = switch (self.fill_order) {

@@ -127,6 +127,16 @@ src/
                              test in ccitt_t4.zig. Dotfile so it's
                              unobtrusive in directory listings; same bytes
                              as tests/fixtures/ccitt_g3/fax2d.tif.
+    ccitt_t6.zig             Compression=4: CCITT Group 4 (T.6) 2D modified-
+                             modified-Huffman fax codec. Per-row decode via
+                             three mode codes (Pass `0001`, Vertical V0/VR1-3/
+                             VL1-3, Horizontal `001` followed by two T.4-style
+                             runs); reference-line management via
+                             changing-element lists; pair-step cursor
+                             (a0/b1/b2); EOFB (two consecutive 12-bit EOLs)
+                             detection. Reuses T.4's exposed BitReader,
+                             matchCode, Color, CodeKind, and modified-Huffman
+                             tables.
     deflate.zig              Compression=8 (Deflate) / 32946 (AdobeDeflate):
                              zlib-framed deflate per TIFF/EP + TIFF Technical
                              Note 2. Both compression codes mean the same
@@ -196,6 +206,14 @@ tests/
                              strip via RowsPerStrip=infinite). G3 1D modified
                              Huffman; oracle passes byte-exact.
     ccitt_g3_oracle/         Matching .rgba ground truth (~7.1 MB).
+    ccitt_g4/                scan_petes_book.tif (11059×15671 MinIsWhite,
+                             FillOrder=1 MSB-first, single strip via
+                             RowsPerStrip=15671). The marquee target — fax-
+                             style scan that drifts after row 1030 in zigimg
+                             PR #321. ~1.3 MB compressed → ~693 MB RGBA
+                             expanded. Oracle pinned via SHA-256 in
+                             fixture_test.zig instead of committing the 693
+                             MB raw .rgba.
 audit/
   coverage_matrix.tsv        Empirical TIFF variant matrix from real-world corpus
   AUDIT_SUMMARY.md           Analysis + gap insights for fixture generation per milestone
