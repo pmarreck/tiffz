@@ -2,7 +2,7 @@
     .name = .tiffz,
     .version = "0.1.0",
     .fingerprint = 0x4373ea0a0149ebaa,
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // zlib — used for compression=8 (Deflate) and compression=32946
         // (AdobeDeflate, same algorithm). The community Zig wrapper around

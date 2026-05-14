@@ -71,14 +71,14 @@ pub fn decode(
 
     // Reference line changing-elements list. Reused row-to-row;
     // capacity grows as needed.
-    var ref = std.ArrayListUnmanaged(u32){};
+    var ref: std.ArrayListUnmanaged(u32) = .empty;
     defer ref.deinit(allocator);
 
     // Initial reference is all-white = no changing elements.
     // Sentinel: append `width` to terminate b1/b2 lookups.
     ref.append(allocator, width) catch return error.OutOfMemory;
 
-    var coding = std.ArrayListUnmanaged(u32){};
+    var coding: std.ArrayListUnmanaged(u32) = .empty;
     defer coding.deinit(allocator);
 
     var reader = t4.BitReader.init(src, fill_order);

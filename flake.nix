@@ -5,11 +5,10 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
 
-    # Pin Zig explicitly. nixpkgs-unstable ships 0.16.0 already (April 2026),
-    # but Peter's project portfolio targets 0.15.x — the documented
-    # adoption strategy is "wait for 0.16.1". zig-overlay exposes every
-    # release as a named attribute. Update the version below when the
-    # whole portfolio moves.
+    # Pin Zig explicitly. zig-overlay exposes every release as a named
+    # attribute. Update the version below when the whole portfolio moves.
+    # tiffz upgraded to Zig 0.16.0 as part of the 2026-05-13 portfolio
+    # 0.15 -> 0.16 sweep.
     zig-overlay = {
       url = "github:mitchellh/zig-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -22,7 +21,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
         isDarwin = pkgs.stdenv.isDarwin;
         isLinux = pkgs.stdenv.isLinux;
-        zig = zig-overlay.packages.${system}."0.15.2";
+        zig = zig-overlay.packages.${system}."0.16.0";
 
         # On Linux, we use a musl target explicitly. Two reasons:
         # (1) zig-overlay ships vanilla Zig (no Nix-sandbox patches),
@@ -62,7 +61,7 @@
         #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-69D2hMUHER3UmXFRGRqmr+C2Q+K/KoMD4y2zXZhlWU4=";
+        zigDepsHash = "sha256-VDoUXB3ufTFgnxVxZdPT8nerUuWml+XYgfdXMR0NN6o=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";
@@ -162,7 +161,7 @@
         # per SPEC.md Appendix A.
         devShells.default = pkgs.mkShell {
           buildInputs = [
-            # Core build (Zig 0.15.2 pinned via zig-overlay)
+            # Core build (Zig 0.16.0 pinned via zig-overlay)
             zig
             pkgs.git
 

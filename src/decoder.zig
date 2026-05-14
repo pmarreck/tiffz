@@ -53,7 +53,7 @@ pub const Decoder = struct {
         const h = try header_mod.parse(source);
         if (h.bigtiff) return error.UnsupportedTagType; // M7
 
-        var ifds: std.ArrayListUnmanaged(Ifd) = .{};
+        var ifds: std.ArrayListUnmanaged(Ifd) = .empty;
         errdefer ifds.deinit(allocator);
 
         var ifd0 = try ifd_mod.parse(allocator, source, h.endian, h.ifd0_offset, limits);

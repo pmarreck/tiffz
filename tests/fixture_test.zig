@@ -16,13 +16,15 @@ const std = @import("std");
 const tiffz = @import("tiffz");
 
 fn loadFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const stat = try file.stat();
+    const io = std.testing.io;
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
     const buf = try allocator.alloc(u8, @intCast(stat.size));
     errdefer allocator.free(buf);
-    const got = try file.readAll(buf);
-    if (got != buf.len) return error.SourceShortRead;
+    var read_buf: [4096]u8 = undefined;
+    var file_reader = file.reader(io, &read_buf);
+    try file_reader.interface.readSliceAll(buf);
     return buf;
 }
 

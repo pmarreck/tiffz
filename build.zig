@@ -30,12 +30,12 @@ pub fn build(b: *std.Build) void {
     const zlib_lib = zlib_dep.artifact("z");
     lib_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
 
+    lib_module.linkLibrary(zlib_lib);
     const lib = b.addLibrary(.{
         .name = "tiffz",
         .linkage = .static,
         .root_module = lib_module,
     });
-    lib.linkLibrary(zlib_lib);
     b.installArtifact(lib);
 
     // Expose a named module for downstream Zig consumers:
@@ -62,7 +62,7 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic" },
     });
     cli.root_module.addIncludePath(b.path("include"));
-    cli.linkLibrary(lib);
+    cli.root_module.linkLibrary(lib);
     b.installArtifact(cli);
     const install_cli = b.addInstallArtifact(cli, .{});
 
@@ -77,8 +77,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     unit_tests_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
+    unit_tests_module.linkLibrary(zlib_lib);
     const unit_tests = b.addTest(.{ .root_module = unit_tests_module });
-    unit_tests.linkLibrary(zlib_lib);
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
     // --- CLI integration tests (spawn the CLI binary, assert output) ---
@@ -102,8 +102,8 @@ pub fn build(b: *std.Build) void {
     });
     fixture_tests_module.addImport("tiffz", lib_module);
     fixture_tests_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
+    fixture_tests_module.linkLibrary(zlib_lib);
     const fixture_tests = b.addTest(.{ .root_module = fixture_tests_module });
-    fixture_tests.linkLibrary(zlib_lib);
     const run_fixture_tests = b.addRunArtifact(fixture_tests);
 
     const test_step = b.step("test", "Run unit, CLI, and fixture tests");
