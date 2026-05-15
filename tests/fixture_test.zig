@@ -81,7 +81,7 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
         var buf: [16]u8 = undefined;
         const need: usize = @as(usize, bps_entry.field_type.elementBytes()) * @as(usize, bps_entry.count);
         if (need > buf.len) return error.Malformed;
-        try tiffz.ifd.Ifd.readEntryValue(bps_entry.*, dec.endian, src, buf[0..need]);
+        try tiffz.ifd.Ifd.readEntryValue(bps_entry.*, dec.endian, src, dir.offset_width, buf[0..need]);
         bits_per_sample = tiffz.header.readU16(buf[0..2], dec.endian);
     }
 
@@ -96,7 +96,7 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
         const need_bytes: usize = @as(usize, expected_count) * 2;
         const raw = try allocator.alloc(u8, need_bytes);
         defer allocator.free(raw);
-        try tiffz.ifd.Ifd.readEntryValue(cmap_entry.*, dec.endian, src, raw);
+        try tiffz.ifd.Ifd.readEntryValue(cmap_entry.*, dec.endian, src, dir.offset_width, raw);
         const cmap16 = try allocator.alloc(u16, expected_count);
         for (cmap16, 0..) |*v, i| {
             v.* = tiffz.header.readU16(raw[i * 2 ..][0..2], dec.endian);
@@ -311,7 +311,7 @@ fn decodeAllStrips(allocator: std.mem.Allocator, fixture_path: []const u8) !Fixt
         const n = try dec.decodeStrip(0, i, scratch, &ws);
         total += n;
     }
-    return .{ .strip_count = sbc_entry.count, .total_bytes = total };
+    return .{ .strip_count = @intCast(sbc_entry.count), .total_bytes = total };
 }
 
 test "rgb-3c-8b.tiff: 157x151 RGB, multi-strip uncompressed" {
@@ -453,6 +453,49 @@ test "deflate-last-strip.tiff (Deflate, 500x500 MinIsBlack, little-endian): RGBA
         std.testing.allocator,
         "tests/fixtures/deflate/deflate-last-strip.tiff",
         "tests/fixtures/deflate_oracle/deflate-last-strip.rgba",
+    );
+}
+
+test "bali.btf (BigTIFF + LZW, 725x489 palette, multi-strip with LONG8 offsets): RGBA matches ImageMagick oracle" {
+    // Stresses the BigTIFF + compressed path with an out-of-line
+    // LONG8 StripOffsets array (45 strips × 8 bytes = 360 bytes,
+    // far beyond the 8-byte inline cap). LZW codec + palette
+    // photometric + ColorMap out-of-line read all go through the
+    // BigTIFF entry/value resolver.
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/bigtiff/bali.btf",
+        "tests/fixtures/bigtiff_oracle/bali.rgba",
+    );
+}
+
+test "rgb-jpeg.tif (Compression=7 JPEG-in-TIFF, 157x151 RGB, JPEGTables Mode 2): RGBA matches ImageMagick oracle" {
+    // ImageMagick-generated JPEG-in-TIFF fixture. Photometric=RGB (2),
+    // single strip, JPEGTables (tag 347) carries the shared DQT/DHT
+    // headers (TIFF Tech Note 2 Mode 2 — the dominant real-world
+    // variant). Decoder must splice JPEGTables + strip bytes before
+    // handing to jpegz. JPEG is lossy, so the byte-exact assertion
+    // works because both tiffz and the magick oracle route through
+    // libjpeg-turbo internally — when jpegz Phase 2 (cleanroom) lands,
+    // this oracle becomes the regression gate that the cleanroom must
+    // also satisfy.
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/jpeg/rgb-jpeg.tif",
+        "tests/fixtures/jpeg_oracle/rgb-jpeg.rgba",
+    );
+}
+
+test "rgb-3c-8b.btf (BigTIFF, 157x151 RGB, LONG8 StripOffsets): RGBA matches ImageMagick oracle" {
+    // Produced via `tiffcp -8 -c none rgb-3c-8b.tiff rgb-3c-8b.btf`.
+    // Magic = 0x002B (BigTIFF), OffsetSize = 8, StripOffsets type 16 (LONG8),
+    // StripByteCounts type 3 (SHORT). Validates the whole BigTIFF wire path:
+    // 16-byte header, u64 entry_count, 20-byte entries with [8]u8 slot,
+    // 8-byte inline-fit cap, LONG8 array-element reads.
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/bigtiff/rgb-3c-8b.btf",
+        "tests/fixtures/bigtiff_oracle/rgb-3c-8b.rgba",
     );
 }
 

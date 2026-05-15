@@ -1,0 +1,16 @@
+.{
+    .name = .jpegz,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "include",
+        "tests",
+        "LICENSE",
+        "README.md",
+    },
+    .fingerprint = 0xaaef54e4e0b0d6b2,
+    .dependencies = .{},
+}

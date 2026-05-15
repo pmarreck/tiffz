@@ -21,6 +21,7 @@ pub const tile_width: u16 = 322;             // 0x0142
 pub const tile_length: u16 = 323;            // 0x0143
 pub const tile_offsets: u16 = 324;           // 0x0144
 pub const tile_byte_counts: u16 = 325;       // 0x0145
+pub const jpeg_tables: u16 = 347;            // 0x015B; TIFF TN2 Mode 2 — shared JPEG abbreviated table datastream
 
 /// Compression scheme codes (tag 259).
 pub const compression_none: u16 = 1;

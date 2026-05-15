@@ -7,17 +7,13 @@ const std = @import("std");
 fn cliPath(allocator: std.mem.Allocator) ![]const u8 {
     // build.zig installs to <build-out>/bin/tiffz. The Zig test
     // runner runs from the build root, so zig-out/bin/tiffz is the
-    // canonical path.
-    const sentinel = std.Io.Dir.cwd().realPathFileAlloc(
-        std.testing.io,
-        "zig-out/bin/tiffz",
-        allocator,
-    ) catch return error.CliBinaryNotFound;
-    // realPathFileAlloc returns [:0]u8; the [*:0] sentinel is owned by
-    // the same allocation, so we can hand back the sentinel-less slice
-    // for our purposes but caller must free the original (slice covers
-    // the same allocation).
-    return sentinel;
+    // canonical path. Use dupe to return a regular []u8 — earlier
+    // attempts used `realPathFileAlloc` which returns `[:0]u8`,
+    // then implicitly casts to []const u8 — but the debug allocator
+    // rejects the free as "Invalid free" because the slice length
+    // is short by 1 byte vs the original allocation (the sentinel
+    // byte). Sticking to allocator.dupe avoids the mismatch entirely.
+    return allocator.dupe(u8, "zig-out/bin/tiffz");
 }
 
 fn runCli(args: []const []const u8) !std.process.RunResult {

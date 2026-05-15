@@ -67,15 +67,24 @@ src/
                              fromMmap / fromFile / fromBufferedReader stay as M5+
                              work since fromBuffer covers all M3-M4 needs.
   header.zig                 Header parser: II/MM byte order, magic 42 (classic) +
-                             magic 43 (BigTIFF, structurally parsed but rejected at
-                             Decoder level until M7), endian-aware u16/u32/u64 readers
+                             magic 43 (BigTIFF, structurally parsed; M7 unlocks the
+                             rest of the path), endian-aware u16/u32/u64 readers
                              reused by ifd.zig + decoder.zig
-  ifd.zig                    Classic-TIFF IFD parser: u16 entry_count + 12-byte
-                             Entries + u32 next_offset. FieldType enum (BYTE..DOUBLE
-                             + unknown). Ifd.get(tag) lookup. readEntryValue handles
-                             inline-vs-offset (≤4-byte values inline; larger via
-                             u32 offset → Source.read_at). Limits enforced on
-                             max_tags_per_ifd + max_tag_value_bytes.
+  ifd.zig                    Unified IFD parser for classic TIFF + BigTIFF (M7).
+                             OffsetWidth enum (classic = 32-bit offsets / 4-byte
+                             inline slot; big = 64-bit offsets / 8-byte slot)
+                             threads from the header through parse() into the Ifd
+                             struct + readEntryValue. Wire-format differences (u16
+                             vs u64 entry_count, 12 vs 20 byte entries, u32 vs u64
+                             next-IFD pointer) live inside parse(); Entry is
+                             uniform (count: u64, raw_value_or_offset: [8]u8 —
+                             classic zero-pads the upper 4 bytes). FieldType enum
+                             covers BYTE..DOUBLE plus BigTIFF additions LONG8 (16),
+                             SLONG8 (17), IFD8 (18). Ifd.get(tag) is a linear scan
+                             (small IFDs). readEntryValue handles inline-vs-offset
+                             with inline cap = offset_width.inlineCap() and pointer
+                             width = offset_width.pointerBytes(). Limits enforced
+                             on max_tags_per_ifd + max_tag_value_bytes.
   tags.zig                   Named TIFF 6.0 tag constants (the M3 set: ImageWidth,
                              ImageLength, BitsPerSample, Compression, Photometric,
                              StripOffsets/ByteCounts, SamplesPerPixel, RowsPerStrip,
@@ -145,6 +154,18 @@ src/
                              framed). Uses the allyourcodebase/zlib dep
                              (community Zig wrapper around upstream C zlib,
                              zlib license; same dep validate ships).
+    jpeg.zig                 Compression=7 (JPEG-in-TIFF, TIFF Tech Note 2).
+                             Thin shim over jpegz.internal.wrapperDecode
+                             (the libjpeg-turbo path within jpegz's Phase 1
+                             wrapper — bypasses the cleanroom dispatch because
+                             jpegz's baseline cleanroom isn't yet byte-exact
+                             on RGB-marked baseline + abbreviated/spliced
+                             streams). Handles TN2 Mode 1 (no JPEGTables tag)
+                             via direct decode, and Mode 2 (JPEGTables tag 347
+                             present) by splicing tables-sans-EOI ++ strip-
+                             sans-SOI into one self-contained JPEG stream.
+                             Photometric=RGB (2) only in M9.5; YCbCr (6)
+                             defers to M9 (Pro photometrics).
   predictors.zig             applyInverse reverses the TIFF Predictor tag
                              (317) transform on post-codec strip bytes.
                              Predictor=1 (none) is no-op; predictor=2
@@ -238,6 +259,20 @@ tests/
                              they use TileOffsets/TileByteCounts (the proper
                              tiled-TIFF tags) rather than aliased StripOffsets.
     tiled_oracle/            Matching .rgba ground truth.
+    jpeg/                    M9.5 JPEG-in-TIFF fixtures: rgb-jpeg.tif
+                             (157×151 RGB, single strip, JPEGTables Mode 2,
+                             ImageMagick-generated). Tests the strip+
+                             JPEGTables splice + libjpeg decode round-trip.
+    jpeg_oracle/             Matching .rgba ground truth.
+    bigtiff/                 M7 BigTIFF fixtures generated via `tiffcp -8`:
+                             rgb-3c-8b.btf (157×151 RGB uncompressed, LONG8
+                             StripOffsets) and bali.btf (725×489 LZW palette,
+                             LONG8 StripOffsets out-of-line — 45 strips × 8 bytes
+                             = 360 bytes via u64 pointer; LONG StripByteCounts
+                             out-of-line). Both exercise the 16-byte BigTIFF
+                             header, u64 entry_count, 20-byte entries, and
+                             8-byte inline-fit cap.
+    bigtiff_oracle/          Matching .rgba ground truth.
     ccitt_g4/                scan_petes_book.tif (11059×15671 MinIsWhite,
                              FillOrder=1 MSB-first, single strip via
                              RowsPerStrip=15671). The marquee target — fax-

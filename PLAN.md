@@ -189,33 +189,73 @@ public API design.
       globals, no env vars, no auto-detection on the default path.
       C ABI mirrors with `tiffz_decode_all_ex(opts*)` plus an inline
       default-options wrapper.
-- [ ] M7: BigTIFF — comptime offset-width abstraction.
+- [x] **M7: BigTIFF — runtime offset-width abstraction** (2026-05-15).
+      The IFD parser branches on a new `OffsetWidth { classic, big }`
+      enum threaded through from the header. `Entry` is now uniform
+      across both variants — `count: u64`, `raw_value_or_offset: [8]u8`
+      (classic zero-pads the upper 4 bytes), eliminating any sum-type
+      ripple through consumers. Wire-format differences (u16 vs u64
+      entry_count, 12 vs 20 byte entries, u32 vs u64 next-IFD pointer)
+      stay confined to `ifd.parse`. `readEntryValue` and
+      `readArrayElementU64` (renamed/widened from U32) take an
+      `OffsetWidth` parameter; inline-fit cap = 4 (classic) or 8 (big).
+      Three new FieldType variants land: long8 (16), slong8 (17),
+      ifd8 (18) — each 8 bytes/elem. `Decoder.open` drops the M7
+      reject and passes `h.bigtiff ? .big : .classic` to the parser.
+      Two real-fixture oracle tests pass byte-exact:
+        • rgb-3c-8b.btf — uncompressed RGB, LONG8 StripOffsets
+          (inline-fit because 9 strips × 8 bytes = 72 → out-of-line
+          via u64 pointer); StripByteCounts SHORT inline.
+        • bali.btf — LZW palette, LONG8 StripOffsets out-of-line
+          (45 × 8 = 360 bytes); LONG StripByteCounts out-of-line.
+      The codec dispatch (LZW + photometric + ColorMap pickup) all
+      runs unchanged on BigTIFF metadata — the abstraction held.
+      *Why runtime over comptime monomorphization* (SPEC.md hinted at
+      comptime): the IFD parser isn't a hot path — codec dispatch is.
+      A comptime split would double the parser binary footprint to
+      save one branch per tag lookup. Runtime branch keeps a single
+      code path and a single test matrix.
 - [ ] M8: DNG — predictor 3, CFA tags, opcode list parser.
       *Schedule risk resolved 2026-05-06:* jpegz M1.4b shipped with a
       1..16 precision range fix that covers DNG's 14-bit case (per
       `inbox/2026-05-06-jpegz-reply-m14b-shipped.md`). Lossless raw
       decode path is ready when we reach M8.
 - [ ] M9: Pro photometrics — CMYK, YCbCr, CIE Lab.
-- [ ] M9.5: JPEG-in-TIFF (compression=7) once `jpegz` sibling is ready.
-      *Status (2026-05-06):* jpegz Phase 1 + M1.4b + M1.5b/c shipped;
-      baseline / extended / progressive / lossless 1..16-bit /
-      arithmetic SOF9-11 all available via
-      `jpegz_decode(uint8_t*, size_t)`. JPEGTables (tag 347) splice
-      recipe lives in jpegz at
-      `2026-05-06-jpegz-integration-recipe.md` (`spliceJpegTables`:
-      tables-EOI ++ strip-SOI = self-contained JPEG; ~50-byte memcpy
-      per strip, negligible vs entropy decode). M1.5b/c provides
-      codec-level integrity findings (Huffman corruption, malformed
-      APPn / trailing-after-EOI in JPEGTables) we can surface before
-      a strip even reaches the decoder. No further blockers from
-      jpegz's side.
-      *Implementation detail captured 2026-05-06:* `jpegz_validate`'s
-      `findings[i].offset` is relative to the buffer handed in. When
-      we hand it a spliced (tables ++ strip) buffer, subtract
-      `spliced_table_prefix_len` from each finding's offset to recover
-      the strip-relative offset, then add the strip's TIFF offset to
-      get the absolute file position. Build that into the integration
-      shim's finding-translation step.
+- [x] **M9.5: JPEG-in-TIFF (compression=7)** (2026-05-16).
+      `src/compressions/jpeg.zig` calls into jpegz via
+      `jpegz.internal.wrapperDecode` (the libjpeg-turbo path).
+      Photometric=RGB (2) only — YCbCr (6) defers to M9 where the
+      photometric expansion grows YCbCr→RGB. Both TIFF Tech Note 2
+      modes handled: Mode 1 (no JPEGTables) passes the strip stream
+      straight through; Mode 2 (JPEGTables present) splices
+      tables-sans-EOI ++ strip-sans-SOI into one self-contained
+      JPEG. Real-fixture oracle: rgb-jpeg.tif (157×151 RGB, single
+      strip, JPEGTables Mode 2) decodes byte-exact against the
+      magick RGBA oracle.
+      *Why wrapperDecode and not plain jpegz.decode:* jpegz's
+      baseline cleanroom (~199/276 byte-perfect on libjpeg corpus;
+      the rest within ≤2 LSB) is not byte-exact on our RGB-marked
+      baseline + abbreviated/spliced bitstream. Pinning the libjpeg
+      wrapper guarantees agreement with the magick oracle today;
+      when jpegz Phase 2 cleanroom reaches byte-parity on these
+      inputs, this swaps back to plain `jpegz.decode` with no
+      behavioral change. Sent jpegz an inbox note with the spliced-
+      stream fixture so they can repro.
+      *Dependency wiring:* jpegz pulled in via `build.zig.zon` as
+      `git+https://github.com/pmarreck/jpegz#<commit>` (pinned),
+      added a 5-line `build.zig.zon` upstream so it could be
+      referenced as a Zig package. tiffz passes `-Dwith-charls=false`
+      to skip the JPEG-LS C++ compile (also added that gate
+      upstream). flake.nix gains libjpeg-turbo + openjpeg buildInputs;
+      `OPENJPEG_INC` env var threads the versioned include path
+      (`include/openjpeg-2.5/`) through to jpegz's `@cImport`.
+      *Follow-ups:*
+        - YCbCr photometric (6) support — needs YCbCr→RGB at M9.
+        - Tile-based JPEG-in-TIFF (current fixture is strip-based;
+          the codec dispatch already routes through `decodeBytes`
+          for both, but no tiled fixture is tested yet).
+        - Swap to plain `jpegz.decode` when jpegz Phase 2 cleanroom
+          handles RGB-marked baseline + spliced abbreviated streams.
       *Hash-pin floor captured 2026-05-07:* jpegz's corpus soak hit
       99.5% pixel-perfect against libjpeg-turbo (3828/3848) on
       baseline JPEGs after five cleanroom-internal fixes shipped that

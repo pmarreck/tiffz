@@ -61,7 +61,7 @@
         #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-VDoUXB3ufTFgnxVxZdPT8nerUuWml+XYgfdXMR0NN6o=";
+        zigDepsHash = "sha256-lRaYRf4bq/wzUfY7Z6JXx13QTBu0ACVFJ8jZIxCx1E8=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";
@@ -74,12 +74,19 @@
           outputHashAlgo = "sha256";
           outputHash = zigDepsHash;
 
+          # Zig 0.16 changed the fetched-package cache location: deps
+          # land in `./zig-pkg/` (project-local) instead of
+          # `$ZIG_GLOBAL_CACHE_DIR/p/`. Capture the local zig-pkg into
+          # $out so the consumer can stage it back into its own source
+          # tree before running zig build.
           buildPhase = ''
             export HOME=$TMPDIR
-            export ZIG_GLOBAL_CACHE_DIR=$out
+            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
             export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
             zig build --fetch=all
+            mkdir -p $out
+            cp -r zig-pkg $out/zig-pkg
           '';
 
           dontInstall = true;
@@ -101,18 +108,43 @@
               pkgs.apple-sdk
             ];
 
+          # jpegz Phase 1 wraps libjpeg-turbo (baseline / progressive /
+          # lossless JPEG for Compression=7 and DNG raw) + openjpeg (JPEG
+          # 2000, currently unused by tiffz but linked unconditionally by
+          # jpegz). charls (JPEG-LS) is gated off via -Dwith-charls=false
+          # at the build.zig level since no TIFF compression scheme needs
+          # JPEG-LS.
+          buildInputs = [ pkgs.libjpeg pkgs.openjpeg ];
+
           dontConfigure = true;
 
           buildPhase = ''
             export HOME="$TMPDIR"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
-            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
-            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            # Stage pre-fetched packages into Zig 0.16's project-local
+            # `./zig-pkg/` (see zigDeps comment for the layout change).
+            cp -r ${zigDeps}/zig-pkg ./zig-pkg
+            chmod -R u+w ./zig-pkg
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
-            zig build --prefix $out -Doptimize=ReleaseFast ${zigTargetFlag}
+            ${pkgs.lib.optionalString isLinux ''
+              # Linux build target is x86_64-linux-musl (cross from
+              # glibc-built nix builder → musl-targeted Zig binary).
+              # Nix's cc-wrapper sets NIX_CFLAGS_COMPILE / NIX_LDFLAGS
+              # to glibc-relative system paths; those leak into Zig's
+              # C compiler invocation for vendored C deps (zlib here)
+              # and end up shadowing the in-tree zconf.h with a glibc
+              # one that doesn't exist. Unset before invoking zig to
+              # restore a clean cross-toolchain environment.
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
+            ''}
+            zig build --prefix $out -Doptimize=ReleaseFast ${zigTargetFlag} \
+              -Dlibjpeg-include=${pkgs.libjpeg.dev}/include \
+              -Dlibjpeg-lib=${pkgs.libjpeg.out}/lib \
+              -Dopenjpeg-include=${pkgs.openjpeg.dev}/include/openjpeg-2.5 \
+              -Dopenjpeg-lib=${pkgs.openjpeg.out}/lib
           '';
 
           dontInstall = true;
@@ -133,19 +165,29 @@
               pkgs.apple-sdk
             ];
 
+          buildInputs = [ pkgs.libjpeg pkgs.openjpeg ];
+
           dontConfigure = true;
 
           buildPhase = ''
             export HOME="$TMPDIR"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
-            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
-            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            cp -r ${zigDeps}/zig-pkg ./zig-pkg
+            chmod -R u+w ./zig-pkg
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
+            ${pkgs.lib.optionalString isLinux ''
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
+            ''}
             export TERM=dumb
-            timeout 600 zig build test ${zigTargetFlag} 2>&1 || {
+            timeout 600 zig build test ${zigTargetFlag} \
+              -Dlibjpeg-include=${pkgs.libjpeg.dev}/include \
+              -Dlibjpeg-lib=${pkgs.libjpeg.out}/lib \
+              -Dopenjpeg-include=${pkgs.openjpeg.dev}/include/openjpeg-2.5 \
+              -Dopenjpeg-lib=${pkgs.openjpeg.out}/lib \
+              2>&1 || {
               echo "Tests failed or timed out after 10 minutes"
               exit 1
             }
@@ -164,6 +206,10 @@
             # Core build (Zig 0.16.0 pinned via zig-overlay)
             zig
             pkgs.git
+
+            # JPEG codec libraries (via jpegz Phase 1 wrapper)
+            pkgs.libjpeg     # libjpeg-turbo: baseline / progressive / lossless
+            pkgs.openjpeg    # JPEG 2000 (linked by jpegz but unused by tiffz)
 
             # TIFF fixture / oracle toolchain (SPEC §4 verification oracles + §A fixture recipes)
             pkgs.libtiff       # tiffcp, tiffinfo, tiff2rgba, tiffmedian, raw2tiff, tiffdump
@@ -185,6 +231,14 @@
             pkgs.darwin.cctools
             pkgs.apple-sdk
           ];
+
+          # openjpeg.h is nested under include/openjpeg-2.5/ in nixpkgs;
+          # tiffz/build.zig reads OPENJPEG_INC and forwards it via
+          # -Dopenjpeg-include to the jpegz dep so Zig's bundled clang
+          # finds the header during native dev builds. Nix sandbox
+          # buildPhase passes the same path explicitly, so dev + CI
+          # stay symmetric.
+          OPENJPEG_INC = "${pkgs.openjpeg.dev}/include/openjpeg-2.5";
 
           shellHook = ''
             echo "tiffz dev shell"

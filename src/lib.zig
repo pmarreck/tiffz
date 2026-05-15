@@ -21,6 +21,7 @@ pub const compressions = struct {
     pub const deflate = @import("compressions/deflate.zig");
     pub const ccitt_t4 = @import("compressions/ccitt_t4.zig");
     pub const ccitt_t6 = @import("compressions/ccitt_t6.zig");
+    pub const jpeg = @import("compressions/jpeg.zig");
 };
 pub const decoder = @import("decoder.zig");
 pub const version = @import("version.zig");
