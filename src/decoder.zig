@@ -189,7 +189,7 @@ pub const Decoder = struct {
         const rps: u32 = if (rps_raw > length) length else rps_raw;
         const remaining_rows: u32 = length - strip_index * rps;
         const this_rows: u32 = @min(rps, remaining_rows);
-        try predictors_mod.applyInverse(bytes, meta.predictor, width, this_rows, meta.samples, meta.bps, meta.planar);
+        try predictors_mod.applyInverse(bytes, meta.predictor, width, this_rows, meta.samples, meta.bps, meta.planar, self.endian, self.allocator);
     }
 
     /// Run the inverse Predictor transform over a just-decoded tile.
@@ -201,7 +201,7 @@ pub const Decoder = struct {
         const dir = try self.ifd(ifd_index);
         const tile_w = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
         const tile_h = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
-        try predictors_mod.applyInverse(bytes, meta.predictor, tile_w, tile_h, meta.samples, meta.bps, meta.planar);
+        try predictors_mod.applyInverse(bytes, meta.predictor, tile_w, tile_h, meta.samples, meta.bps, meta.planar, self.endian, self.allocator);
     }
 
     /// Per-chunk extent for the shared codec dispatch.

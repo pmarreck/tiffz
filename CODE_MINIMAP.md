@@ -171,10 +171,19 @@ src/
                              Predictor=1 (none) is no-op; predictor=2
                              (horizontal differencing) adds each sample to the
                              previous same-channel sample in the row, wrapping
-                             mod 2^bits. 8-bit only in M5; 16-bit + floating-
-                             point predictor=3 deferred to M8 (DNG). Stride
-                             is samples_per_pixel for chunky planar, 1 for
-                             separate (per-plane strip).
+                             mod 2^bits — 8-bit only (16-bit deferred to a
+                             follow-up). Predictor=3 (floating-point, M8 / DNG)
+                             implements TIFF Tech Note 3: byte-plane
+                             interleaved horizontal byte-differencing inverse
+                             with stride = samples_per_pixel, then byte-plane
+                             de-interleave back to per-sample bytes in file
+                             byte order. Works for bps ∈ {16, 24, 32, 64}.
+                             Allocator parameter on applyInverse: only the
+                             FP path consumes it (one per-row scratch buffer
+                             of size bytes_per_row); the None and Horizontal
+                             paths ignore it. Stride is samples_per_pixel
+                             for chunky planar, 1 for separate (per-plane
+                             strip).
   photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
                              pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
                              MinIsBlack, 2 RGB, 3 Palette}. Palette uses the
