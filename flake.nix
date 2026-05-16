@@ -23,16 +23,14 @@
         isLinux = pkgs.stdenv.isLinux;
         zig = zig-overlay.packages.${system}."0.16.0";
 
-        # On Linux, we use a musl target explicitly. Two reasons:
+        # On Linux, use a musl target explicitly. Two reasons:
         # (1) zig-overlay ships vanilla Zig (no Nix-sandbox patches),
         #     so its host-ABI detection fails inside Garnix's
-        #     sandbox: "warning: Encountered error: FileNotFound,
-        #     falling back to default ABI and dynamic linker." That
-        #     fallback is broken — spawned subprocesses can't find
-        #     their dynamic linker.
-        # (2) musl produces fully static binaries, which is the
-        #     project portfolio's Linux convention (CLAUDE.md
-        #     "Better static linking support").
+        #     sandbox; the resulting glibc binary can't find its
+        #     dynamic linker at runtime.
+        # (2) musl produces fully static binaries — project
+        #     portfolio convention (CLAUDE.md "Better static linking
+        #     support").
         # macOS handles its own dynamic linker via apple-sdk and
         # doesn't have this issue.
         zigTarget =
@@ -40,6 +38,20 @@
           else if system == "aarch64-linux" then "aarch64-linux-musl"
           else null;
         zigTargetFlag = if zigTarget == null then "" else "-Dtarget=${zigTarget}";
+
+        # On Linux, use pkgsStatic.{libjpeg,openjpeg,zlib} so the C
+        # libs cross-link cleanly into the musl static binary. On
+        # macOS / non-musl native targets, the regular pkgs builds work.
+        jpegPkgs =
+          if isLinux then {
+            libjpeg = pkgs.pkgsStatic.libjpeg;
+            openjpeg = pkgs.pkgsStatic.openjpeg;
+            zlib = pkgs.pkgsStatic.zlib;
+          } else {
+            libjpeg = pkgs.libjpeg;
+            openjpeg = pkgs.openjpeg;
+            zlib = pkgs.zlib;
+          };
 
         # GDAL's pytest suite segfaults on aarch64-darwin against
         # nixpkgs-unstable as of 2026-05-04 (Python 3.13 + GDAL 3.12.4
@@ -61,7 +73,7 @@
         #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-lRaYRf4bq/wzUfY7Z6JXx13QTBu0ACVFJ8jZIxCx1E8=";
+        zigDepsHash = "sha256-ndgiuGK5RN443jUjFexQZWNWj7wSFwiYymHesPGzQ+s=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";
@@ -76,9 +88,12 @@
 
           # Zig 0.16 changed the fetched-package cache location: deps
           # land in `./zig-pkg/` (project-local) instead of
-          # `$ZIG_GLOBAL_CACHE_DIR/p/`. Capture the local zig-pkg into
-          # $out so the consumer can stage it back into its own source
-          # tree before running zig build.
+          # `$ZIG_GLOBAL_CACHE_DIR/p/`. Capture both layouts into $out:
+          #   $out/zig-pkg/ — project-local (preferred by 0.16's resolver)
+          #   $out/p/       — symlink to zig-pkg so the older global-cache
+          #                   layout also resolves (cross-compile builds
+          #                   to musl seem to walk the global-cache search
+          #                   path with the older `p/` convention).
           buildPhase = ''
             export HOME=$TMPDIR
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
@@ -87,6 +102,7 @@
             zig build --fetch=all
             mkdir -p $out
             cp -r zig-pkg $out/zig-pkg
+            ln -s zig-pkg $out/p
           '';
 
           dontInstall = true;
@@ -113,8 +129,11 @@
           # 2000, currently unused by tiffz but linked unconditionally by
           # jpegz). charls (JPEG-LS) is gated off via -Dwith-charls=false
           # at the build.zig level since no TIFF compression scheme needs
-          # JPEG-LS.
-          buildInputs = [ pkgs.libjpeg pkgs.openjpeg ];
+          # JPEG-LS. zlib is for compression=8 / 32946 (Deflate /
+          # AdobeDeflate); we use the system zlib (linked via
+          # linkSystemLibrary("z")) rather than allyourcodebase/zlib,
+          # which has a Zig 0.16 cross-compile quirk on Linux.
+          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib ];
 
           dontConfigure = true;
 
@@ -122,29 +141,27 @@
             export HOME="$TMPDIR"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
-            # Stage pre-fetched packages into Zig 0.16's project-local
-            # `./zig-pkg/` (see zigDeps comment for the layout change).
             cp -r ${zigDeps}/zig-pkg ./zig-pkg
             chmod -R u+w ./zig-pkg
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR/p
+            cp -r ${zigDeps}/zig-pkg/. $ZIG_GLOBAL_CACHE_DIR/p/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR/p
+
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
             ${pkgs.lib.optionalString isLinux ''
-              # Linux build target is x86_64-linux-musl (cross from
-              # glibc-built nix builder → musl-targeted Zig binary).
-              # Nix's cc-wrapper sets NIX_CFLAGS_COMPILE / NIX_LDFLAGS
-              # to glibc-relative system paths; those leak into Zig's
-              # C compiler invocation for vendored C deps (zlib here)
-              # and end up shadowing the in-tree zconf.h with a glibc
-              # one that doesn't exist. Unset before invoking zig to
-              # restore a clean cross-toolchain environment.
+              # cross-musl: drop glibc-relative cc-wrapper flags so
+              # they don't shadow musl headers from pkgsStatic.
               unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
             ''}
             zig build --prefix $out -Doptimize=ReleaseFast ${zigTargetFlag} \
-              -Dlibjpeg-include=${pkgs.libjpeg.dev}/include \
-              -Dlibjpeg-lib=${pkgs.libjpeg.out}/lib \
-              -Dopenjpeg-include=${pkgs.openjpeg.dev}/include/openjpeg-2.5 \
-              -Dopenjpeg-lib=${pkgs.openjpeg.out}/lib
+              -Dlibjpeg-include=${jpegPkgs.libjpeg.dev}/include \
+              -Dlibjpeg-lib=${jpegPkgs.libjpeg.out}/lib \
+              -Dopenjpeg-include=${jpegPkgs.openjpeg.dev}/include/openjpeg-2.5 \
+              -Dopenjpeg-lib=${jpegPkgs.openjpeg.out}/lib \
+              -Dzlib-include=${jpegPkgs.zlib.dev}/include \
+              -Dzlib-lib=${jpegPkgs.zlib.out}/lib
           '';
 
           dontInstall = true;
@@ -165,7 +182,7 @@
               pkgs.apple-sdk
             ];
 
-          buildInputs = [ pkgs.libjpeg pkgs.openjpeg ];
+          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib ];
 
           dontConfigure = true;
 
@@ -175,6 +192,9 @@
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             cp -r ${zigDeps}/zig-pkg ./zig-pkg
             chmod -R u+w ./zig-pkg
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR/p
+            cp -r ${zigDeps}/zig-pkg/. $ZIG_GLOBAL_CACHE_DIR/p/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR/p
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
@@ -183,10 +203,12 @@
             ''}
             export TERM=dumb
             timeout 600 zig build test ${zigTargetFlag} \
-              -Dlibjpeg-include=${pkgs.libjpeg.dev}/include \
-              -Dlibjpeg-lib=${pkgs.libjpeg.out}/lib \
-              -Dopenjpeg-include=${pkgs.openjpeg.dev}/include/openjpeg-2.5 \
-              -Dopenjpeg-lib=${pkgs.openjpeg.out}/lib \
+              -Dlibjpeg-include=${jpegPkgs.libjpeg.dev}/include \
+              -Dlibjpeg-lib=${jpegPkgs.libjpeg.out}/lib \
+              -Dopenjpeg-include=${jpegPkgs.openjpeg.dev}/include/openjpeg-2.5 \
+              -Dopenjpeg-lib=${jpegPkgs.openjpeg.out}/lib \
+              -Dzlib-include=${jpegPkgs.zlib.dev}/include \
+              -Dzlib-lib=${jpegPkgs.zlib.out}/lib \
               2>&1 || {
               echo "Tests failed or timed out after 10 minutes"
               exit 1

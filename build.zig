@@ -21,16 +21,27 @@ pub fn build(b: *std.Build) void {
     });
 
     // zlib for compression=8 / compression=32946 (Deflate / AdobeDeflate).
-    // allyourcodebase/zlib is a Zig-built wrapper around upstream C zlib;
-    // produces a static archive we link into tiffz's static lib.
-    const zlib_dep = b.dependency("zlib", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const zlib_lib = zlib_dep.artifact("z");
-    lib_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
-
-    lib_module.linkLibrary(zlib_lib);
+    // Use the system zlib (provided via flake.nix buildInputs) rather
+    // than the allyourcodebase/zlib Zig-builds-the-C-source wrapper.
+    // The wrapper's build.zig doesn't add the upstream source dir as
+    // an include path, and Zig 0.16's `addCSourceFiles({.root, .files})`
+    // doesn't fall back to file-directory for quoted `#include`s on
+    // some target triples — the result is `zconf.h not found` errors.
+    // System zlib is universal, much smaller, and side-steps the
+    // problem entirely.
+    const opt_zlib_inc = b.option(
+        []const u8,
+        "zlib-include",
+        "Path to zlib headers",
+    ) orelse "";
+    const opt_zlib_lib_path = b.option(
+        []const u8,
+        "zlib-lib",
+        "Path to zlib library directory",
+    ) orelse "";
+    if (opt_zlib_inc.len > 0) lib_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
+    if (opt_zlib_lib_path.len > 0) lib_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
+    lib_module.linkSystemLibrary("z", .{});
 
     // jpegz for compression=7 (JPEG-in-TIFF) at M9.5 and lossless JPEG
     // (DNG raw) at M8. Peter's sibling project — Phase 1 wraps
@@ -118,7 +129,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    tiffz_named_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
+    if (opt_zlib_inc.len > 0) tiffz_named_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
+    if (opt_zlib_lib_path.len > 0) tiffz_named_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
+    tiffz_named_module.linkSystemLibrary("z", .{});
     tiffz_named_module.addImport("jpegz", jpegz_mod);
 
     // --- C CLI executable (dogfoods the C FFI per project convention) ---
@@ -135,6 +148,11 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic" },
     });
     cli.root_module.addIncludePath(b.path("include"));
+    // Propagate system-library search paths so the linker can find
+    // -lz, -ljpeg, -lopenjp2 referenced transitively through lib.
+    if (opt_zlib_lib_path.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
+    if (opt_libjpeg_lib.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
+    if (opt_openjpeg_lib.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     cli.root_module.linkLibrary(lib);
     b.installArtifact(cli);
     const install_cli = b.addInstallArtifact(cli, .{});
@@ -149,8 +167,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    unit_tests_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
-    unit_tests_module.linkLibrary(zlib_lib);
+    if (opt_zlib_inc.len > 0) unit_tests_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
+    if (opt_zlib_lib_path.len > 0) unit_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
+    unit_tests_module.linkSystemLibrary("z", .{});
     unit_tests_module.addImport("jpegz", jpegz_mod);
     const unit_tests = b.addTest(.{ .root_module = unit_tests_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -175,8 +194,9 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     fixture_tests_module.addImport("tiffz", lib_module);
-    fixture_tests_module.addIncludePath(zlib_lib.getEmittedIncludeTree());
-    fixture_tests_module.linkLibrary(zlib_lib);
+    if (opt_zlib_inc.len > 0) fixture_tests_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
+    if (opt_zlib_lib_path.len > 0) fixture_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
+    fixture_tests_module.linkSystemLibrary("z", .{});
     const fixture_tests = b.addTest(.{ .root_module = fixture_tests_module });
     const run_fixture_tests = b.addRunArtifact(fixture_tests);
 
