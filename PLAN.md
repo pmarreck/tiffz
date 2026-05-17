@@ -215,11 +215,43 @@ public API design.
       A comptime split would double the parser binary footprint to
       save one branch per tag lookup. Runtime branch keeps a single
       code path and a single test matrix.
-- [ ] M8: DNG — predictor 3, CFA tags, opcode list parser.
-      *Schedule risk resolved 2026-05-06:* jpegz M1.4b shipped with a
-      1..16 precision range fix that covers DNG's 14-bit case (per
-      `inbox/2026-05-06-jpegz-reply-m14b-shipped.md`). Lossless raw
-      decode path is ready when we reach M8.
+- [x] **M8: DNG — predictor 3, CFA tags, opcode list parser** (2026-05-16).
+      Predictor=3 (TIFF Tech Note 3, FP byte-plane interleaved
+      differencing) lands in `src/predictors.zig` for bps ∈ {16, 24,
+      32, 64}, chunky + separate planar. Per-row two-step inverse:
+      (1) horizontal byte-diff with stride = samples_per_pixel, then
+      (2) endian-aware byte-plane de-interleave (TN3 stores planes
+      MSB-first regardless of file endian, so LE-file decoders must
+      invert the plane→byte mapping). The deferred-from-M5 Predictor=2
+      16-bit horizontal path also lands here (endian-aware u16 reads
+      via std.mem.readInt + wrap mod 2^16). applyInverse signature
+      grew an `endian: Endian` and an `allocator: std.mem.Allocator`
+      parameter — only the FP path consumes the allocator (one per-row
+      scratch buffer), only horizontal-16 consumes the endian; decoder
+      threads `self.endian` and `self.allocator` through both
+      applyPredictorStrip and applyPredictorTile.
+      New module `src/dng.zig` parses (no execution) the DNG-specific
+      auxiliary tags:
+        • CfaPattern (33421 dim + 33422 pattern) — zero-copy borrow
+          of the pattern bytes; rejects dim=0 and short buffers.
+        • OpcodeList (51008/51009/51022) — big-endian datastream per
+          DNG §10.1; each opcode { opcode_id, dng_version, flags,
+          parameters } with parameters as a zero-copy borrow.
+          Hard cap of 1,000,000 opcodes to bound allocation on
+          adversarial inputs.
+      Photometric=32803 (CFA) routes through `photometrics.expandGray
+      .direct` for v1 — each CFA sample emitted as gray RGBA so
+      consumers can see the mosaic and demosaic later using the
+      CfaPattern.
+      End-to-end FP32 oracle test: gdal_translate generates a
+      Predictor=1 (no transform) and a Predictor=3 fixture from the
+      same 8×8 FP32 plasma seed; the test decodes both via
+      Decoder.decodeStrip and asserts byte-exact match. This caught
+      and pinned the LE plane-mapping bug.
+      *Deferred (out of M8 scope):* full Bayer/X-Trans demosaic
+      (M11/M12 territory); opcode list semantic execution (consumer
+      concern); real-camera DNG fixtures (gdal-synth covers the
+      Predictor=3 algorithmic case).
 - [ ] M9: Pro photometrics — CMYK, YCbCr, CIE Lab.
 - [x] **M9.5: JPEG-in-TIFF (compression=7)** (2026-05-16).
       `src/compressions/jpeg.zig` calls into jpegz via

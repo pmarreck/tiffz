@@ -169,30 +169,62 @@ src/
   predictors.zig             applyInverse reverses the TIFF Predictor tag
                              (317) transform on post-codec strip bytes.
                              Predictor=1 (none) is no-op; predictor=2
-                             (horizontal differencing) adds each sample to the
-                             previous same-channel sample in the row, wrapping
-                             mod 2^bits — 8-bit only (16-bit deferred to a
-                             follow-up). Predictor=3 (floating-point, M8 / DNG)
-                             implements TIFF Tech Note 3: byte-plane
-                             interleaved horizontal byte-differencing inverse
-                             with stride = samples_per_pixel, then byte-plane
-                             de-interleave back to per-sample bytes in file
-                             byte order. Works for bps ∈ {16, 24, 32, 64}.
-                             Allocator parameter on applyInverse: only the
-                             FP path consumes it (one per-row scratch buffer
-                             of size bytes_per_row); the None and Horizontal
-                             paths ignore it. Stride is samples_per_pixel
-                             for chunky planar, 1 for separate (per-plane
-                             strip).
+                             (horizontal differencing) adds each sample to
+                             the previous same-channel sample in the row,
+                             wrapping mod 2^bits. 8-bit + 16-bit paths
+                             supported (16-bit uses endian-aware
+                             std.mem.readInt/writeInt). Predictor=3
+                             (floating-point, M8 / DNG) implements TIFF
+                             Tech Note 3 for bps ∈ {16, 24, 32, 64}:
+                             two-step per-row inverse — (1) horizontal
+                             byte-diff with stride = samples_per_pixel
+                             across the whole reshuffled row; (2)
+                             endian-aware de-interleave of byte planes
+                             back into per-sample bytes. Per TN3, plane 0
+                             always holds the MSB of every sample
+                             regardless of file endian; LE files invert
+                             the plane→byte mapping at de-interleave time
+                             so byte offset 0 of a sample (LSB on LE)
+                             draws from plane (bps-1). Allocator
+                             parameter feeds the FP path's per-row scratch
+                             buffer; endian parameter feeds the
+                             horizontal-16 and FP paths. None and
+                             horizontal-8 paths ignore both. Stride is
+                             samples_per_pixel for chunky planar, 1 for
+                             separate (per-plane strip).
+  dng.zig                    DNG auxiliary metadata parsers (M8). tiffz
+                             parses only — it does not act on these
+                             structures; consumers (validate, raw-pipeline
+                             tools) demosaic and execute opcodes
+                             themselves. parseCfaPattern decodes
+                             CFARepeatPatternDim (33421) + CFAPattern
+                             (33422) into a CfaPattern struct
+                             { repeat_dim_x, repeat_dim_y, pattern }
+                             with the pattern slice as a zero-copy
+                             borrow. Pattern values: 0=R 1=G 2=B 3=C 4=M
+                             5=Y 6=W per TIFF/EP. parseOpcodeList decodes
+                             OpcodeList1/2/3 (51008/51009/51022) — per
+                             DNG §10.1 the datastream is always big-endian
+                             regardless of file endian. Each opcode is
+                             { opcode_id, dng_version, flags, parameters
+                             } with parameters as a zero-copy borrow.
+                             Hard cap of 1,000,000 opcodes bounds
+                             allocation on adversarial inputs.
   photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
                              pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
-                             MinIsBlack, 2 RGB, 3 Palette}. Palette uses the
-                             canonical `(u16 * 255 + 32767) / 65535` downscale
-                             on ColorMap entries (matches ImageMagick's
+                             MinIsBlack, 2 RGB, 3 Palette, 32803 CFA}.
+                             Palette uses the canonical
+                             `(u16 * 255 + 32767) / 65535` downscale on
+                             ColorMap entries (matches ImageMagick's
                              ScaleQuantumToChar; plain `>> 8` truncation
                              off-by-ones whenever the low byte ≥ 0x80).
-                             Other photometrics + non-8-bit + planar=separate
-                             land in later milestones.
+                             CFA (32803) v1 is gray pass-through — each
+                             CFA sample emitted as gray RGBA so consumers
+                             can see the mosaic and demosaic later using
+                             the CfaPattern returned from src/dng.zig
+                             (full Bayer/X-Trans demosaic lands at
+                             M11/M12). Other photometrics + non-8-bit +
+                             planar=separate land in later milestones.
   decoder.zig                Decoder.open parses header + IFD0 eagerly (lazy IFD
                              chain — sibling IFDs materialize on first ifd(N) call).
                              decodeStrip / decodeTile are sibling primitives (M6):

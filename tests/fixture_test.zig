@@ -413,6 +413,59 @@ test "predictor2_deflate.tif (Deflate + Predictor=2 horizontal, 32x32 RGB): RGBA
     );
 }
 
+/// Decode every strip of `fixture_path` and concatenate the
+/// post-codec, post-predictor bytes into a freshly-allocated slice.
+/// Caller frees. Used for fixtures whose photometric expansion isn't
+/// supported yet (e.g. FP32) but whose post-decode bytes are still
+/// meaningfully verifiable.
+fn decodeAllStripsBytes(allocator: std.mem.Allocator, fixture_path: []const u8) ![]u8 {
+    const bytes = try loadFile(allocator, fixture_path);
+    defer allocator.free(bytes);
+
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+
+    const dir = try dec.ifd(0);
+    const sbc_entry = dir.get(tiffz.tags.strip_byte_counts) orelse return error.Malformed;
+
+    // 64 KB scratch is plenty for any single strip in our small test fixtures.
+    const scratch = try allocator.alloc(u8, 64 * 1024);
+    defer allocator.free(scratch);
+
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+
+    var collected: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer collected.deinit(allocator);
+
+    var i: u32 = 0;
+    while (i < sbc_entry.count) : (i += 1) {
+        const n = try dec.decodeStrip(0, i, scratch, &ws);
+        try collected.appendSlice(allocator, scratch[0..n]);
+    }
+    return try collected.toOwnedSlice(allocator);
+}
+
+test "predictor3_deflate_fp32.tif: FP32 byte-plane interleaved diff matches Predictor=1 oracle" {
+    // Both fixtures were transcoded from the same 8x8 FP32 plasma seed
+    // via gdal_translate. The Predictor=1 variant has no transform, so
+    // its post-decode bytes ARE the raw FP32 pixels. The Predictor=3
+    // variant uses TN3 byte-plane interleaved differencing — if tiffz's
+    // applyInverse is correct, the post-decode + post-predictor bytes
+    // must match the Predictor=1 oracle byte-exact.
+    const allocator = std.testing.allocator;
+    const oracle = try decodeAllStripsBytes(allocator, "tests/fixtures/predictor/predictor1_deflate_fp32.tif");
+    defer allocator.free(oracle);
+    const got = try decodeAllStripsBytes(allocator, "tests/fixtures/predictor/predictor3_deflate_fp32.tif");
+    defer allocator.free(got);
+    // 8 × 8 × 3 channels × 4 bytes = 768 bytes.
+    try std.testing.expectEqual(@as(usize, 768), oracle.len);
+    try std.testing.expectEqualSlices(u8, oracle, got);
+}
+
 test "cramps-tile.tif (uncompressed tiled, 800x607 MinIsWhite, 256x256 tiles): RGBA matches ImageMagick oracle" {
     try assertOracleMatch(
         std.testing.allocator,

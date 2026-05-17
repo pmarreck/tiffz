@@ -72,7 +72,7 @@ pub fn applyInverse(
     switch (predictor) {
         .none => return,
         .horizontal => return applyHorizontal(bytes, width, rows, samples_per_pixel, bits_per_sample, planar_config, endian),
-        .floating_point => return applyFloatingPoint(bytes, width, rows, samples_per_pixel, bits_per_sample, planar_config, allocator),
+        .floating_point => return applyFloatingPoint(bytes, width, rows, samples_per_pixel, bits_per_sample, planar_config, endian, allocator),
         else => return error.UnsupportedPredictor,
     }
 }
@@ -132,24 +132,23 @@ fn applyHorizontal(
 /// Predictor=3 inverse per TIFF Tech Note 3 (Adobe, 2005).
 ///
 /// Encoder side: each row's floating-point samples are reshuffled by
-/// byte position before any compression — all MSB-plane bytes first
-/// (i.e. byte offset 0 of every sample in pixel-major order), then
-/// the next byte plane, etc. Then horizontal byte differencing with
-/// stride = samples_per_pixel is applied across the entire reshuffled
-/// row. The byte-diff operation deliberately straddles plane
-/// boundaries (libtiff `fpAcc` matches this).
+/// byte position before any compression. Per TN3 the byte planes are
+/// stored MSB-first regardless of the file's TIFF byte-order header —
+/// plane 0 holds the most-significant byte of every sample, plane 1
+/// the next byte, and so on down to plane (bps-1) = LSB. Then
+/// horizontal byte differencing with stride = samples_per_pixel is
+/// applied across the entire reshuffled row, deliberately straddling
+/// plane boundaries (libtiff `fpAcc` matches this).
 ///
 /// Decoder side reverses both steps per row:
 ///   1. Inverse horizontal byte-diff: row[i] += row[i - stride] (mod 256)
 ///      for i in [stride, row_bytes).
-///   2. De-interleave byte planes: byte k of sample n lives at
-///      row[k * wc + n], where wc = samples-per-row. Gather them back
-///      to row[n * bps_bytes + k]. Requires a scratch buffer of
-///      size = bytes_per_row.
-///
-/// Independent of host machine endian — bytes stay in file byte
-/// order; downstream consumers know the file's endian and interpret
-/// the FP values accordingly.
+///   2. De-interleave byte planes back into per-sample bytes, taking
+///      file endian into account: for a big-endian file, byte offset
+///      k of sample n in memory corresponds to byte plane k; for a
+///      little-endian file, byte offset k corresponds to byte plane
+///      (bps - 1 - k) because the LSB lives at offset 0 of the sample.
+///      Requires a scratch buffer of size = bytes_per_row.
 fn applyFloatingPoint(
     bytes: []u8,
     width: u32,
@@ -157,6 +156,7 @@ fn applyFloatingPoint(
     samples_per_pixel: u16,
     bits_per_sample: u16,
     planar_config: PlanarConfig,
+    endian: Endian,
     allocator: std.mem.Allocator,
 ) errors.Error!void {
     // FP predictor needs at least 16 bits per sample (FP16). 8-bit
@@ -192,14 +192,16 @@ fn applyFloatingPoint(
             row[i] = row[i] +% row[i - stride];
         }
 
-        // Step 2: de-interleave byte planes back into per-sample bytes.
+        // Step 2: de-interleave byte planes back into per-sample bytes
+        // with endian-aware plane→byte mapping.
         @memcpy(scratch, row);
         const wc: usize = samples_per_row;
         var n: usize = 0;
         while (n < wc) : (n += 1) {
             var k: usize = 0;
             while (k < bps_bytes) : (k += 1) {
-                row[n * bps_bytes + k] = scratch[k * wc + n];
+                const plane: usize = if (endian == .little) bps_bytes - 1 - k else k;
+                row[n * bps_bytes + k] = scratch[plane * wc + n];
             }
         }
     }
@@ -291,18 +293,21 @@ test "predictors.applyInverse rejects floating-point at 8-bit (FP needs bps >= 1
     try std.testing.expectError(error.UnsupportedBitDepth, applyInverse(&bytes, .floating_point, 4, 1, 1, 8, .chunky, .little, std.testing.allocator));
 }
 
-test "predictors.applyInverse floating-point FP32 spp=1 two rows" {
+test "predictors.applyInverse floating-point FP32 spp=1 two rows, big-endian" {
     // M8 — Predictor=3 (TIFF Tech Note 3), byte-plane interleaved
     // horizontal differencing inverse on FP32 (bps=32, 4 bytes/sample).
     //
     // Spec recipe (decoder side):
     //   1. Inverse horizontal byte-differencing across the full row at
     //      stride = samples_per_pixel (1 here).
-    //   2. De-interleave byte planes: byte k of float n comes from
-    //      buf[k * wc + n], where wc = width * spp.
+    //   2. De-interleave byte planes back into per-sample bytes. Per
+    //      TN3 plane 0 = MSB of every sample regardless of file endian.
+    //      Big-endian file: byte offset k of sample n in memory comes
+    //      from plane k (this test). Little-endian file would invert
+    //      that mapping.
     //
-    // Layout for spp=1, width=2, bps=32:
-    //   floats in file byte order: F0=[A,B,C,D], F1=[E,F,G,H]
+    // Layout for spp=1, width=2, bps=32, big-endian:
+    //   floats in file byte order: F0=[A,B,C,D] (A=MSB), F1=[E,F,G,H]
     //   byte-plane interleave: [A, E, B, F, C, G, D, H]
     //   byte-diff with stride=1: [A, E-A, B-E, F-B, C-F, G-C, D-G, H-D]
     //   (each wrap mod 256)
@@ -329,7 +334,21 @@ test "predictors.applyInverse floating-point FP32 spp=1 two rows" {
         // Row 1 decoded
         0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
     };
-    try applyInverse(&bytes, .floating_point, 2, 2, 1, 32, .chunky, .little, std.testing.allocator);
+    try applyInverse(&bytes, .floating_point, 2, 2, 1, 32, .chunky, .big, std.testing.allocator);
+    try std.testing.expectEqualSlices(u8, &expected, &bytes);
+}
+
+test "predictors.applyInverse floating-point FP32 little-endian inverts plane mapping" {
+    // Same encoded bytes as the big-endian test (the on-wire format
+    // is identical — byte planes are MSB-first regardless). Only the
+    // de-interleave's plane→byte mapping flips: in LE memory, byte 0
+    // of each float is the LSB (= plane bps-1 = plane 3 for FP32).
+    var bytes = [_]u8{ 0x01, 0x0F, 0xF2, 0x1E, 0xE3, 0x2D, 0xD4, 0x3C };
+    // After byte-diff inverse: [0x01, 0x10, 0x02, 0x20, 0x03, 0x30, 0x04, 0x40]
+    // De-interleave to LE memory: sample F0 byte 0 = plane 3 = 0x04;
+    // byte 1 = plane 2 = 0x03; byte 2 = plane 1 = 0x02; byte 3 = plane 0 = 0x01.
+    const expected = [_]u8{ 0x04, 0x03, 0x02, 0x01, 0x40, 0x30, 0x20, 0x10 };
+    try applyInverse(&bytes, .floating_point, 2, 1, 1, 32, .chunky, .little, std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &expected, &bytes);
 }
 
@@ -358,7 +377,7 @@ test "predictors.applyInverse floating-point FP32 RGB chunky" {
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
         0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0, 0xC0,
     };
-    try applyInverse(&bytes, .floating_point, 2, 1, 3, 32, .chunky, .little, std.testing.allocator);
+    try applyInverse(&bytes, .floating_point, 2, 1, 3, 32, .chunky, .big, std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &expected, &bytes);
 }
 
@@ -376,7 +395,7 @@ test "predictors.applyInverse floating-point FP32 separate planar uses stride=1"
         0x12, 0x22, 0x32, 0x42,
         0x13, 0x23, 0x33, 0x43,
     };
-    try applyInverse(&bytes, .floating_point, 4, 1, 1, 32, .separate, .little, std.testing.allocator);
+    try applyInverse(&bytes, .floating_point, 4, 1, 1, 32, .separate, .big, std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &expected, &bytes);
 }
 
@@ -388,6 +407,6 @@ test "predictors.applyInverse floating-point FP16 chunky" {
     //   diffed:      [0xAB, 0x44, 0xDE, 0x45]
     var bytes = [_]u8{ 0xAB, 0x44, 0xDE, 0x45 };
     const expected = [_]u8{ 0xAB, 0xCD, 0xEF, 0x12 };
-    try applyInverse(&bytes, .floating_point, 2, 1, 1, 16, .chunky, .little, std.testing.allocator);
+    try applyInverse(&bytes, .floating_point, 2, 1, 1, 16, .chunky, .big, std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &expected, &bytes);
 }

@@ -62,6 +62,11 @@ pub fn expandRowsToRgba(
         tags.photometric_black_is_zero => expandGray(src_bytes, src_rows, fmt, dest, .direct),
         tags.photometric_rgb => expandRgb(src_bytes, src_rows, fmt, dest),
         tags.photometric_palette => expandPalette(src_bytes, src_rows, fmt, dest),
+        // CFA mosaic raw — v1 emits each sample as gray RGBA. The
+        // consumer (validate, raw-pipeline tools) does demosaic later
+        // using the CFAPattern tag (parsed in src/dng.zig). Full
+        // Bayer/X-Trans demosaic lands at M11/M12.
+        tags.photometric_color_filter_array => expandGray(src_bytes, src_rows, fmt, dest, .direct),
         else => error.UnsupportedPhotometric,
     };
 }
@@ -398,6 +403,27 @@ test "expandRowsToRgba rejects unsupported photometric" {
         .width = 1,
         .colormap = null,
     }, &dest));
+}
+
+test "expandRowsToRgba photometric=CFA (32803) maps each sample as gray RGBA" {
+    // CFA mosaic raw — one sample per sensor site. tiffz emits each
+    // sample as gray (R=G=B=value, A=255) so consumers can see the
+    // mosaic; full demosaic lands at M11/M12. spp=1 for CFA.
+    const src = [_]u8{ 0x10, 0x80, 0xC0, 0xFF };
+    var dest: [16]u8 = undefined;
+    try expandRowsToRgba(&src, 1, .{
+        .photometric = tags.photometric_color_filter_array,
+        .bits_per_sample = 8,
+        .samples_per_pixel = 1,
+        .width = 4,
+        .colormap = null,
+    }, &dest);
+    try std.testing.expectEqualSlices(u8, &.{
+        0x10, 0x10, 0x10, 0xFF,
+        0x80, 0x80, 0x80, 0xFF,
+        0xC0, 0xC0, 0xC0, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF,
+    }, &dest);
 }
 
 test "expandRowsToRgba rejects too-small dest" {

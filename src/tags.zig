@@ -23,6 +23,16 @@ pub const tile_offsets: u16 = 324;           // 0x0144
 pub const tile_byte_counts: u16 = 325;       // 0x0145
 pub const jpeg_tables: u16 = 347;            // 0x015B; TIFF TN2 Mode 2 — shared JPEG abbreviated table datastream
 
+/// DNG / TIFF-EP tags (M8).
+pub const cfa_repeat_pattern_dim: u16 = 33421; // 0x828D; SHORT[2] — pattern dims (width, height)
+pub const cfa_pattern: u16 = 33422;            // 0x828E; BYTE[dim_w * dim_h] — pattern values 0=R 1=G 2=B 3=C 4=M 5=Y 6=W
+pub const opcode_list_1: u16 = 51008;          // 0xC740; UNDEFINED — Adobe opcode list applied to raw image (pre-mosaic)
+pub const opcode_list_2: u16 = 51009;          // 0xC741; UNDEFINED — opcode list applied after demosaic, before mapping
+pub const opcode_list_3: u16 = 51022;          // 0xC74E; UNDEFINED — opcode list applied after color-mapping
+
+/// CFA photometric code (tag 262 = 32803).
+pub const photometric_color_filter_array: u16 = 32803;
+
 /// Compression scheme codes (tag 259).
 pub const compression_none: u16 = 1;
 pub const compression_ccitt_t4: u16 = 3;     // Group 3 1D
