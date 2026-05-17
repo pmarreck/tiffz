@@ -81,7 +81,7 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
         var buf: [16]u8 = undefined;
         const need: usize = @as(usize, bps_entry.field_type.elementBytes()) * @as(usize, bps_entry.count);
         if (need > buf.len) return error.Malformed;
-        try tiffz.ifd.Ifd.readEntryValue(bps_entry.*, dec.endian, src, dir.offset_width, buf[0..need]);
+        try dir.readEntryValueCached(tiffz.tags.bits_per_sample, dec.endian, src, buf[0..need]);
         bits_per_sample = tiffz.header.readU16(buf[0..2], dec.endian);
     }
 
@@ -96,7 +96,7 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
         const need_bytes: usize = @as(usize, expected_count) * 2;
         const raw = try allocator.alloc(u8, need_bytes);
         defer allocator.free(raw);
-        try tiffz.ifd.Ifd.readEntryValue(cmap_entry.*, dec.endian, src, dir.offset_width, raw);
+        try dir.readEntryValueCached(tiffz.tags.colormap, dec.endian, src, raw);
         const cmap16 = try allocator.alloc(u16, expected_count);
         for (cmap16, 0..) |*v, i| {
             v.* = tiffz.header.readU16(raw[i * 2 ..][0..2], dec.endian);
@@ -579,19 +579,15 @@ const SequentialReader = struct {
 };
 
 test "fromBufferedReader: rgb-3c-8b.tiff decodes via streaming source" {
-    // Streaming-source end-to-end: load the file bytes, feed them
-    // through SequentialReader (emulating a network/file stream),
-    // open via fromBufferedReader and decode IFD + strips.
-    //
-    // Cache size: 128 KiB > 71 KiB file. The decoder re-reads
-    // StripOffsets / StripByteCounts on each decodeStrip call rather
-    // than caching the arrays eagerly, so a cache that slides past
-    // those low-offset out-of-line tag values surfaces as
-    // SourceSeekTooFarBack on the next strip lookup. The current
-    // pragmatic rule is "cache ≥ file size + a margin" until the
-    // decoder grows lazy array caching; for files this small that's
-    // trivial. See fromBufferedReader's doc-comment for the full
-    // sizing-guidance story.
+    // rgb-3c-8b.tiff was written by GraphicsMagick with IFD-at-end
+    // layout (header → 71KB of strip data → tag-value block → IFD).
+    // For this shape the streaming source has to span the whole file
+    // because parsing the IFD needs to seek back into the strip
+    // region to read the out-of-line tag values. Cache = 128 KiB
+    // > 71 KiB suffices. Files written with IFD-at-start (the more
+    // common libtiff default) only need a small cache after the
+    // eager-IFD-caching landed in this commit; see the sizing
+    // guidance in `Source.fromBufferedReader`.
     const allocator = std.testing.allocator;
     const bytes = try loadFile(allocator, "tests/fixtures/uncompressed/rgb-3c-8b.tiff");
     defer allocator.free(bytes);

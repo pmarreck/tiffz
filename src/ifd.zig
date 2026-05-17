@@ -26,6 +26,7 @@ const Limits = @import("limits.zig").Limits;
 const Source = @import("source.zig").Source;
 const header_mod = @import("header.zig");
 const Endian = header_mod.Endian;
+const tags = @import("tags.zig");
 
 /// TIFF tag-value type codes per §2 + TIFF 6.0 Table 2 + BigTIFF
 /// extensions (LONG8/SLONG8/IFD8 added 2002).
@@ -134,8 +135,27 @@ pub const Ifd = struct {
     /// Threaded through so consumers know the inline-fit cap.
     offset_width: OffsetWidth,
     allocator: Allocator,
+    /// Eagerly-cached out-of-line value bytes, one slot per entry.
+    /// Slot `i` corresponds to `entries[i]`: null when the value
+    /// fits inline (already in `raw_value_or_offset`), allocated
+    /// owned bytes when the value lives out of line and was loaded
+    /// at parse time.
+    ///
+    /// Why eager: after Ifd parse the decoder may walk strips in any
+    /// order (random-access strip decode) or re-read scalar tags as
+    /// it dispatches codecs. With a streaming Source the sliding
+    /// cache would have to span the entire file otherwise. Loading
+    /// out-of-line values once up front lets the streaming Source's
+    /// cache stay small (just the strip-data window) — at the cost
+    /// of `Σ entryValueBytes` of allocator overhead per IFD, bounded
+    /// by `limits.max_tag_value_bytes` × entry count.
+    cached_values: []?[]u8,
 
     pub fn deinit(self: *Ifd) void {
+        for (self.cached_values) |maybe_buf| {
+            if (maybe_buf) |buf| self.allocator.free(buf);
+        }
+        self.allocator.free(self.cached_values);
         self.allocator.free(self.entries);
     }
 
@@ -148,16 +168,82 @@ pub const Ifd = struct {
         return null;
     }
 
+    /// Find the entry index for a tag. Used by the cache accessor.
+    fn indexOf(self: *const Ifd, tag: u16) ?usize {
+        for (self.entries, 0..) |e, i| {
+            if (e.tag == tag) return i;
+        }
+        return null;
+    }
+
+    /// Return the eagerly-cached out-of-line value bytes for `tag` if
+    /// the IFD parser populated them; null otherwise (inline-fit
+    /// values and missing tags both return null).
+    pub fn cachedValueBytes(self: *const Ifd, tag: u16) ?[]const u8 {
+        const idx = self.indexOf(tag) orelse return null;
+        return if (self.cached_values[idx]) |b| b else null;
+    }
+
+    /// Read element `index` of an array-typed tag as a u64. Checks the
+    /// eager out-of-line cache first; falls back to inline-slot reads
+    /// for inline-fit values, and to a single-element Source pread
+    /// only when the value is out-of-line but somehow wasn't cached
+    /// (shouldn't happen post-parse but kept for defense).
+    pub fn arrayElementU64(
+        self: *const Ifd,
+        tag: u16,
+        index: u32,
+        endian: Endian,
+        source: Source,
+    ) errors.Error!u64 {
+        const entry = self.get(tag) orelse return error.Malformed;
+        if (index >= entry.count) return error.InvalidArgument;
+
+        const elem_bytes = entry.field_type.elementBytes();
+        if (elem_bytes == 0) return error.UnsupportedTagType;
+
+        if (self.cachedValueBytes(tag)) |buf| {
+            return readArrayElementFromBytes(buf, index, entry.field_type, endian);
+        }
+
+        const total_bytes = entryValueBytes(entry.*);
+        if (total_bytes <= self.offset_width.inlineCap()) {
+            return readArrayInline(entry.*, index, endian, self.offset_width);
+        }
+
+        const value_offset: u64 = switch (self.offset_width) {
+            .classic => header_mod.readU32(entry.raw_value_or_offset[0..4], endian),
+            .big => header_mod.readU64(&entry.raw_value_or_offset, endian),
+        };
+        const elem_offset = value_offset + @as(u64, index) * @as(u64, elem_bytes);
+        var buf: [8]u8 = undefined;
+        if (elem_bytes > buf.len) return error.UnsupportedTagType;
+        const got = source.readAt(buf[0..elem_bytes], elem_offset) catch return error.Io;
+        if (got < elem_bytes) return error.SourceShortRead;
+        return switch (entry.field_type) {
+            .short => @as(u64, header_mod.readU16(buf[0..2], endian)),
+            .long => @as(u64, header_mod.readU32(buf[0..4], endian)),
+            .long8 => header_mod.readU64(buf[0..8], endian),
+            else => error.UnsupportedTagType,
+        };
+    }
+
     /// Total bytes required for an entry's value array.
     pub fn entryValueBytes(entry: Entry) u64 {
         return @as(u64, entry.field_type.elementBytes()) * entry.count;
     }
 
-    /// Read an entry's value bytes into `dest`. If the value fits
-    /// inline (≤ inline-cap), returns the inline bytes from
-    /// `raw_value_or_offset`. Otherwise dereferences the offset
-    /// stored there (u32 for classic, u64 for BigTIFF) and reads
-    /// from the Source.
+    /// Read an entry's value bytes into `dest`. Static-form (no Ifd
+    /// access). Used in contexts where the caller has the Entry but
+    /// not the owning Ifd (e.g. fixture-test helpers that walk entries
+    /// directly). Prefers `readEntryValueCached` when an Ifd is
+    /// available — that path serves from the eager cache and avoids
+    /// re-reading from the Source.
+    ///
+    /// If the value fits inline (≤ inline-cap), copies the inline bytes
+    /// from `raw_value_or_offset`. Otherwise dereferences the offset
+    /// stored there (u32 for classic, u64 for BigTIFF) and reads from
+    /// the Source.
     ///
     /// `dest.len` must equal `entryValueBytes(entry)`.
     pub fn readEntryValue(
@@ -180,6 +266,28 @@ pub const Ifd = struct {
         };
         const n = source.readAt(dest, offset) catch return error.Io;
         if (n < dest.len) return error.SourceShortRead;
+    }
+
+    /// Read an entry's value bytes into `dest`, preferring the Ifd's
+    /// eager cache when available. Falls back to the Source only for
+    /// inline-fit values (no source touch anyway) or out-of-line
+    /// values that escaped pre-caching.
+    pub fn readEntryValueCached(
+        self: *const Ifd,
+        tag: u16,
+        endian: Endian,
+        source: Source,
+        dest: []u8,
+    ) errors.Error!void {
+        const entry = self.get(tag) orelse return error.Malformed;
+        const total = entryValueBytes(entry.*);
+        if (total != dest.len) return error.InvalidArgument;
+
+        if (self.cachedValueBytes(tag)) |buf| {
+            std.mem.copyForwards(u8, dest, buf);
+            return;
+        }
+        return readEntryValue(entry.*, endian, source, self.offset_width, dest);
     }
 };
 
@@ -273,11 +381,113 @@ pub fn parse(
         .big => header_mod.readU64(next_buf[0..8], endian),
     };
 
-    return .{
+    const cached_values = allocator.alloc(?[]u8, entry_count) catch return error.OutOfMemory;
+    for (cached_values) |*c| c.* = null;
+    var ifd: Ifd = .{
         .entries = entries,
         .next_offset = next_offset,
         .offset_width = offset_width,
         .allocator = allocator,
+        .cached_values = cached_values,
+    };
+
+    // Eagerly load every out-of-line value into the Ifd cache. After
+    // this loop the IFD is fully self-contained: subsequent value
+    // lookups (per-strip metadata, palette colormap, BitsPerSample,
+    // …) don't touch the Source. Inline-fit values already live in
+    // each Entry's `raw_value_or_offset` and don't need a cache slot.
+    //
+    // Reads happen in ascending value-offset order so a streaming
+    // Source's sliding cache only ever moves forward. The TIFF spec
+    // doesn't require value blocks to be laid out in tag order
+    // (libtiff packs them densely after the IFD entries but the
+    // permutation by tag is undefined), so naively iterating
+    // entries[] could back-seek between tags.
+    //
+    // Per-entry cap was already enforced above; the cumulative cost
+    // is bounded by the sum, which the allocator surfaces as
+    // OutOfMemory if it can't service the IFD.
+    errdefer ifd.deinit();
+
+    // Build a forward-order schedule of entry indices that need a
+    // source read. Out-of-line entries only; sorted by value_offset.
+    const OutOfLine = struct {
+        entry_index: usize,
+        value_offset: u64,
+        total_bytes: usize,
+    };
+    const scratch = allocator.alloc(OutOfLine, entry_count) catch return error.OutOfMemory;
+    defer allocator.free(scratch);
+    var scratch_len: usize = 0;
+    for (entries, 0..) |entry, i| {
+        const total = Ifd.entryValueBytes(entry);
+        if (total <= offset_width.inlineCap()) continue;
+        const vo: u64 = switch (offset_width) {
+            .classic => header_mod.readU32(entry.raw_value_or_offset[0..4], endian),
+            .big => header_mod.readU64(&entry.raw_value_or_offset, endian),
+        };
+        scratch[scratch_len] = .{
+            .entry_index = i,
+            .value_offset = vo,
+            .total_bytes = @intCast(total),
+        };
+        scratch_len += 1;
+    }
+    const schedule = scratch[0..scratch_len];
+    std.mem.sort(OutOfLine, schedule, {}, struct {
+        fn lt(_: void, a: OutOfLine, b: OutOfLine) bool {
+            return a.value_offset < b.value_offset;
+        }
+    }.lt);
+
+    for (schedule) |slot| {
+        const buf = allocator.alloc(u8, slot.total_bytes) catch return error.OutOfMemory;
+        errdefer allocator.free(buf);
+        const vg = source.readAt(buf, slot.value_offset) catch return error.Io;
+        if (vg < buf.len) return error.SourceShortRead;
+        ifd.cached_values[slot.entry_index] = buf;
+    }
+
+    return ifd;
+}
+
+/// Read element `index` from a contiguous array byte buffer (the
+/// shape produced by eager array caching). `field_type` selects the
+/// element size and endian-aware read width.
+fn readArrayElementFromBytes(buf: []const u8, index: u32, field_type: FieldType, endian: Endian) errors.Error!u64 {
+    const elem_bytes: usize = field_type.elementBytes();
+    const off: usize = @as(usize, index) * elem_bytes;
+    if (off + elem_bytes > buf.len) return error.Malformed;
+    return switch (field_type) {
+        .short => @as(u64, header_mod.readU16(buf[off..][0..2], endian)),
+        .long => @as(u64, header_mod.readU32(buf[off..][0..4], endian)),
+        .long8 => header_mod.readU64(buf[off..][0..8], endian),
+        else => error.UnsupportedTagType,
+    };
+}
+
+/// Read element `index` from an inline-fitting array stored in the
+/// entry's 8-byte slot. Mirrors decoder.zig's helper of the same name
+/// before this file took ownership of array lookups; kept here for
+/// `Ifd.arrayElementU64`.
+fn readArrayInline(entry: Entry, index: u32, endian: Endian, offset_width: OffsetWidth) errors.Error!u64 {
+    const cap = offset_width.inlineCap();
+    return switch (entry.field_type) {
+        .short => blk: {
+            const start: usize = @as(usize, index) * 2;
+            if (start + 2 > cap) return error.Malformed;
+            break :blk @as(u64, header_mod.readU16(entry.raw_value_or_offset[start..][0..2], endian));
+        },
+        .long => blk: {
+            const start: usize = @as(usize, index) * 4;
+            if (start + 4 > cap) return error.Malformed;
+            break :blk @as(u64, header_mod.readU32(entry.raw_value_or_offset[start..][0..4], endian));
+        },
+        .long8 => blk: {
+            if (entry.count != 1 or offset_width != .big) return error.Malformed;
+            break :blk header_mod.readU64(&entry.raw_value_or_offset, endian);
+        },
+        else => error.UnsupportedTagType,
     };
 }
 

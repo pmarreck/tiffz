@@ -31,6 +31,20 @@ public API design.
       expansion (libjpeg already converts internally). ycbcr_jpeg.tif
       fixture (tiffcp -c jpeg:90, subsampling 2:2) matches libtiff
       tiff2rgba byte-exact.
+- [x] **Eager IFD value caching** (2026-05-17). `Ifd.parse` now
+      eagerly loads every out-of-line tag value at parse time (sorted
+      by value-offset for forward-only Source traversal). Subsequent
+      `Ifd.arrayElementU64` and `Ifd.readEntryValueCached` lookups
+      serve from the cache without touching the Source. Lifts the
+      cache-sizing constraint for streaming sources reading
+      IFD-at-start TIFFs to "just enough for one strip". IFD-at-end
+      layouts still need a cache that spans the strip region —
+      documented in `Source.fromBufferedReader` doc-comment and in
+      `docs/possible_future_directions.md` §G.
+- [x] **`docs/possible_future_directions.md`** (2026-05-17).
+      Inventory of remaining coverage gaps and adjacent improvements,
+      each annotated with realistic cost (XS/S/M/L) and rationale
+      for deferral.
 - [x] **Streaming `Source.fromBufferedReader`** with sliding cache
       (2026-05-17). New `BufferedReaderHandle` wraps a sequential
       reader (function-pointer ctx + read_fn) and a caller-supplied

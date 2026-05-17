@@ -73,7 +73,7 @@
         #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-vswNHMeYzIVql+y6WbSHGcGDtNLw9FmE/oqmPWGwCHk=";
+        zigDepsHash = "sha256-5ifo+/O0ZyAXUVZc/mEQG0aNC6KzmjITM8uNqiR8w/w=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";
@@ -86,26 +86,27 @@
           outputHashAlgo = "sha256";
           outputHash = zigDepsHash;
 
-          # Zig 0.16 changed the fetched-package cache location: deps
-          # land in `./zig-pkg/` (project-local) instead of
-          # `$ZIG_GLOBAL_CACHE_DIR/p/`. Capture both layouts into $out:
-          #   $out/zig-pkg/ — project-local (preferred by 0.16's resolver)
-          #   $out/p/       — symlink to zig-pkg so the older global-cache
-          #                   layout also resolves (cross-compile builds
-          #                   to musl seem to walk the global-cache search
-          #                   path with the older `p/` convention).
+          # Capture the Zig global cache `p/` directory into $out/p/.
+          # Mirrors the proven entropy_shield / validate pattern that
+          # passes Garnix's stricter Linux sandbox — the project-local
+          # `./zig-pkg/` capture seemed to work on macOS Garnix
+          # builders but Linux builders demand the global-cache layout.
+          # Consumer derivations rebuild the cache via
+          # `cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/`.
           buildPhase = ''
             export HOME=$TMPDIR
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR
             export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
             export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
             zig build --fetch=all
-            mkdir -p $out
-            cp -r zig-pkg $out/zig-pkg
-            ln -s zig-pkg $out/p
           '';
 
-          dontInstall = true;
+          installPhase = ''
+            mkdir -p $out
+            cp -r $TMPDIR/zig-cache/p $out/p
+          '';
+
           dontFixup = true;
         };
 
@@ -141,11 +142,8 @@
             export HOME="$TMPDIR"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
-            cp -r ${zigDeps}/zig-pkg ./zig-pkg
-            chmod -R u+w ./zig-pkg
-            mkdir -p $ZIG_GLOBAL_CACHE_DIR/p
-            cp -r ${zigDeps}/zig-pkg/. $ZIG_GLOBAL_CACHE_DIR/p/
-            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR/p
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
 
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
@@ -190,11 +188,8 @@
             export HOME="$TMPDIR"
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
-            cp -r ${zigDeps}/zig-pkg ./zig-pkg
-            chmod -R u+w ./zig-pkg
-            mkdir -p $ZIG_GLOBAL_CACHE_DIR/p
-            cp -r ${zigDeps}/zig-pkg/. $ZIG_GLOBAL_CACHE_DIR/p/
-            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR/p
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}

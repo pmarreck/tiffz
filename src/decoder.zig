@@ -168,7 +168,7 @@ pub const Decoder = struct {
             var buf: [16]u8 = undefined;
             const need: usize = @as(usize, bps_entry.field_type.elementBytes()) * @as(usize, bps_entry.count);
             if (need > buf.len) return error.Malformed;
-            try ifd_mod.Ifd.readEntryValue(bps_entry.*, self.endian, self.source, dir.offset_width, buf[0..need]);
+            try dir.readEntryValueCached(tags.bits_per_sample, self.endian, self.source, buf[0..need]);
             bps = header_mod.readU16(buf[0..2], self.endian);
         }
 
@@ -241,8 +241,8 @@ pub const Decoder = struct {
             return error.LimitExceededStripCount;
         }
 
-        const offset = try readArrayElementU64(offsets_entry.*, strip_index, self.endian, self.source, dir.offset_width);
-        const byte_count_u64 = try readArrayElementU64(counts_entry.*, strip_index, self.endian, self.source, dir.offset_width);
+        const offset = try dir.arrayElementU64(tags.strip_offsets, strip_index, self.endian, self.source);
+        const byte_count_u64 = try dir.arrayElementU64(tags.strip_byte_counts, strip_index, self.endian, self.source);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes) {
             return error.LimitExceededCompressedStripBytes;
         }
@@ -288,8 +288,8 @@ pub const Decoder = struct {
             return error.LimitExceededStripCount;
         }
 
-        const offset = try readArrayElementU64(offsets_entry.*, tile_index, self.endian, self.source, dir.offset_width);
-        const byte_count_u64 = try readArrayElementU64(counts_entry.*, tile_index, self.endian, self.source, dir.offset_width);
+        const offset = try dir.arrayElementU64(tags.tile_offsets, tile_index, self.endian, self.source);
+        const byte_count_u64 = try dir.arrayElementU64(tags.tile_byte_counts, tile_index, self.endian, self.source);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes) {
             return error.LimitExceededCompressedStripBytes;
         }
@@ -476,17 +476,15 @@ pub const Decoder = struct {
                 if (got < byte_count) break :blk error.SourceShortRead;
 
                 // Read JPEGTables tag (347) if present — TIFF Tech Note 2
-                // Mode 2. Borrow the IFD allocator briefly to materialize
-                // the value; jpeg.decode handles either present or absent.
-                var tables_owned: ?[]u8 = null;
-                defer if (tables_owned) |b| self.allocator.free(b);
+                // Mode 2. The value is eagerly cached on the Ifd at
+                // parse time, so we borrow the cached slice. Inline-fit
+                // JPEGTables (≤8 bytes) isn't a real shape — any
+                // useful tables-stream is hundreds of bytes — so we
+                // reject it as malformed.
                 const tables_slice: ?[]const u8 = if (dir.get(tags.jpeg_tables)) |tables_entry| t: {
                     const tables_len = ifd_mod.Ifd.entryValueBytes(tables_entry.*);
                     if (tables_len > self.limits.max_tag_value_bytes) break :blk error.LimitExceededTagValueBytes;
-                    const buf = self.allocator.alloc(u8, @intCast(tables_len)) catch break :blk error.OutOfMemory;
-                    tables_owned = buf;
-                    ifd_mod.Ifd.readEntryValue(tables_entry.*, self.endian, self.source, dir.offset_width, buf) catch |e| break :blk e;
-                    break :t buf;
+                    break :t (dir.cachedValueBytes(tags.jpeg_tables) orelse break :blk error.Malformed);
                 } else null;
 
                 const written = compressions_jpeg.decode(self.allocator, scratch, tables_slice, dest) catch |e| break :blk e;
@@ -532,71 +530,6 @@ fn readScalarU16(dir: Ifd, tag: u16, endian: Endian) errors.Error!?u16 {
 }
 
 /// Read element [index] from a SHORT/LONG/LONG8 array tag, widened to u64.
-/// StripOffsets / StripByteCounts / TileOffsets / TileByteCounts use this
-/// shape — TIFF 6.0 lets writers use SHORT or LONG; BigTIFF adds LONG8.
-/// Per-IFD-entry type, not per-element. `offset_width` determines the
-/// inline-fit cap (4 vs 8) and the out-of-line pointer width.
-fn readArrayElementU64(
-    entry: ifd_mod.Entry,
-    index: u32,
-    endian: Endian,
-    source: Source,
-    offset_width: ifd_mod.OffsetWidth,
-) errors.Error!u64 {
-    if (index >= entry.count) return error.InvalidArgument;
-
-    const total_bytes = Ifd.entryValueBytes(entry);
-    // For inline-fitting arrays values are in raw_value_or_offset directly.
-    // For larger arrays, read from the source via the offset stored there.
-    if (total_bytes <= offset_width.inlineCap()) {
-        return readArrayInline(entry, index, endian, offset_width);
-    }
-
-    // Out of line — read just the element we need (single element pread).
-    const elem_bytes = entry.field_type.elementBytes();
-    if (elem_bytes == 0) return error.UnsupportedTagType;
-    const offset: u64 = switch (offset_width) {
-        .classic => header_mod.readU32(entry.raw_value_or_offset[0..4], endian),
-        .big => header_mod.readU64(&entry.raw_value_or_offset, endian),
-    };
-    const elem_offset = offset + @as(u64, index) * @as(u64, elem_bytes);
-
-    var buf: [8]u8 = undefined;
-    const need: usize = elem_bytes;
-    if (need > buf.len) return error.UnsupportedTagType;
-    const got = source.readAt(buf[0..need], elem_offset) catch return error.Io;
-    if (got < need) return error.SourceShortRead;
-
-    return switch (entry.field_type) {
-        .short => @as(u64, header_mod.readU16(buf[0..2], endian)),
-        .long => @as(u64, header_mod.readU32(buf[0..4], endian)),
-        .long8 => header_mod.readU64(buf[0..8], endian),
-        else => error.UnsupportedTagType,
-    };
-}
-
-fn readArrayInline(entry: ifd_mod.Entry, index: u32, endian: Endian, offset_width: ifd_mod.OffsetWidth) errors.Error!u64 {
-    const cap = offset_width.inlineCap();
-    return switch (entry.field_type) {
-        .short => blk: {
-            const start: usize = @as(usize, index) * 2;
-            if (start + 2 > cap) return error.Malformed;
-            break :blk @as(u64, header_mod.readU16(entry.raw_value_or_offset[start..][0..2], endian));
-        },
-        .long => blk: {
-            const start: usize = @as(usize, index) * 4;
-            if (start + 4 > cap) return error.Malformed;
-            break :blk @as(u64, header_mod.readU32(entry.raw_value_or_offset[start..][0..4], endian));
-        },
-        .long8 => blk: {
-            // Only one LONG8 fits inline (8 bytes = full big-slot).
-            if (entry.count != 1 or offset_width != .big) return error.Malformed;
-            break :blk header_mod.readU64(&entry.raw_value_or_offset, endian);
-        },
-        else => error.UnsupportedTagType,
-    };
-}
-
 // ---- tests ----
 
 const BufferHandle = @import("source.zig").BufferHandle;

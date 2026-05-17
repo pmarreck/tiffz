@@ -377,7 +377,19 @@ tools/
 
 # Source tree (planned shape for later milestones)
 src/
-  ifd.zig                    IFD parsing (tag dict + lazy values)        [M3]
+  ifd.zig                    IFD parsing with eager out-of-line value
+                             caching. parse() reads the IFD entry block,
+                             then sorts out-of-line entries by
+                             value_offset and walks them in
+                             forward-only order so a streaming Source
+                             never back-seeks during parse. The cached
+                             bytes are owned by the Ifd and freed in
+                             deinit. arrayElementU64(tag, index, …)
+                             and readEntryValueCached(tag, …) serve
+                             reads from the cache; both fall back to a
+                             Source pread if the value somehow wasn't
+                             cached (defensive only — shouldn't
+                             happen post-parse).                       [M3]
   bigtiff.zig                Comptime offset-width abstraction (u32/u64) [M7]
   compressions/
     uncompressed.zig                                                     [M3]

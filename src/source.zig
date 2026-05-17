@@ -46,19 +46,30 @@ pub const Source = struct {
     /// touching the reader. Reads to offsets before the cache window
     /// fail with `error.SourceSeekTooFarBack` — single-threaded only.
     ///
-    /// **Cache-sizing guidance.** TIFF IFD-out-of-line tag values
-    /// (StripOffsets, StripByteCounts, ColorMap, JPEGTables, …) live
-    /// near the start of the file while strip data extends to the end.
-    /// `Decoder.decodeStrip(i)` re-reads StripOffsets[i] each call
-    /// (the decoder doesn't yet eagerly cache the arrays), so a small
-    /// cache that slides past those tag values will fail subsequent
-    /// strip lookups with `error.SourceSeekTooFarBack`. The pragmatic
-    /// rule for v1: pick a cache size ≥ `(end of last tag-value block)
-    /// + (largest single strip size)`. For typical libtiff-default
-    /// layouts that's a few hundred bytes plus the strip size, so
-    /// 1 MiB is comfortable for most workflows. Forward-only access
-    /// patterns (e.g. `validateStreaming` once it lands) lift this
-    /// constraint.
+    /// **Cache-sizing guidance.** Out-of-line IFD tag values are
+    /// eagerly cached on the `Ifd` at parse time (see
+    /// `Ifd.parse`), so subsequent per-strip lookups don't round-trip
+    /// the Source. That leaves two file-layout concerns:
+    ///
+    /// 1. **IFD-at-start (libtiff default for most writers):** the
+    ///    IFD entries + all out-of-line tag values live near the
+    ///    beginning of the file, strip data follows. After parse,
+    ///    streaming forward through strip data is monotone — even a
+    ///    1 MiB cache works for arbitrarily large files.
+    ///
+    /// 2. **IFD-at-end (GraphicsMagick / some other writers):** the
+    ///    IFD lives at the end of the file with tag values just
+    ///    before, and strip data fills the bulk of the bytes in
+    ///    between. Streaming through such a file means reading all
+    ///    the strip data first (to advance the source position to
+    ///    the IFD), then parsing the IFD reads tag values
+    ///    *backward* into the strip region — a sliding window
+    ///    smaller than the strip-data span will fail with
+    ///    `error.SourceSeekTooFarBack`. For these files the cache
+    ///    must span at least `[start of strip data, end of IFD]`
+    ///    — typically the whole file. Use `Source.fromBuffer` (or
+    ///    a memory-mapped source) when the reader is genuinely
+    ///    streaming and the file is large + IFD-at-end.
     pub fn fromBufferedReader(handle: *BufferedReaderHandle) Source {
         return .{
             .ctx = @ptrCast(handle),
