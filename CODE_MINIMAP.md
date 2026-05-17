@@ -371,6 +371,7 @@ src/
     packbits.zig / lzw.zig / deflate.zig                                 [M4]
     ccitt_t4.zig / ccitt_t6.zig                                          [M4]
     jpeg.zig                 (wraps sibling jpegz)                       [M9.5]
+    zstd.zig                 (wraps sibling zstdz)                       [M12]
   predictors.zig             None / Horizontal / Floating-point          [M5]
   photometrics.zig           RGB / palette / CMYK / YCbCr / Lab          [M9]
   convenience.zig            validateAll / decodeStreaming / decodeAll

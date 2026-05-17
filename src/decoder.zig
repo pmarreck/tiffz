@@ -27,6 +27,7 @@ const compressions_deflate = @import("compressions/deflate.zig");
 const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
 const compressions_ccitt_t6 = @import("compressions/ccitt_t6.zig");
 const compressions_jpeg = @import("compressions/jpeg.zig");
+const compressions_zstd = @import("compressions/zstd.zig");
 const predictors_mod = @import("predictors.zig");
 
 pub const Decoder = struct {
@@ -433,6 +434,19 @@ pub const Decoder = struct {
                 const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
                 if (got < byte_count) break :blk error.SourceShortRead;
                 const written = compressions_deflate.decode(scratch, dest) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
+            tags.compression_zstd => blk: {
+                // ZSTD-in-TIFF (Compression=50000, GDAL/libtiff
+                // extension). Each strip/tile is an independent ZSTD
+                // frame.
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = compressions_zstd.decode(scratch[0..byte_count], dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }

@@ -43,6 +43,7 @@ pub const compression_jpeg: u16 = 7;         // JPEG-in-TIFF (M9.5)
 pub const compression_deflate: u16 = 8;
 pub const compression_deflate_adobe: u16 = 32946;
 pub const compression_packbits: u16 = 32773;
+pub const compression_zstd: u16 = 50000;     // GDAL/libtiff extension, M12
 
 /// Photometric interpretation codes (tag 262).
 pub const photometric_white_is_zero: u16 = 0;

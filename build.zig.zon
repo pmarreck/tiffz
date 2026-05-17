@@ -13,6 +13,13 @@
             .url = "git+https://github.com/pmarreck/jpegz#c36cb174cff4bcc64739d00f030dec4d81843321",
             .hash = "jpegz-0.1.0-staw4LKVCACwNFZlNbPby2iOPn2AIJZSiZ1IenTttyux",
         },
+        // zstdz — Peter's fork of facebook/zstd packaged as a Zig
+        // build with the C library vendored. Provides the codec for
+        // Compression=50000 (ZSTD-in-TIFF, GDAL/libtiff extension).
+        .zstdz = .{
+            .url = "git+https://github.com/pmarreck/zstdz#f5a61699f1958c7bc152a417ff86336a6efa4689",
+            .hash = "zstdz-1.6.0-yDWjzh5cNADGI2Q-tHdBT0IJ1Frqd3Ik6oa4kFnSoLzO",
+        },
     },
     .paths = .{
         "build.zig",
