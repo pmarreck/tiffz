@@ -104,8 +104,20 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
         cmap_buf = cmap16;
     }
 
+    // JPEG-in-TIFF with photometric=YCbCr quirk: libjpeg performs the
+    // YCbCr→RGB conversion internally during decode, so the bytes
+    // emitted by Decoder.decodeStrip are RGB regardless of the TIFF
+    // photometric tag. Override here so expandRowsToRgba treats the
+    // strip as RGB rather than re-applying a (now-incorrect) YCbCr→RGB
+    // matrix. Mirrors libtiff TIFFReadRGBAImage behavior.
+    const compression = ifdScalarU16(dir, tiffz.tags.compression, dec.endian) orelse tiffz.tags.compression_none;
+    const effective_photometric: u16 = if (compression == tiffz.tags.compression_jpeg and photometric == tiffz.tags.photometric_ycbcr)
+        tiffz.tags.photometric_rgb
+    else
+        photometric;
+
     const fmt: tiffz.photometrics.PixelFormat = .{
-        .photometric = photometric,
+        .photometric = effective_photometric,
         .bits_per_sample = bits_per_sample,
         .samples_per_pixel = samples_per_pixel,
         .width = width,
@@ -547,6 +559,102 @@ test "rgb_separate.tif (uncompressed 16x16 RGB 8-bit, planar=separate): RGBA mat
         std.testing.allocator,
         "tests/fixtures/photometric/rgb_separate.tif",
         "tests/fixtures/photometric_oracle/rgb_separate.rgba",
+    );
+}
+
+/// Sequential reader backed by a byte slice. Used as the underlying
+/// reader for `Source.fromBufferedReader` end-to-end tests.
+const SequentialReader = struct {
+    bytes: []const u8,
+    pos: usize,
+
+    fn readFn(ctx: *anyopaque, buf: []u8) anyerror!usize {
+        const self: *SequentialReader = @ptrCast(@alignCast(ctx));
+        const remaining = self.bytes.len - self.pos;
+        const n = @min(buf.len, remaining);
+        @memcpy(buf[0..n], self.bytes[self.pos .. self.pos + n]);
+        self.pos += n;
+        return n;
+    }
+};
+
+test "fromBufferedReader: rgb-3c-8b.tiff decodes via streaming source" {
+    // Streaming-source end-to-end: load the file bytes, feed them
+    // through SequentialReader (emulating a network/file stream),
+    // open via fromBufferedReader and decode IFD + strips.
+    //
+    // Cache size: 128 KiB > 71 KiB file. The decoder re-reads
+    // StripOffsets / StripByteCounts on each decodeStrip call rather
+    // than caching the arrays eagerly, so a cache that slides past
+    // those low-offset out-of-line tag values surfaces as
+    // SourceSeekTooFarBack on the next strip lookup. The current
+    // pragmatic rule is "cache ≥ file size + a margin" until the
+    // decoder grows lazy array caching; for files this small that's
+    // trivial. See fromBufferedReader's doc-comment for the full
+    // sizing-guidance story.
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/uncompressed/rgb-3c-8b.tiff");
+    defer allocator.free(bytes);
+
+    var reader = SequentialReader{ .bytes = bytes, .pos = 0 };
+    const cache = try allocator.alloc(u8, 128 * 1024);
+    defer allocator.free(cache);
+    var handle = tiffz.source.BufferedReaderHandle.init(
+        @ptrCast(&reader),
+        &SequentialReader.readFn,
+        bytes.len,
+        cache,
+    );
+    const src = tiffz.Source.fromBufferedReader(&handle);
+
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+
+    const dir = try dec.ifd(0);
+    const width = ifdScalarU32(dir, tiffz.tags.image_width, dec.endian) orelse return error.Malformed;
+    const height = ifdScalarU32(dir, tiffz.tags.image_length, dec.endian) orelse return error.Malformed;
+    try std.testing.expectEqual(@as(u32, 157), width);
+    try std.testing.expectEqual(@as(u32, 151), height);
+
+    const sbc_entry = dir.get(tiffz.tags.strip_byte_counts) orelse return error.Malformed;
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    const scratch = try allocator.alloc(u8, 64 * 1024);
+    defer allocator.free(scratch);
+    // Decode all strips end-to-end to confirm the streaming source
+    // serves both the tag-value re-reads and the strip-data reads
+    // without back-seek errors.
+    var total: u64 = 0;
+    var i: u32 = 0;
+    while (i < sbc_entry.count) : (i += 1) {
+        const n = try dec.decodeStrip(0, i, scratch, &ws);
+        total += n;
+    }
+    try std.testing.expectEqual(@as(u64, 71121), total);
+}
+
+test "ycbcr_jpeg.tif (Compression=7 JPEG-in-TIFF, photometric=YCbCr, 16x16): RGBA matches libtiff tiff2rgba oracle" {
+    // libtiff's tiffcp writes YCbCr-photometric JPEG-in-TIFF with
+    // chroma subsampling 2:2 (the format default for RGB→JPEG). tiffz's
+    // decode path hands the JPEG bitstream to libjpeg via jpegz, which
+    // performs the YCbCr→RGB conversion + chroma upsampling internally;
+    // fixture_test bypasses tiffz's YCbCr photometric expansion via the
+    // override in decodeFixtureToRgba. Oracle generated via tiff2rgba
+    // because ImageMagick's Q16-internal chroma upsampling differs
+    // from libjpeg/libtiff (visibly — not just ±1 LSB), and tiff2rgba
+    // is the spec-canonical reference for this codec path.
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/jpeg/ycbcr_jpeg.tif",
+        "tests/fixtures/jpeg_oracle/ycbcr_jpeg.rgba",
+    );
+}
+
+test "rgb_zstd.tif (Compression=50000 ZSTD-in-TIFF, 16x16 RGB 8-bit): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/zstd/rgb_zstd.tif",
+        "tests/fixtures/zstd_oracle/rgb_zstd.rgba",
     );
 }
 

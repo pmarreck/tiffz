@@ -114,6 +114,16 @@ pub fn build(b: *std.Build) void {
     };
     const jpegz_mod = jpegz_dep.module("jpegz");
     lib_module.addImport("jpegz", jpegz_mod);
+
+    // zstdz — pmarreck's fork of facebook/zstd, vendored C library
+    // built by zstdz itself (no system zstd dep). Provides the codec
+    // for Compression=50000 (ZSTD-in-TIFF, GDAL/libtiff extension).
+    const zstdz_dep = b.dependency("zstdz", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zstdz_mod = zstdz_dep.module("zstd");
+    lib_module.addImport("zstd", zstdz_mod);
     const lib = b.addLibrary(.{
         .name = "tiffz",
         .linkage = .static,
@@ -133,6 +143,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_lib_path.len > 0) tiffz_named_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     tiffz_named_module.linkSystemLibrary("z", .{});
     tiffz_named_module.addImport("jpegz", jpegz_mod);
+    tiffz_named_module.addImport("zstd", zstdz_mod);
 
     // --- C CLI executable (dogfoods the C FFI per project convention) ---
     const cli = b.addExecutable(.{
@@ -171,6 +182,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_lib_path.len > 0) unit_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     unit_tests_module.linkSystemLibrary("z", .{});
     unit_tests_module.addImport("jpegz", jpegz_mod);
+    unit_tests_module.addImport("zstd", zstdz_mod);
     const unit_tests = b.addTest(.{ .root_module = unit_tests_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
 

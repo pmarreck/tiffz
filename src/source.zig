@@ -38,6 +38,33 @@ pub const Source = struct {
             .vtable = &buffer_vtable,
         };
     }
+
+    /// Wrap a sequential-reader + sliding-cache as a Source. The
+    /// `BufferedReaderHandle` owns the cache buffer (caller-supplied,
+    /// typically 1–8 MiB). Reads forward through the underlying reader
+    /// as needed; reads inside the cache window are served without
+    /// touching the reader. Reads to offsets before the cache window
+    /// fail with `error.SourceSeekTooFarBack` — single-threaded only.
+    ///
+    /// **Cache-sizing guidance.** TIFF IFD-out-of-line tag values
+    /// (StripOffsets, StripByteCounts, ColorMap, JPEGTables, …) live
+    /// near the start of the file while strip data extends to the end.
+    /// `Decoder.decodeStrip(i)` re-reads StripOffsets[i] each call
+    /// (the decoder doesn't yet eagerly cache the arrays), so a small
+    /// cache that slides past those tag values will fail subsequent
+    /// strip lookups with `error.SourceSeekTooFarBack`. The pragmatic
+    /// rule for v1: pick a cache size ≥ `(end of last tag-value block)
+    /// + (largest single strip size)`. For typical libtiff-default
+    /// layouts that's a few hundred bytes plus the strip size, so
+    /// 1 MiB is comfortable for most workflows. Forward-only access
+    /// patterns (e.g. `validateStreaming` once it lands) lift this
+    /// constraint.
+    pub fn fromBufferedReader(handle: *BufferedReaderHandle) Source {
+        return .{
+            .ctx = @ptrCast(handle),
+            .vtable = &buffered_reader_vtable,
+        };
+    }
 };
 
 /// Caller-managed handle wrapping a byte slice for fromBuffer.
@@ -70,6 +97,128 @@ fn bufferReadAt(ctx: *anyopaque, dst: []u8, offset: u64) anyerror!usize {
 fn bufferSize(ctx: *anyopaque) anyerror!u64 {
     const handle: *const BufferHandle = @ptrCast(@alignCast(ctx));
     return @intCast(handle.bytes.len);
+}
+
+/// Sentinel error for back-seek beyond the cache window. Re-export of
+/// errors.SourceSeekTooFarBack via Source.read_at's `anyerror` channel.
+const SourceSeekTooFarBack = error.SourceSeekTooFarBack;
+
+/// Caller-managed handle wrapping a sequential reader + sliding cache
+/// for `fromBufferedReader`. The cache buffer slice is owned by the
+/// caller and must outlive the Source.
+pub const BufferedReaderHandle = struct {
+    /// Underlying reader. `read_fn(ctx, buf)` fills `buf` with the
+    /// next sequential bytes and returns how many were read. Short
+    /// reads allowed; 0 means EOF.
+    reader_ctx: *anyopaque,
+    read_fn: *const fn (ctx: *anyopaque, buf: []u8) anyerror!usize,
+
+    /// Pre-declared total source size in bytes — caller knows this
+    /// from out-of-band metadata (Content-Length, file stat, etc.).
+    total_size: u64,
+
+    /// Caller-allocated cache buffer. Length defines the cache window.
+    /// The design doc recommends 8 MiB for typical TIFF layouts; 1 MiB
+    /// also works for tiles that comfortably fit.
+    cache_buf: []u8,
+    /// File offset of `cache_buf[0]`. Reads at offsets < cache_start
+    /// fail with SourceSeekTooFarBack.
+    cache_start: u64,
+    /// How much of `cache_buf` is currently filled. The cache window
+    /// covers `[cache_start, cache_start + cache_len)`.
+    cache_len: usize,
+    /// True after the underlying reader returned 0 (EOF).
+    eof: bool,
+
+    pub fn init(
+        reader_ctx: *anyopaque,
+        read_fn: *const fn (ctx: *anyopaque, buf: []u8) anyerror!usize,
+        total_size: u64,
+        cache_buf: []u8,
+    ) BufferedReaderHandle {
+        return .{
+            .reader_ctx = reader_ctx,
+            .read_fn = read_fn,
+            .total_size = total_size,
+            .cache_buf = cache_buf,
+            .cache_start = 0,
+            .cache_len = 0,
+            .eof = false,
+        };
+    }
+
+    /// Pull more bytes from the reader, sliding the cache window
+    /// forward if the cache is full. Returns the number of bytes
+    /// freshly buffered (0 if EOF reached).
+    fn refill(self: *BufferedReaderHandle) anyerror!usize {
+        if (self.eof) return 0;
+        if (self.cache_len == self.cache_buf.len) {
+            // Cache full — slide forward by half the cache so we
+            // amortize the memmove cost across multiple subsequent
+            // refills rather than memmove-ing one byte per pull.
+            const slide: usize = self.cache_buf.len / 2;
+            std.mem.copyForwards(
+                u8,
+                self.cache_buf[0 .. self.cache_buf.len - slide],
+                self.cache_buf[slide..],
+            );
+            self.cache_start += slide;
+            self.cache_len -= slide;
+        }
+        const free_space = self.cache_buf.len - self.cache_len;
+        const n = try self.read_fn(self.reader_ctx, self.cache_buf[self.cache_len .. self.cache_len + free_space]);
+        if (n == 0) {
+            self.eof = true;
+            return 0;
+        }
+        self.cache_len += n;
+        return n;
+    }
+};
+
+const buffered_reader_vtable: Source.VTable = .{
+    .read_at = bufferedReaderReadAt,
+    .size = bufferedReaderSize,
+};
+
+fn bufferedReaderSize(ctx: *anyopaque) anyerror!u64 {
+    const handle: *const BufferedReaderHandle = @ptrCast(@alignCast(ctx));
+    return handle.total_size;
+}
+
+fn bufferedReaderReadAt(ctx: *anyopaque, dst: []u8, offset: u64) anyerror!usize {
+    const handle: *BufferedReaderHandle = @ptrCast(@alignCast(ctx));
+
+    // Past end of source — return 0 (short read).
+    if (offset >= handle.total_size) return 0;
+    // Before cache window — caller asked us to seek backwards beyond
+    // what we've kept. Surface as an error so the caller can decide
+    // (re-open the source, bump the cache size, etc.). This is the
+    // single foot-gun the design doc warned about; the cache size
+    // should be picked to make this case rare for the workload.
+    if (offset < handle.cache_start) return SourceSeekTooFarBack;
+
+    // Clamp the request to the known end of the source.
+    const remaining_in_source: u64 = handle.total_size - offset;
+    const want: usize = @intCast(@min(@as(u64, dst.len), remaining_in_source));
+
+    var copied: usize = 0;
+    while (copied < want) {
+        const cur_offset: u64 = offset + copied;
+        const cache_end: u64 = handle.cache_start + handle.cache_len;
+        if (cur_offset >= cache_end) {
+            // Need to pull from the reader.
+            const got = try handle.refill();
+            if (got == 0) break; // EOF before request fulfilled
+            continue;
+        }
+        const in_cache_off: usize = @intCast(cur_offset - handle.cache_start);
+        const avail_in_cache: usize = handle.cache_len - in_cache_off;
+        const to_copy: usize = @min(want - copied, avail_in_cache);
+        @memcpy(dst[copied .. copied + to_copy], handle.cache_buf[in_cache_off .. in_cache_off + to_copy]);
+        copied += to_copy;
+    }
+    return copied;
 }
 
 test "Source type compiles" {
@@ -138,4 +287,148 @@ test "fromBuffer: empty slice has zero size and reads return zero" {
 
     var dst: [4]u8 = undefined;
     try std.testing.expectEqual(@as(usize, 0), try src.readAt(&dst, 0));
+}
+
+// ---- fromBufferedReader tests ----
+
+/// Helper: a sequential reader backed by a fixed byte slice. Mimics
+/// a streaming source whose total length is known up front (the
+/// typical TIFF-over-network or TIFF-from-file shape).
+const SliceReader = struct {
+    bytes: []const u8,
+    pos: usize,
+
+    fn readFn(ctx: *anyopaque, buf: []u8) anyerror!usize {
+        const self: *SliceReader = @ptrCast(@alignCast(ctx));
+        const remaining = self.bytes.len - self.pos;
+        const n = @min(buf.len, remaining);
+        @memcpy(buf[0..n], self.bytes[self.pos .. self.pos + n]);
+        self.pos += n;
+        return n;
+    }
+};
+
+test "fromBufferedReader: size matches declared total" {
+    const data = [_]u8{ 1, 2, 3, 4, 5 };
+    var reader = SliceReader{ .bytes = &data, .pos = 0 };
+    var cache: [16]u8 = undefined;
+    var handle = BufferedReaderHandle.init(@ptrCast(&reader), &SliceReader.readFn, data.len, &cache);
+    const src = Source.fromBufferedReader(&handle);
+    try std.testing.expectEqual(@as(u64, 5), try src.sizeOf());
+}
+
+test "fromBufferedReader: sequential forward read fills via reader" {
+    var data: [128]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @intCast(i);
+    var reader = SliceReader{ .bytes = &data, .pos = 0 };
+    var cache: [32]u8 = undefined;
+    var handle = BufferedReaderHandle.init(@ptrCast(&reader), &SliceReader.readFn, data.len, &cache);
+    const src = Source.fromBufferedReader(&handle);
+
+    var dst: [16]u8 = undefined;
+    const n = try src.readAt(&dst, 0);
+    try std.testing.expectEqual(@as(usize, 16), n);
+    try std.testing.expectEqualSlices(u8, data[0..16], &dst);
+}
+
+test "fromBufferedReader: forward seek beyond cache window slides forward" {
+    var data: [1024]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @intCast(i & 0xFF);
+    var reader = SliceReader{ .bytes = &data, .pos = 0 };
+    var cache: [64]u8 = undefined; // small cache to force sliding
+    var handle = BufferedReaderHandle.init(@ptrCast(&reader), &SliceReader.readFn, data.len, &cache);
+    const src = Source.fromBufferedReader(&handle);
+
+    // Jump to offset 500 — well past the 64-byte cache window.
+    var dst: [8]u8 = undefined;
+    const n = try src.readAt(&dst, 500);
+    try std.testing.expectEqual(@as(usize, 8), n);
+    try std.testing.expectEqualSlices(u8, data[500..508], &dst);
+}
+
+test "fromBufferedReader: read inside cache window doesn't advance the reader" {
+    var data: [64]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @intCast(i);
+    var reader = SliceReader{ .bytes = &data, .pos = 0 };
+    var cache: [32]u8 = undefined;
+    var handle = BufferedReaderHandle.init(@ptrCast(&reader), &SliceReader.readFn, data.len, &cache);
+    const src = Source.fromBufferedReader(&handle);
+
+    // First read at offset 0 — pulls 32 bytes into cache.
+    var dst1: [16]u8 = undefined;
+    _ = try src.readAt(&dst1, 0);
+    const reader_pos_after_first = reader.pos;
+
+    // Second read at offset 5 — stays inside cache window.
+    var dst2: [8]u8 = undefined;
+    const n2 = try src.readAt(&dst2, 5);
+    try std.testing.expectEqual(@as(usize, 8), n2);
+    try std.testing.expectEqualSlices(u8, data[5..13], &dst2);
+    // Reader position should be unchanged: no new pull required.
+    try std.testing.expectEqual(reader_pos_after_first, reader.pos);
+}
+
+test "fromBufferedReader: back-seek inside cache window works" {
+    var data: [256]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @intCast(i & 0xFF);
+    var reader = SliceReader{ .bytes = &data, .pos = 0 };
+    var cache: [128]u8 = undefined;
+    var handle = BufferedReaderHandle.init(@ptrCast(&reader), &SliceReader.readFn, data.len, &cache);
+    const src = Source.fromBufferedReader(&handle);
+
+    var dst: [16]u8 = undefined;
+    _ = try src.readAt(&dst, 80); // pulls bytes through 80+16=96
+    // Back-seek to 50 — still inside [cache_start, cache_end).
+    const n = try src.readAt(&dst, 50);
+    try std.testing.expectEqual(@as(usize, 16), n);
+    try std.testing.expectEqualSlices(u8, data[50..66], &dst);
+}
+
+test "fromBufferedReader: back-seek past cache start errors" {
+    var data: [2048]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @intCast(i & 0xFF);
+    var reader = SliceReader{ .bytes = &data, .pos = 0 };
+    var cache: [64]u8 = undefined;
+    var handle = BufferedReaderHandle.init(@ptrCast(&reader), &SliceReader.readFn, data.len, &cache);
+    const src = Source.fromBufferedReader(&handle);
+
+    var dst: [8]u8 = undefined;
+    // Pull far forward — the cache has slid past offset 0.
+    _ = try src.readAt(&dst, 1500);
+    try std.testing.expect(handle.cache_start > 0);
+
+    // Try to read at offset 0 → too far back.
+    try std.testing.expectError(error.SourceSeekTooFarBack, src.readAt(&dst, 0));
+}
+
+test "fromBufferedReader: read past total_size returns short" {
+    var data: [10]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @intCast(i);
+    var reader = SliceReader{ .bytes = &data, .pos = 0 };
+    var cache: [32]u8 = undefined;
+    var handle = BufferedReaderHandle.init(@ptrCast(&reader), &SliceReader.readFn, data.len, &cache);
+    const src = Source.fromBufferedReader(&handle);
+
+    var dst: [20]u8 = undefined;
+    const n = try src.readAt(&dst, 5);
+    try std.testing.expectEqual(@as(usize, 5), n); // only 5 bytes remain from offset 5
+    try std.testing.expectEqualSlices(u8, data[5..10], dst[0..5]);
+
+    // Read at exactly total_size → 0.
+    const m = try src.readAt(&dst, 10);
+    try std.testing.expectEqual(@as(usize, 0), m);
+}
+
+test "fromBufferedReader: request larger than cache iteratively slides" {
+    var data: [256]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @intCast(i & 0xFF);
+    var reader = SliceReader{ .bytes = &data, .pos = 0 };
+    var cache: [16]u8 = undefined; // tiny cache, request is bigger
+    var handle = BufferedReaderHandle.init(@ptrCast(&reader), &SliceReader.readFn, data.len, &cache);
+    const src = Source.fromBufferedReader(&handle);
+
+    var dst: [200]u8 = undefined;
+    const n = try src.readAt(&dst, 0);
+    try std.testing.expectEqual(@as(usize, 200), n);
+    try std.testing.expectEqualSlices(u8, data[0..200], &dst);
 }

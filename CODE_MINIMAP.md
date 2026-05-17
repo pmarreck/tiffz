@@ -166,6 +166,19 @@ src/
                              sans-SOI into one self-contained JPEG stream.
                              Photometric=RGB (2) only in M9.5; YCbCr (6)
                              defers to M9 (Pro photometrics).
+  source.zig                 Seekable byte-source vtable
+                             (`read_at(buf, offset) + size()`). Two
+                             implementations: fromBuffer wraps an
+                             immutable byte slice (no allocation);
+                             fromBufferedReader wraps a sequential
+                             reader + caller-supplied cache window
+                             (`BufferedReaderHandle`). The latter
+                             slides forward through the reader as
+                             needed and surfaces back-seeks past
+                             `cache_start` as
+                             error.SourceSeekTooFarBack. Cache-sizing
+                             guidance is in fromBufferedReader's
+                             doc-comment.
   predictors.zig             applyInverse reverses the TIFF Predictor tag
                              (317) transform on post-codec strip bytes.
                              Predictor=1 (none) is no-op; predictor=2
@@ -371,6 +384,7 @@ src/
     packbits.zig / lzw.zig / deflate.zig                                 [M4]
     ccitt_t4.zig / ccitt_t6.zig                                          [M4]
     jpeg.zig                 (wraps sibling jpegz)                       [M9.5]
+    zstd.zig                 (wraps sibling zstdz)                       [M12]
   predictors.zig             None / Horizontal / Floating-point          [M5]
   photometrics.zig           RGB / palette / CMYK / YCbCr / Lab          [M9]
   convenience.zig            validateAll / decodeStreaming / decodeAll

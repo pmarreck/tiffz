@@ -20,10 +20,32 @@ public API design.
       reads N strips per row band and routes through the helper.
       rgb_separate.tif (16x16 RGB 8-bit, planar=separate) matches the
       magick RGBA oracle byte-exact.
-- [ ] **ZSTD-in-TIFF** via pmarreck/zstdz fork.
-- [ ] **JPEG-in-TIFF YCbCr photometric override** (caller-side); add
-      end-to-end fixture.
-- [ ] **Streaming `Source.fromBufferedReader`** with sliding cache.
+- [x] **ZSTD-in-TIFF** (2026-05-17). Compression code 50000.
+      `src/compressions/zstd.zig` wraps pmarreck/zstdz (vendored
+      facebook/zstd C library via Zig build). rgb_zstd.tif fixture
+      generated via `gdal_translate -co COMPRESS=ZSTD` decodes byte-
+      exact against the magick RGBA oracle.
+- [x] **JPEG-in-TIFF YCbCr photometric override** (2026-05-17).
+      Caller-side override in `decodeFixtureToRgba`: when
+      compression=7 + photometric=YCbCr, force photometric=RGB before
+      expansion (libjpeg already converts internally). ycbcr_jpeg.tif
+      fixture (tiffcp -c jpeg:90, subsampling 2:2) matches libtiff
+      tiff2rgba byte-exact.
+- [x] **Streaming `Source.fromBufferedReader`** with sliding cache
+      (2026-05-17). New `BufferedReaderHandle` wraps a sequential
+      reader (function-pointer ctx + read_fn) and a caller-supplied
+      cache window. Reads inside the window are served from cache
+      without touching the reader; forward reads beyond `cache_end`
+      pull from the reader (sliding the window by half its size
+      when full to amortize the memmove cost across multiple pulls);
+      reads before `cache_start` surface as
+      `error.SourceSeekTooFarBack`. Cache-sizing guidance documented
+      in `Source.fromBufferedReader`: since the decoder re-reads
+      out-of-line tag values (StripOffsets / StripByteCounts / etc.)
+      on each `decodeStrip` call rather than caching the arrays
+      eagerly, the cache must remain large enough to keep those
+      low-offset values resident; for typical libtiff-default
+      layouts a 1 MiB cache covers all common cases.
 
 ## Milestones (from SPEC §9 — implement in order)
 
