@@ -7,11 +7,23 @@ public API design.
 
 ## Next up
 
-- [ ] **M4: Compressions in order.** PackBits → LZW → Deflate →
-      CCITT T.4 → CCITT T.6. Each lands as a separate
-      `compressions/<scheme>.zig` driven from `decodeStrip`'s switch
-      on the Compression tag. Marquee target at the end (T.6): the
-      11059×15671 scan that drifts after row 1030 in zigimg's PR #321.
+- [x] **16-bit-per-sample photometric expansion (RGB / Gray / CMYK)**
+      (2026-05-17). `PixelFormat` gained `endian: Endian = .little`;
+      new `sampleU8` helper does endian-aware u16 reads + canonical
+      `(x*255+32767)/65535` downscale. Per-channel u8 reuse keeps the
+      8-bit composition math intact. Palette + CFA + YCbCr + Lab stay
+      8-bit (16-bit variants are niche).
+- [x] **planar=separate photometric expansion** (2026-05-17). New
+      `interleavePlanesToChunky` helper assembles N per-plane buffers
+      into chunky form for `expandRowsToRgba` to consume. Fixture
+      test integration through `decodeStrippedSeparateIntoRgba` which
+      reads N strips per row band and routes through the helper.
+      rgb_separate.tif (16x16 RGB 8-bit, planar=separate) matches the
+      magick RGBA oracle byte-exact.
+- [ ] **ZSTD-in-TIFF** via pmarreck/zstdz fork.
+- [ ] **JPEG-in-TIFF YCbCr photometric override** (caller-side); add
+      end-to-end fixture.
+- [ ] **Streaming `Source.fromBufferedReader`** with sliding cache.
 
 ## Milestones (from SPEC §9 — implement in order)
 

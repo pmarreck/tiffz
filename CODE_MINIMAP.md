@@ -210,8 +210,18 @@ src/
                              } with parameters as a zero-copy borrow.
                              Hard cap of 1,000,000 opcodes bounds
                              allocation on adversarial inputs.
-  photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
-                             pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
+  photometrics.zig           expandRowsToRgba: decoded chunky pixels →
+                             RGBA. Supports bits_per_sample ∈ {1, 8, 16}
+                             (16-bit only for RGB/Gray/CMYK; palette,
+                             CFA, YCbCr, Lab stay 8-bit at v1). 16-bit
+                             reads go through `sampleU8` which uses the
+                             file endian + canonical
+                             `(x*255 + 32767) / 65535` downscale.
+                             interleavePlanesToChunky helper handles
+                             planar=separate at the caller side by
+                             interleaving N per-plane buffers into
+                             chunky form for expandRowsToRgba to
+                             consume. Photometric ∈ {0 MinIsWhite, 1
                              MinIsBlack, 2 RGB, 3 Palette, 5 CMYK, 6 YCbCr,
                              8 CIELAB, 32803 CFA}. Palette uses the
                              canonical `(u16 * 255 + 32767) / 65535`

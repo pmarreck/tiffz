@@ -21,16 +21,87 @@ const std = @import("std");
 
 const errors = @import("errors.zig");
 const tags = @import("tags.zig");
+const header_mod = @import("header.zig");
+const Endian = header_mod.Endian;
 
 pub const PixelFormat = struct {
     photometric: u16,
-    bits_per_sample: u16,           // assumed uniform across samples for M3
+    bits_per_sample: u16,           // assumed uniform across samples; supported widths: 1, 8, 16 (16 for RGB/Gray/CMYK only)
     samples_per_pixel: u16,
     width: u32,
     /// For palette photometric only. Length = 3 × (2^bits_per_sample).
     /// Layout per TIFF 6.0: all R values, then all G, then all B.
     colormap: ?[]const u16,
+    /// File byte order. Only consulted for 16-bit-per-sample reads
+    /// (the canonical u16 -> u8 downscale `(x * 255 + 32767) / 65535`
+    /// is endian-independent once the u16 is recovered). Defaults to
+    /// `.little` since 8-bit paths ignore it.
+    endian: Endian = .little,
 };
+
+/// For separate planar (TIFF tag 284 = 2): interleave N per-plane row
+/// buffers into a single chunky buffer that `expandRowsToRgba` can
+/// consume. `plane_buffers[k]` holds the samples for channel `k`,
+/// laid out as `rows × width` samples in file byte order.
+///
+/// Output layout (chunky): pixel-0 ch-0, pixel-0 ch-1, …, pixel-0 ch-N-1,
+/// pixel-1 ch-0, … Row-major over rows.
+///
+/// Required because TIFF separate-planar storage delivers one plane
+/// at a time (each strip is a single channel). Callers that already
+/// have chunky data skip this helper.
+pub fn interleavePlanesToChunky(
+    plane_buffers: []const []const u8,
+    rows: u32,
+    width: u32,
+    bits_per_sample: u16,
+    dest: []u8,
+) errors.Error!void {
+    if (bits_per_sample != 8 and bits_per_sample != 16) return error.UnsupportedBitDepth;
+    if (plane_buffers.len == 0) return error.InvalidArgument;
+    const sample_bytes: usize = bits_per_sample / 8;
+    const spp: usize = plane_buffers.len;
+    const bytes_per_plane_row: usize = @as(usize, width) * sample_bytes;
+    const bytes_per_chunky_row: usize = bytes_per_plane_row * spp;
+    const total_rows: usize = @as(usize, rows);
+    if (dest.len < bytes_per_chunky_row * total_rows) return error.DestTooSmall;
+    for (plane_buffers) |plane| {
+        if (plane.len < bytes_per_plane_row * total_rows) return error.SourceShortRead;
+    }
+
+    var row_idx: u32 = 0;
+    while (row_idx < rows) : (row_idx += 1) {
+        const plane_row_off: usize = @as(usize, row_idx) * bytes_per_plane_row;
+        const chunky_row_off: usize = @as(usize, row_idx) * bytes_per_chunky_row;
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const plane_sample_off: usize = plane_row_off + @as(usize, x) * sample_bytes;
+            const chunky_pixel_off: usize = chunky_row_off + @as(usize, x) * spp * sample_bytes;
+            var k: usize = 0;
+            while (k < spp) : (k += 1) {
+                const dst_off: usize = chunky_pixel_off + k * sample_bytes;
+                var b: usize = 0;
+                while (b < sample_bytes) : (b += 1) {
+                    dest[dst_off + b] = plane_buffers[k][plane_sample_off + b];
+                }
+            }
+        }
+    }
+}
+
+/// Read one sample at `byte_offset` in `bytes` and return it as a u8.
+/// For bps=8 this is just `bytes[byte_offset]`; for bps=16 it reads the
+/// endian-aware u16 then downscales via the canonical
+/// `(x*255 + 32767) / 65535` round-to-nearest formula that matches
+/// ImageMagick's ScaleQuantumToChar.
+fn sampleU8(bytes: []const u8, byte_offset: usize, bps: u16, endian: Endian) u8 {
+    if (bps == 8) return bytes[byte_offset];
+    // bps == 16. Caller is responsible for guaranteeing other widths
+    // never reach the per-pixel loop.
+    const std_endian: std.builtin.Endian = if (endian == .little) .little else .big;
+    const v16 = std.mem.readInt(u16, bytes[byte_offset..][0..2], std_endian);
+    return @intCast((@as(u32, v16) * 255 + 32767) / 65535);
+}
 
 /// Expand `src_rows` rows of decoded chunky pixel data into RGBA.
 /// `src_bytes` is the on-disk row data for those rows (row-stride =
@@ -42,7 +113,9 @@ pub fn expandRowsToRgba(
     fmt: PixelFormat,
     dest: []u8,
 ) errors.Error!void {
-    if (fmt.bits_per_sample != 1 and fmt.bits_per_sample != 8) return error.UnsupportedBitDepth;
+    if (fmt.bits_per_sample != 1 and fmt.bits_per_sample != 8 and fmt.bits_per_sample != 16) {
+        return error.UnsupportedBitDepth;
+    }
 
     const out_bytes_per_row: usize = @as(usize, fmt.width) * 4;
     const need_dest = out_bytes_per_row * src_rows;
@@ -55,6 +128,28 @@ pub fn expandRowsToRgba(
             tags.photometric_black_is_zero => expandGray1bit(src_bytes, src_rows, fmt, dest, .direct),
             else => error.UnsupportedPhotometric,
         };
+    }
+
+    // bps ∈ {8, 16}. The 16-bit code path is supported only for the
+    // photometrics where it makes engineering sense and has real-world
+    // demand: RGB / Gray / CMYK. Palette + CFA stay 8-bit (16-bit
+    // palette is exceedingly rare — would need a 65536-entry ColorMap).
+    // YCbCr and CIELAB at 16-bit are niche and deferred until a
+    // concrete need surfaces.
+    if (fmt.bits_per_sample == 16) {
+        switch (fmt.photometric) {
+            tags.photometric_white_is_zero,
+            tags.photometric_black_is_zero,
+            tags.photometric_rgb,
+            tags.photometric_separated_cmyk,
+            => {},
+            tags.photometric_palette,
+            tags.photometric_color_filter_array,
+            tags.photometric_ycbcr,
+            tags.photometric_cielab,
+            => return error.UnsupportedBitDepth,
+            else => return error.UnsupportedPhotometric,
+        }
     }
 
     return switch (fmt.photometric) {
@@ -90,8 +185,9 @@ fn expandCmyk(
     dest: []u8,
 ) errors.Error!void {
     if (fmt.samples_per_pixel < 4) return error.UnsupportedPhotometric;
-    const stride: usize = @as(usize, fmt.width) * fmt.samples_per_pixel;
-    if (src_bytes.len < stride * src_rows) return error.SourceShortRead;
+    const sample_bytes: usize = fmt.bits_per_sample / 8;
+    const stride_bytes: usize = @as(usize, fmt.width) * fmt.samples_per_pixel * sample_bytes;
+    if (src_bytes.len < stride_bytes * src_rows) return error.SourceShortRead;
 
     var di: usize = 0;
     var si: usize = 0;
@@ -99,17 +195,25 @@ fn expandCmyk(
     while (rows_done < src_rows) : (rows_done += 1) {
         var x: u32 = 0;
         while (x < fmt.width) : (x += 1) {
-            const c: u32 = src_bytes[si + 0];
-            const m: u32 = src_bytes[si + 1];
-            const y: u32 = src_bytes[si + 2];
-            const k: u32 = src_bytes[si + 3];
+            // Each CMYK channel is downscaled to u8 first; the
+            // subtractive composition then runs in u32. For 16-bit
+            // CMYK the precision loss versus doing the composition in
+            // u16 throughout is <1 LSB in the output 8-bit RGB; the
+            // simpler shared 8-bit math path is plenty for v1.
+            const c: u32 = sampleU8(src_bytes, si + 0 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+            const m: u32 = sampleU8(src_bytes, si + 1 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+            const y: u32 = sampleU8(src_bytes, si + 2 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+            const k: u32 = sampleU8(src_bytes, si + 3 * sample_bytes, fmt.bits_per_sample, fmt.endian);
             const k_inv: u32 = 255 - k;
             dest[di + 0] = @intCast(((255 - c) * k_inv + 127) / 255);
             dest[di + 1] = @intCast(((255 - m) * k_inv + 127) / 255);
             dest[di + 2] = @intCast(((255 - y) * k_inv + 127) / 255);
             // Extra samples beyond CMYK become alpha if present, else opaque.
-            dest[di + 3] = if (fmt.samples_per_pixel >= 5) src_bytes[si + 4] else 0xFF;
-            si += fmt.samples_per_pixel;
+            dest[di + 3] = if (fmt.samples_per_pixel >= 5)
+                sampleU8(src_bytes, si + 4 * sample_bytes, fmt.bits_per_sample, fmt.endian)
+            else
+                0xFF;
+            si += @as(usize, fmt.samples_per_pixel) * sample_bytes;
             di += 4;
         }
     }
@@ -168,8 +272,9 @@ fn expandGray(
 ) errors.Error!void {
     if (fmt.samples_per_pixel != 1) return error.UnsupportedPhotometric;
 
-    const stride: usize = @as(usize, fmt.width);
-    if (src_bytes.len < stride * src_rows) return error.SourceShortRead;
+    const sample_bytes: usize = fmt.bits_per_sample / 8;
+    const stride_bytes: usize = @as(usize, fmt.width) * sample_bytes;
+    if (src_bytes.len < stride_bytes * src_rows) return error.SourceShortRead;
 
     var di: usize = 0;
     var si: usize = 0;
@@ -177,15 +282,16 @@ fn expandGray(
     while (rows_done < src_rows) : (rows_done += 1) {
         var x: u32 = 0;
         while (x < fmt.width) : (x += 1) {
+            const raw: u8 = sampleU8(src_bytes, si, fmt.bits_per_sample, fmt.endian);
             const v: u8 = switch (mode) {
-                .direct => src_bytes[si],
-                .invert => 0xFF -% src_bytes[si],
+                .direct => raw,
+                .invert => 0xFF -% raw,
             };
             dest[di + 0] = v;
             dest[di + 1] = v;
             dest[di + 2] = v;
             dest[di + 3] = 0xFF;
-            si += 1;
+            si += sample_bytes;
             di += 4;
         }
     }
@@ -198,8 +304,9 @@ fn expandRgb(
     dest: []u8,
 ) errors.Error!void {
     if (fmt.samples_per_pixel < 3) return error.UnsupportedPhotometric;
-    const stride: usize = @as(usize, fmt.width) * fmt.samples_per_pixel;
-    if (src_bytes.len < stride * src_rows) return error.SourceShortRead;
+    const sample_bytes: usize = fmt.bits_per_sample / 8;
+    const stride_bytes: usize = @as(usize, fmt.width) * fmt.samples_per_pixel * sample_bytes;
+    if (src_bytes.len < stride_bytes * src_rows) return error.SourceShortRead;
 
     var di: usize = 0;
     var si: usize = 0;
@@ -207,12 +314,15 @@ fn expandRgb(
     while (rows_done < src_rows) : (rows_done += 1) {
         var x: u32 = 0;
         while (x < fmt.width) : (x += 1) {
-            dest[di + 0] = src_bytes[si + 0];
-            dest[di + 1] = src_bytes[si + 1];
-            dest[di + 2] = src_bytes[si + 2];
+            dest[di + 0] = sampleU8(src_bytes, si + 0 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+            dest[di + 1] = sampleU8(src_bytes, si + 1 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+            dest[di + 2] = sampleU8(src_bytes, si + 2 * sample_bytes, fmt.bits_per_sample, fmt.endian);
             // Alpha: extra sample if present, else opaque.
-            dest[di + 3] = if (fmt.samples_per_pixel >= 4) src_bytes[si + 3] else 0xFF;
-            si += fmt.samples_per_pixel;
+            dest[di + 3] = if (fmt.samples_per_pixel >= 4)
+                sampleU8(src_bytes, si + 3 * sample_bytes, fmt.bits_per_sample, fmt.endian)
+            else
+                0xFF;
+            si += @as(usize, fmt.samples_per_pixel) * sample_bytes;
             di += 4;
         }
     }
@@ -683,10 +793,14 @@ test "expandPalette: 8-bit indices into a 256-entry colormap" {
 }
 
 test "expandRowsToRgba rejects unsupported bit depth" {
+    // 32-bit-per-sample is not a supported width for photometric
+    // expansion. Float-32 TIFFs decode at the strip level but
+    // their photometric expansion is the consumer's concern (e.g.
+    // scientific pipelines do their own tone-mapping).
     var dest: [4]u8 = undefined;
     try std.testing.expectError(error.UnsupportedBitDepth, expandRowsToRgba(&.{}, 0, .{
         .photometric = tags.photometric_rgb,
-        .bits_per_sample = 16,
+        .bits_per_sample = 32,
         .samples_per_pixel = 3,
         .width = 1,
         .colormap = null,
@@ -776,6 +890,188 @@ test "expandRowsToRgba rejects unsupported photometric" {
         .samples_per_pixel = 1,
         .width = 1,
         .colormap = null,
+    }, &dest));
+}
+
+test "expandRowsToRgba 16-bit RGB big-endian downscales via round-to-nearest" {
+    // Per-channel canonical u16 → u8 downscale `(x*255 + 32767)/65535`:
+    //   0xFFFF → 255 ; 0x8000 → 128 ; 0x0000 → 0 ;
+    //   0x49E8 → 0x4A (not 0x49 — high byte ≥ 0x80 needs the round up)
+    //   0xC0C0 → 0xC0
+    const src = [_]u8{
+        // pixel 0: R=0xFFFF, G=0x8000, B=0x0000 (big-endian bytes)
+        0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00,
+        // pixel 1: R=0x49E8, G=0xC0C0, B=0xFFFF
+        0x49, 0xE8, 0xC0, 0xC0, 0xFF, 0xFF,
+    };
+    var dest: [8]u8 = undefined;
+    try expandRowsToRgba(&src, 1, .{
+        .photometric = tags.photometric_rgb,
+        .bits_per_sample = 16,
+        .samples_per_pixel = 3,
+        .width = 2,
+        .colormap = null,
+        .endian = .big,
+    }, &dest);
+    try std.testing.expectEqualSlices(u8, &.{
+        0xFF, 0x80, 0x00, 0xFF,
+        0x4A, 0xC0, 0xFF, 0xFF,
+    }, &dest);
+}
+
+test "expandRowsToRgba 16-bit RGB little-endian" {
+    const src = [_]u8{
+        // pixel 0: R=0xFFFF, G=0x8000, B=0x0000 (little-endian bytes)
+        0xFF, 0xFF, 0x00, 0x80, 0x00, 0x00,
+        // pixel 1: R=0x49E8, G=0xC0C0, B=0xFFFF
+        0xE8, 0x49, 0xC0, 0xC0, 0xFF, 0xFF,
+    };
+    var dest: [8]u8 = undefined;
+    try expandRowsToRgba(&src, 1, .{
+        .photometric = tags.photometric_rgb,
+        .bits_per_sample = 16,
+        .samples_per_pixel = 3,
+        .width = 2,
+        .colormap = null,
+        .endian = .little,
+    }, &dest);
+    try std.testing.expectEqualSlices(u8, &.{
+        0xFF, 0x80, 0x00, 0xFF,
+        0x4A, 0xC0, 0xFF, 0xFF,
+    }, &dest);
+}
+
+test "expandRowsToRgba 16-bit MinIsBlack grayscale, two rows" {
+    // 2 rows × 2 pixels × u16 big-endian.
+    // Row 0: 0x4000, 0x8000 → 64, 128
+    // Row 1: 0xC000, 0xFFFF → 192, 255
+    // Canonical downscale: 0x4000 → (16384*255+32767)/65535 = 4210687/65535 = 64.25 → 64.
+    //                       0x8000 → (32768*255+32767)/65535 = 8388607/65535 = 128.0 → 128.
+    //                       0xC000 → (49152*255+32767)/65535 = 12566527/65535 = 191.7 → 191. Hmm.
+    // Wait: 49152 * 255 = 12533760. + 32767 = 12566527. /65535 = 191.749 → floor 191.
+    // 0xFFFF * 255 + 32767 = 16711425 + 32767 = 16744192. /65535 = 255.5 → floor 255. OK.
+    var bytes = [_]u8{ 0x40, 0x00, 0x80, 0x00, 0xC0, 0x00, 0xFF, 0xFF };
+    var dest: [16]u8 = undefined;
+    try expandRowsToRgba(&bytes, 2, .{
+        .photometric = tags.photometric_black_is_zero,
+        .bits_per_sample = 16,
+        .samples_per_pixel = 1,
+        .width = 2,
+        .colormap = null,
+        .endian = .big,
+    }, &dest);
+    try std.testing.expectEqualSlices(u8, &.{
+        64,  64,  64,  0xFF,
+        128, 128, 128, 0xFF,
+        191, 191, 191, 0xFF,
+        255, 255, 255, 0xFF,
+    }, &dest);
+}
+
+test "expandRowsToRgba 16-bit CMYK downscales per channel then composites" {
+    // CMYK 16-bit, single pixel: C=0xFFFF M=0x0000 Y=0x0000 K=0x0000
+    //   downscales to (255, 0, 0, 0) → standard CMYK math →
+    //   R = (255-255)*(255-0)/255 = 0, G = 255, B = 255 → cyan.
+    const src = [_]u8{
+        0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    var dest: [4]u8 = undefined;
+    try expandRowsToRgba(&src, 1, .{
+        .photometric = tags.photometric_separated_cmyk,
+        .bits_per_sample = 16,
+        .samples_per_pixel = 4,
+        .width = 1,
+        .colormap = null,
+        .endian = .big,
+    }, &dest);
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0xFF, 0xFF, 0xFF }, &dest);
+}
+
+test "interleavePlanesToChunky 8-bit 2-plane single row" {
+    // R-plane: [0xAA, 0xBB]; G-plane: [0xCC, 0xDD].
+    // Chunky output (pixel-major, channel-minor): [0xAA, 0xCC, 0xBB, 0xDD].
+    const plane_r = [_]u8{ 0xAA, 0xBB };
+    const plane_g = [_]u8{ 0xCC, 0xDD };
+    const planes = [_][]const u8{ &plane_r, &plane_g };
+    var dest: [4]u8 = undefined;
+    try interleavePlanesToChunky(&planes, 1, 2, 8, &dest);
+    try std.testing.expectEqualSlices(u8, &.{ 0xAA, 0xCC, 0xBB, 0xDD }, &dest);
+}
+
+test "interleavePlanesToChunky 16-bit 3-plane single row preserves byte order" {
+    // Big-endian-like u16s: 0x1122, 0x3344 on plane 0; 0x5566, 0x7788
+    // on plane 1; 0x99AA, 0xBBCC on plane 2.
+    // Chunky: pix0(0x1122, 0x5566, 0x99AA), pix1(0x3344, 0x7788, 0xBBCC).
+    const plane0 = [_]u8{ 0x11, 0x22, 0x33, 0x44 };
+    const plane1 = [_]u8{ 0x55, 0x66, 0x77, 0x88 };
+    const plane2 = [_]u8{ 0x99, 0xAA, 0xBB, 0xCC };
+    const planes = [_][]const u8{ &plane0, &plane1, &plane2 };
+    var dest: [12]u8 = undefined;
+    try interleavePlanesToChunky(&planes, 1, 2, 16, &dest);
+    try std.testing.expectEqualSlices(u8, &.{
+        0x11, 0x22, 0x55, 0x66, 0x99, 0xAA,
+        0x33, 0x44, 0x77, 0x88, 0xBB, 0xCC,
+    }, &dest);
+}
+
+test "interleavePlanesToChunky multi-row, 3-channel, 8-bit" {
+    // 2 rows × 3 pixels × 3 channels (RGB).
+    // Row 0 plane R: [10, 11, 12]; row 0 plane G: [20, 21, 22]; row 0 plane B: [30, 31, 32]
+    // Row 1 plane R: [40, 41, 42]; etc.
+    const plane_r = [_]u8{ 10, 11, 12, 40, 41, 42 };
+    const plane_g = [_]u8{ 20, 21, 22, 50, 51, 52 };
+    const plane_b = [_]u8{ 30, 31, 32, 60, 61, 62 };
+    const planes = [_][]const u8{ &plane_r, &plane_g, &plane_b };
+    var dest: [18]u8 = undefined;
+    try interleavePlanesToChunky(&planes, 2, 3, 8, &dest);
+    try std.testing.expectEqualSlices(u8, &.{
+        10, 20, 30, 11, 21, 31, 12, 22, 32,
+        40, 50, 60, 41, 51, 61, 42, 52, 62,
+    }, &dest);
+}
+
+test "interleavePlanesToChunky rejects unsupported bit depth" {
+    const plane = [_]u8{ 0 };
+    const planes = [_][]const u8{&plane};
+    var dest: [4]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedBitDepth, interleavePlanesToChunky(&planes, 1, 1, 32, &dest));
+}
+
+test "interleavePlanesToChunky rejects too-small dest" {
+    const plane = [_]u8{ 1, 2 };
+    const planes = [_][]const u8{&plane};
+    var dest: [1]u8 = undefined;
+    try std.testing.expectError(error.DestTooSmall, interleavePlanesToChunky(&planes, 1, 2, 8, &dest));
+}
+
+test "interleavePlanesToChunky rejects short plane buffer" {
+    const plane = [_]u8{1}; // need 2 for width=2 × bps=8
+    const planes = [_][]const u8{&plane};
+    var dest: [2]u8 = undefined;
+    try std.testing.expectError(error.SourceShortRead, interleavePlanesToChunky(&planes, 1, 2, 8, &dest));
+}
+
+test "expandRowsToRgba rejects 16-bit palette" {
+    var dest: [4]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedBitDepth, expandRowsToRgba(&.{}, 0, .{
+        .photometric = tags.photometric_palette,
+        .bits_per_sample = 16,
+        .samples_per_pixel = 1,
+        .width = 1,
+        .colormap = null,
+        .endian = .little,
+    }, &dest));
+}
+
+test "expandRowsToRgba rejects 16-bit Lab (deferred)" {
+    var dest: [4]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedBitDepth, expandRowsToRgba(&.{}, 0, .{
+        .photometric = tags.photometric_cielab,
+        .bits_per_sample = 16,
+        .samples_per_pixel = 3,
+        .width = 1,
+        .colormap = null,
+        .endian = .little,
     }, &dest));
 }
 

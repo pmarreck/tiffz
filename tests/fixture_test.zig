@@ -110,6 +110,7 @@ fn decodeFixtureToRgba(allocator: std.mem.Allocator, fixture_path: []const u8) !
         .samples_per_pixel = samples_per_pixel,
         .width = width,
         .colormap = cmap_buf,
+        .endian = dec.endian,
     };
 
     // Output buffer: width × height × 4 (RGBA).
@@ -143,13 +144,29 @@ fn decodeStrippedIntoRgba(
     bits_per_sample: u16,
     rows_per_strip: u32,
 ) !void {
+    const dir = try dec.ifd(0);
+    const planar = ifdScalarU16(dir, tiffz.tags.planar_configuration, dec.endian) orelse tiffz.tags.planar_chunky;
+    if (planar == tiffz.tags.planar_separate) {
+        return decodeStrippedSeparateIntoRgba(
+            allocator,
+            dec,
+            fmt,
+            rgba,
+            ws,
+            width,
+            height,
+            samples_per_pixel,
+            bits_per_sample,
+            rows_per_strip,
+        );
+    }
+
     const row_bits: usize = @as(usize, width) * @as(usize, samples_per_pixel) * @as(usize, bits_per_sample);
     const row_bytes: usize = (row_bits + 7) / 8;
     const strip_max: usize = row_bytes * rows_per_strip;
     const strip_buf = try allocator.alloc(u8, strip_max);
     defer allocator.free(strip_buf);
 
-    const dir = try dec.ifd(0);
     const sbc_entry = dir.get(tiffz.tags.strip_byte_counts) orelse return error.Malformed;
     var rgba_offset: usize = 0;
     var strip_index: u32 = 0;
@@ -168,6 +185,74 @@ fn decodeStrippedIntoRgba(
         );
         rgba_offset += @as(usize, this_strip_rows) * width * 4;
         rows_done += this_strip_rows;
+    }
+}
+
+/// Separate-planar decode path. TIFF separate-planar layout:
+///   strips_per_plane = ceil(height / rows_per_strip)
+///   total strips = strips_per_plane * samples_per_pixel
+///   strip k of plane p has index = p * strips_per_plane + k
+/// For each row band we decode N plane buffers, interleave them via
+/// `interleavePlanesToChunky`, then run expansion.
+fn decodeStrippedSeparateIntoRgba(
+    allocator: std.mem.Allocator,
+    dec: *tiffz.Decoder,
+    fmt: tiffz.photometrics.PixelFormat,
+    rgba: []u8,
+    ws: *tiffz.Workspace,
+    width: u32,
+    height: u32,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    rows_per_strip: u32,
+) !void {
+    const sample_bytes: usize = bits_per_sample / 8;
+    if (bits_per_sample != 8 and bits_per_sample != 16) return error.UnsupportedBitDepth;
+
+    const strips_per_plane: u32 = (height + rows_per_strip - 1) / rows_per_strip;
+
+    const plane_strip_bytes: usize = @as(usize, width) * @as(usize, rows_per_strip) * sample_bytes;
+    const plane_bufs = try allocator.alloc([]u8, samples_per_pixel);
+    defer allocator.free(plane_bufs);
+    for (plane_bufs) |*pb| {
+        pb.* = try allocator.alloc(u8, plane_strip_bytes);
+    }
+    defer for (plane_bufs) |pb| allocator.free(pb);
+
+    const chunky_strip_bytes: usize = plane_strip_bytes * samples_per_pixel;
+    const chunky_buf = try allocator.alloc(u8, chunky_strip_bytes);
+    defer allocator.free(chunky_buf);
+
+    var plane_views: []const []const u8 = undefined;
+    const plane_views_storage = try allocator.alloc([]const u8, samples_per_pixel);
+    defer allocator.free(plane_views_storage);
+
+    var rgba_offset: usize = 0;
+    var rows_done: u32 = 0;
+    var band: u32 = 0;
+    while (band < strips_per_plane) : (band += 1) {
+        const this_band_rows: u32 = @min(rows_per_strip, height - rows_done);
+        for (0..samples_per_pixel) |p| {
+            const strip_index: u32 = @as(u32, @intCast(p)) * strips_per_plane + band;
+            const n = try dec.decodeStrip(0, strip_index, plane_bufs[p], ws);
+            plane_views_storage[p] = plane_bufs[p][0..n];
+        }
+        plane_views = plane_views_storage;
+        try tiffz.photometrics.interleavePlanesToChunky(
+            plane_views,
+            this_band_rows,
+            width,
+            bits_per_sample,
+            chunky_buf,
+        );
+        try tiffz.photometrics.expandRowsToRgba(
+            chunky_buf[0 .. @as(usize, this_band_rows) * @as(usize, width) * @as(usize, samples_per_pixel) * sample_bytes],
+            this_band_rows,
+            fmt,
+            rgba[rgba_offset..],
+        );
+        rgba_offset += @as(usize, this_band_rows) * width * 4;
+        rows_done += this_band_rows;
     }
 }
 
@@ -447,6 +532,22 @@ fn decodeAllStripsBytes(allocator: std.mem.Allocator, fixture_path: []const u8) 
         try collected.appendSlice(allocator, scratch[0..n]);
     }
     return try collected.toOwnedSlice(allocator);
+}
+
+test "rgb16.tif (uncompressed 16x16 RGB 16-bit-per-sample): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/photometric/rgb16.tif",
+        "tests/fixtures/photometric_oracle/rgb16.rgba",
+    );
+}
+
+test "rgb_separate.tif (uncompressed 16x16 RGB 8-bit, planar=separate): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/photometric/rgb_separate.tif",
+        "tests/fixtures/photometric_oracle/rgb_separate.rgba",
+    );
 }
 
 test "cmyk.tif (uncompressed 16x16 CMYK 8-bit): RGBA matches ImageMagick oracle" {
