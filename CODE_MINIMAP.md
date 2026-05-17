@@ -212,19 +212,43 @@ src/
                              allocation on adversarial inputs.
   photometrics.zig           expandRowsToRgba: decoded chunky 8-bit per-sample
                              pixels → RGBA. Photometric ∈ {0 MinIsWhite, 1
-                             MinIsBlack, 2 RGB, 3 Palette, 32803 CFA}.
-                             Palette uses the canonical
-                             `(u16 * 255 + 32767) / 65535` downscale on
-                             ColorMap entries (matches ImageMagick's
-                             ScaleQuantumToChar; plain `>> 8` truncation
-                             off-by-ones whenever the low byte ≥ 0x80).
-                             CFA (32803) v1 is gray pass-through — each
-                             CFA sample emitted as gray RGBA so consumers
-                             can see the mosaic and demosaic later using
-                             the CfaPattern returned from src/dng.zig
-                             (full Bayer/X-Trans demosaic lands at
-                             M11/M12). Other photometrics + non-8-bit +
-                             planar=separate land in later milestones.
+                             MinIsBlack, 2 RGB, 3 Palette, 5 CMYK, 6 YCbCr,
+                             8 CIELAB, 32803 CFA}. Palette uses the
+                             canonical `(u16 * 255 + 32767) / 65535`
+                             downscale on ColorMap entries (matches
+                             ImageMagick's ScaleQuantumToChar; plain
+                             `>> 8` truncation off-by-ones whenever the
+                             low byte ≥ 0x80). CMYK (5) is the standard
+                             subtractive composition `(255-C)*(255-K)/255`
+                             with round-to-nearest (no ICC profile —
+                             device-dependent; deferred). YCbCr (6) uses
+                             Q16 fixed-point BT.601 inverse coefficients
+                             matching libtiff's TIFFYCbCrToRGBInit
+                             byte-exact (Cr_r=91881, Cb_g=-22554,
+                             Cr_g=-46802, Cb_b=116130; bias=32768 for
+                             round-to-nearest after >> 16). Matches
+                             libtiff tiff2rgba byte-exact (magick's Q16
+                             round-trip drifts ±1 LSB and isn't the
+                             canonical reference). CIE Lab (8) uses
+                             integer Q24 fixed-point with comptime-
+                             generated LUTs: L_byte → Y_d50 LUT
+                             (256), L_byte → fy LUT (256), a_byte →
+                             a/500 LUT (256), b_byte → -b/200 LUT
+                             (256), linear-Q12 → 8-bit sRGB-gamma LUT
+                             (4097). Lab f^-1 piecewise runs at
+                             runtime in Q24. Matrix chain: Lab→XYZ(D50)
+                             → Bradford D50→D65 → XYZ→sRGB linear →
+                             gamma LUT lookup. Runtime path is 100%
+                             integer per the avoid-floating-point
+                             design goal; LUT generation uses f64 at
+                             comptime only. CFA (32803) v1 is gray
+                             pass-through — each CFA sample emitted as
+                             gray RGBA so consumers can see the mosaic
+                             and demosaic later using the CfaPattern
+                             returned from src/dng.zig (full Bayer/X-Trans
+                             demosaic lands at M11/M12). 16-bit Lab,
+                             photometric=9 (ICCLab), planar=separate, and
+                             YCbCrSubSampling beyond 1:1 deferred.
   decoder.zig                Decoder.open parses header + IFD0 eagerly (lazy IFD
                              chain — sibling IFDs materialize on first ifd(N) call).
                              decodeStrip / decodeTile are sibling primitives (M6):

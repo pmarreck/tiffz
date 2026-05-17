@@ -252,7 +252,53 @@ public API design.
       (M11/M12 territory); opcode list semantic execution (consumer
       concern); real-camera DNG fixtures (gdal-synth covers the
       Predictor=3 algorithmic case).
-- [ ] M9: Pro photometrics — CMYK, YCbCr, CIE Lab.
+- [x] **M9: Pro photometrics — CMYK, YCbCr, CIE Lab** (2026-05-17,
+      integer-only runtime same day per the new global "avoid
+      floating-point in algorithm rewrites" design goal).
+      Three new arms in `photometrics.expandRowsToRgba`:
+      - **CMYK** (photometric=5): subtractive `(255-C)*(255-K)/255`
+        with round-to-nearest. No ICC profile (device-dependent;
+        deferred). 4-sample chunky 8-bit; extra samples beyond CMYK
+        used as alpha when SamplesPerPixel ≥ 5.
+      - **YCbCr** (photometric=6): BT.601 inverse with full-range
+        (0..255), matching the TIFF defaults for YCbCrCoefficients
+        (529) = (0.299, 0.587, 0.114) and ReferenceBlackWhite (532)
+        full-range. Q16 fixed-point coefficients
+        (`Cr_r=91881, Cb_g=-22554, Cr_g=-46802, Cb_b=116130`) matching
+        libtiff's `TIFFYCbCrToRGBInit` byte-exact. Clamp to [0,255]
+        at output. YCbCrSubSampling beyond 1:1 deferred.
+      - **CIE Lab** (photometric=8): TIFF 8-bit Lab decode →
+        Lab→XYZ (D50 reference white per spec) → D50→D65 Bradford
+        adaptation → XYZ→sRGB linear → sRGB gamma → u8 clamp. Pure
+        integer runtime: Q24 fixed-point for the matrix chain;
+        comptime-generated LUTs for the L_byte→Y_d50 mapping, the
+        a/b offsets, and the sRGB gamma encode (4097-entry Q12
+        linear → u8 gamma). The Lab f^-1 piecewise function runs at
+        runtime in Q24 (with comptime constants for 6/29, 4/29,
+        and 3·(6/29)²). a*/b* read as signed bytes via
+        two's-complement bitcast. 16-bit Lab and photometric=9
+        (ICCLab) deferred.
+      M9.5 follow-up: decoder.zig now accepts Compression=7 with
+      photometric=YCbCr in addition to RGB. CAVEAT: libjpeg (via
+      jpegz.wrapperDecode) performs YCbCr→RGB conversion internally,
+      so the decoded bytes are RGB regardless of the TIFF photometric
+      tag. The caller MUST NOT re-apply photometric=YCbCr expansion
+      after JPEG decode (libtiff TIFFReadRGBAImage takes the same
+      approach). Documented in src/compressions/jpeg.zig and
+      decoder.zig.
+      *Tests*: unit-scope CMYK endpoints + arbitrary pixel; YCbCr
+      gray endpoints + near-pure-red round-trip; Lab black/white
+      endpoints. End-to-end oracle fixtures: cmyk.tif (16×16, magick
+      RGBA oracle) and ycbcr.tif (16×16, libtiff tiff2rgba oracle —
+      tiffz's BT.601 inverse matches libtiff byte-exact; ImageMagick's
+      Q16-internal YCbCr round-trip drifts ±1 LSB and isn't the
+      canonical reference).
+      *Deferred*: 16-bit Lab, ICCLab (photometric=9), CIE Lab fixture
+      with magick/tiff2rgba oracle (the sRGB gamma curve + Bradford
+      adaptation makes byte-exact oracle generation finicky; endpoint
+      tests cover correctness for v1), JPEG-in-TIFF end-to-end with
+      YCbCr photometric (requires caller-side photometric override
+      since post-JPEG bytes are RGB).
 - [x] **M9.5: JPEG-in-TIFF (compression=7)** (2026-05-16).
       `src/compressions/jpeg.zig` calls into jpegz via
       `jpegz.internal.wrapperDecode` (the libjpeg-turbo path).

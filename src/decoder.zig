@@ -439,12 +439,22 @@ pub const Decoder = struct {
                 break :blk written;
             },
             tags.compression_jpeg => blk: {
-                // JPEG-in-TIFF (Compression=7, TIFF Tech Note 2). Scope
-                // (M9.5): photometric=RGB (2). YCbCr (6) lands at M9
-                // where the YCbCr→RGB photometric expansion is properly
-                // wired up.
+                // JPEG-in-TIFF (Compression=7, TIFF Tech Note 2).
+                // Supports photometric=RGB (2) and photometric=YCbCr (6).
+                // CAVEAT: the JPEG codec (libjpeg via jpegz.wrapperDecode)
+                // performs YCbCr→RGB conversion internally for YCbCr-marked
+                // JPEG streams. The bytes written to `dest` are therefore
+                // RGB pixels regardless of the TIFF photometric tag. The
+                // caller MUST NOT re-apply photometric=YCbCr expansion
+                // after this strip decode — treat the output as
+                // photometric=RGB. (libtiff's TIFFReadRGBAImage helper
+                // takes the same approach.) Other photometrics (CMYK,
+                // Lab) inside JPEG-in-TIFF are out of scope; the JPEG
+                // codec would need explicit colorspace handling.
                 const photo = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse return error.Malformed;
-                if (photo != tags.photometric_rgb) break :blk error.UnsupportedCompression;
+                if (photo != tags.photometric_rgb and photo != tags.photometric_ycbcr) {
+                    break :blk error.UnsupportedCompression;
+                }
 
                 // Read strip bytes into scratch.
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;

@@ -449,6 +449,28 @@ fn decodeAllStripsBytes(allocator: std.mem.Allocator, fixture_path: []const u8) 
     return try collected.toOwnedSlice(allocator);
 }
 
+test "cmyk.tif (uncompressed 16x16 CMYK 8-bit): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/photometric/cmyk.tif",
+        "tests/fixtures/photometric_oracle/cmyk.rgba",
+    );
+}
+
+test "ycbcr.tif (uncompressed 16x16 YCbCr 8-bit, subsampling 1:1): RGBA matches libtiff tiff2rgba oracle" {
+    // Oracle generated via `tiff2rgba` (libtiff's own conversion) rather
+    // than `magick`. Reason: tiffz's BT.601 inverse matches libtiff's
+    // byte-exact, but ImageMagick's YCbCr round-trip uses slightly
+    // different intermediate precision and drifts ±1 LSB in some
+    // pixels. Since tiff2rgba is the spec-canonical TIFF tool, that's
+    // the more authoritative oracle.
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/photometric/ycbcr.tif",
+        "tests/fixtures/photometric_oracle/ycbcr.rgba",
+    );
+}
+
 test "predictor3_deflate_fp32.tif: FP32 byte-plane interleaved diff matches Predictor=1 oracle" {
     // Both fixtures were transcoded from the same 8x8 FP32 plasma seed
     // via gdal_translate. The Predictor=1 variant has no transform, so

@@ -19,8 +19,14 @@
 //! both default to it). Mode 1 falls out naturally — when there's no
 //! JPEGTables to splice, the strip bytes ARE the complete stream.
 //!
-//! Photometric scope (M9.5): RGB (2) only. YCbCr (6) lands at M9
-//! where YCbCr-derived photometric expansion arrives properly.
+//! Photometric scope: RGB (2) and YCbCr (6). For YCbCr the underlying
+//! libjpeg-turbo wrapper performs internal YCbCr→RGB conversion, so
+//! the bytes returned in `dest` are RGB pixels regardless of the TIFF
+//! photometric tag. The caller MUST treat the output as
+//! photometric=RGB during photometric expansion (libtiff takes the
+//! same approach in TIFFReadRGBAImage). Non-RGB/non-YCbCr photometric
+//! values with Compression=7 surface as UnsupportedCompression at the
+//! decoder layer.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
