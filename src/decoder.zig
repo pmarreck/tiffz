@@ -29,6 +29,7 @@ const compressions_ccitt_t6 = @import("compressions/ccitt_t6.zig");
 const compressions_jpeg = @import("compressions/jpeg.zig");
 const compressions_zstd = @import("compressions/zstd.zig");
 const predictors_mod = @import("predictors.zig");
+const findings_mod = @import("findings.zig");
 
 pub const Decoder = struct {
     allocator: Allocator,
@@ -42,6 +43,14 @@ pub const Decoder = struct {
     /// Offset of the next-IFD pointer for the last IFD we've parsed
     /// — 0 if we've reached the end of the chain.
     next_ifd_offset: u64,
+    /// Optional callback for INFO findings emitted during decode.
+    /// See `src/findings.zig` for the per-finding payload semantics.
+    finding_cb: findings_mod.Callback = null,
+    finding_userdata: ?*anyopaque = null,
+    /// One-shot flag for `old_style_lzw_codes` — the LZW codec falls
+    /// back from new-style to old-style per strip on malformed
+    /// streams; we only want to surface the file-level fact once.
+    lzw_old_style_fired: bool = false,
 
     pub fn open(allocator: Allocator, source: Source) errors.Error!Decoder {
         return openWithLimits(allocator, source, .{});
@@ -71,6 +80,139 @@ pub const Decoder = struct {
             .ifds = ifds,
             .next_ifd_offset = ifd0.next_offset,
         };
+    }
+
+    /// Install a callback for INFO findings emitted during decode.
+    /// `cb` may be null to clear. `userdata` is passed through as-is
+    /// to each invocation. Thread safety: the callback fires from
+    /// whatever thread calls the decode method that detected the
+    /// finding; tiffz itself is single-threaded so the callback
+    /// inherits the caller's thread context.
+    ///
+    /// Call this AFTER `Decoder.open` but BEFORE the first IFD walk
+    /// or strip decode to receive all findings. Findings detected at
+    /// IFD parse time on IFD 0 fire on the next call to `ifd(0)` or
+    /// when `scanFindings()` is invoked explicitly.
+    pub fn setFindingCallback(
+        self: *Decoder,
+        cb: findings_mod.Callback,
+        userdata: ?*anyopaque,
+    ) void {
+        self.finding_cb = cb;
+        self.finding_userdata = userdata;
+    }
+
+    /// Re-scan all materialized IFDs and emit findings via the
+    /// installed callback. No-op if no callback is set. Useful when
+    /// the callback is installed AFTER `open()` but the caller still
+    /// wants findings for the eagerly-parsed IFD 0.
+    pub fn scanFindings(self: *Decoder) void {
+        if (self.finding_cb == null) return;
+        if (self.bigtiff) self.emit(.bigtiff_format, &.{});
+        for (self.ifds.items, 0..) |*dir, i| {
+            self.scanIfdForFindings(dir, i);
+        }
+    }
+
+    fn emit(self: *Decoder, finding: findings_mod.InfoFinding, payload: []const u8) void {
+        const cb = self.finding_cb orelse return;
+        cb(
+            self.finding_userdata,
+            @intCast(@intFromEnum(finding)),
+            if (payload.len > 0) payload.ptr else null,
+            payload.len,
+        );
+    }
+
+    fn emitU32(self: *Decoder, finding: findings_mod.InfoFinding, value: u32) void {
+        if (self.finding_cb == null) return;
+        var buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &buf, value, .little);
+        self.emit(finding, &buf);
+    }
+
+    /// Scan a single IFD for tag-driven INFO findings and emit each
+    /// one observed. Called after every IFD parse (initial + on-
+    /// demand chain walks). Errors during scanning are swallowed —
+    /// findings emission is best-effort and never blocks the decode
+    /// path.
+    fn scanIfdForFindings(self: *Decoder, dir: *const Ifd, ifd_index: usize) void {
+        if (self.finding_cb == null) return;
+
+        // Multi-IFD: fires per IFD beyond 0. Validate dedupes if it
+        // only wants the first signal.
+        if (ifd_index >= 1) {
+            self.emitU32(.multi_ifd_chain, @intCast(self.ifds.items.len));
+        }
+
+        // Compression == 7 → JPEG-in-TIFF.
+        if (readScalarU16(dir.*, tags.compression, self.endian) catch null) |comp| {
+            if (comp == tags.compression_jpeg) self.emit(.jpeg_in_tiff, &.{});
+        }
+
+        // Photometric=CFA or CFAPattern tag presence.
+        var cfa_emitted = false;
+        if (readScalarU16(dir.*, tags.photometric, self.endian) catch null) |photo| {
+            if (photo == tags.photometric_color_filter_array) {
+                self.emit(.cfa_pattern_present, &.{});
+                cfa_emitted = true;
+            }
+        }
+        if (!cfa_emitted and dir.get(tags.cfa_pattern) != null) {
+            self.emit(.cfa_pattern_present, &.{});
+        }
+
+        // Predictor != 1.
+        if (readScalarU16(dir.*, tags.predictor, self.endian) catch null) |pred| {
+            if (pred != 1) self.emitU32(.predictor_applied, pred);
+        }
+
+        // PlanarConfiguration == 2.
+        if (readScalarU16(dir.*, tags.planar_configuration, self.endian) catch null) |planar| {
+            if (planar == tags.planar_separate) self.emit(.planar_separate, &.{});
+        }
+
+        // Tiled layout — TileOffsets tag.
+        if (dir.get(tags.tile_offsets) != null) self.emit(.tiled_layout, &.{});
+
+        // ExtraSamples == 1 (associated/pre-multiplied alpha) on any sample.
+        if (dir.get(tags.extra_samples)) |entry| {
+            var i: u32 = 0;
+            while (i < entry.count) : (i += 1) {
+                const v = dir.arrayElementU64(tags.extra_samples, i, self.endian, self.source) catch break;
+                if (v == 1) {
+                    self.emit(.pre_multiplied_alpha, &.{});
+                    break;
+                }
+            }
+        }
+
+        // DNG opcode lists (51008 / 51009 / 51022). Payload is the
+        // opcode count read from the first u32 BE of the value bytes.
+        for ([_]u16{ tags.opcode_list_1, tags.opcode_list_2, tags.opcode_list_3 }) |opc_tag| {
+            if (dir.cachedValueBytes(opc_tag)) |buf| {
+                if (buf.len >= 4) {
+                    const count = std.mem.readInt(u32, buf[0..4], .big);
+                    self.emitU32(.opcode_list_present, count);
+                }
+            }
+        }
+
+        // GeoTIFF tags — any of the well-known six is enough to flag.
+        const geo_tag_ids = [_]u16{
+            33550, // ModelPixelScale
+            33922, // ModelTiepoint
+            34264, // ModelTransformation
+            34735, // GeoKeyDirectory
+            34736, // GeoDoubleParams
+            34737, // GeoAsciiParams
+        };
+        for (geo_tag_ids) |t| {
+            if (dir.get(t) != null) {
+                self.emit(.geotiff_tags_present, &.{});
+                break;
+            }
+        }
     }
 
     pub fn deinit(self: *Decoder) void {
@@ -103,6 +245,10 @@ pub const Decoder = struct {
             errdefer next.deinit();
             self.ifds.append(self.allocator, next) catch return error.OutOfMemory;
             self.next_ifd_offset = next.next_offset;
+            // Fire findings for the newly-materialized IFD. The
+            // freshly-appended IFD lives at `self.ifds.items.len - 1`.
+            const new_index = self.ifds.items.len - 1;
+            self.scanIfdForFindings(&self.ifds.items[new_index], new_index);
         }
         return &self.ifds.items[index];
     }
@@ -352,7 +498,14 @@ pub const Decoder = struct {
                 const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
                 if (got < byte_count) break :blk error.SourceShortRead;
                 const written = if (compressions_lzw.decodeVariant(scratch, dest, .new_style)) |n| n else |first_err| switch (first_err) {
-                    error.Malformed => compressions_lzw.decodeVariant(scratch, dest, .old_style) catch |e| break :blk e,
+                    error.Malformed => fb: {
+                        const n = compressions_lzw.decodeVariant(scratch, dest, .old_style) catch |e| break :blk e;
+                        if (!self.lzw_old_style_fired) {
+                            self.lzw_old_style_fired = true;
+                            self.emit(.old_style_lzw_codes, &.{});
+                        }
+                        break :fb n;
+                    },
                     else => break :blk first_err,
                 };
                 if (written > self.limits.max_decompressed_strip_bytes) {

@@ -21,6 +21,7 @@ pub const tile_width: u16 = 322;             // 0x0142
 pub const tile_length: u16 = 323;            // 0x0143
 pub const tile_offsets: u16 = 324;           // 0x0144
 pub const tile_byte_counts: u16 = 325;       // 0x0145
+pub const extra_samples: u16 = 338;          // 0x0152; SHORT[N]; per extra sample: 0=unspec, 1=associated alpha (pre-multiplied), 2=unassociated alpha
 pub const jpeg_tables: u16 = 347;            // 0x015B; TIFF TN2 Mode 2 — shared JPEG abbreviated table datastream
 
 /// DNG / TIFF-EP tags (M8).

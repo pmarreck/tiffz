@@ -45,7 +45,22 @@ public API design.
       Inventory of remaining coverage gaps and adjacent improvements,
       each annotated with realistic cost (XS/S/M/L) and rationale
       for deferral.
-- [x] **Streaming `Source.fromBufferedReader`** with sliding cache
+- [x] **INFO finding callback API** (2026-05-18). New
+      `src/findings.zig` with `InfoFinding` enum (stable u32 codes,
+      1..11) + Callback type using C calling convention. Decoder
+      grows `setFindingCallback(cb, userdata)`, `scanFindings()`,
+      and per-IFD scanner that fires for BigTIFF, multi-IFD,
+      predictor != 1, ExtraSamples=1 (pre-multiplied alpha),
+      Compression=7 (JPEG-in-TIFF), TileOffsets present (tiled
+      layout), PlanarConfiguration=2 (separate), photometric=CFA
+      or CFAPattern present, opcode list 1/2/3 present (with count
+      payload), and any GeoTIFF tag present. LZW codec dispatch
+      fires `old_style_lzw_codes` (once per Decoder via a flag) when
+      the codec falls back from new-style to old-style on a
+      malformed stream. 7 fixture-based unit tests verify emission
+      on real TIFFs. Mapping doc updated with the new API + a
+      ready-to-paste `FindingAccumulator` shim for validate.
+      Validate's M10 integration unblocked.
       (2026-05-17). New `BufferedReaderHandle` wraps a sequential
       reader (function-pointer ctx + read_fn) and a caller-supplied
       cache window. Reads inside the window are served from cache

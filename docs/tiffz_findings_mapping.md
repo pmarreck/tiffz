@@ -27,19 +27,75 @@ the libtiff aliased-strip-as-tile pattern that we hit during M6).
 
 ## Status of the tiffz finding emission
 
-tiffz currently surfaces failures via its single `errors.Error` set
-(see `src/errors.zig`). For M10 integration, the C ABI exports
-`tiffz_status_t` codes (1:1 with the Zig error set per the frozen API
-design). Each `tiffz_status_t` value below is its English-friendly
-finding name in this table.
+tiffz surfaces failures via its single `errors.Error` set (see
+`src/errors.zig`). For M10 integration, the C ABI exports
+`tiffz_status_t` codes (1:1 with the Zig error set per the frozen
+API design). Each `tiffz_status_t` value below is its
+English-friendly finding name in this table.
 
 INFO-tier findings (file is structurally valid but has a noteworthy
-property) need a finding-emission side channel. The current scaffold
-exposes them as scalar getters on the Decoder (e.g.
-`tiffz.Decoder.isBigTiff()`, `tiffz.Decoder.ifdCount()`); validate's
-shim reads them after a successful decode and converts to
-info_messages. A future `tiffz_findings.h` C header with a callback
-API can replace this when the surface grows past a handful of fields.
+property) are emitted via a **callback** registered on the Decoder.
+The callback fires synchronously from whatever thread is currently
+running the decode method that detected the finding (tiffz itself is
+single-threaded; the callback inherits the caller's thread context).
+
+```zig
+// In Zig:
+const tiffz = @import("tiffz");
+
+var dec = try tiffz.Decoder.open(allocator, source);
+defer dec.deinit();
+
+dec.setFindingCallback(my_callback, my_userdata);
+// IFD-0 findings haven't fired yet — replay the IFDs we've already
+// parsed:
+dec.scanFindings();
+
+// Walking the chain via dec.ifd(N) materializes IFD N and fires
+// findings for that IFD as a side effect.
+_ = try dec.ifd(1);
+```
+
+The C ABI mirror (will land in `include/tiffz.h` when validate or
+another C consumer needs it; tiffz's `setFindingCallback` already
+uses the C calling convention so the bridge is one wrapper function):
+
+```c
+typedef void (*tiffz_finding_cb)(
+    void *userdata,
+    int finding_id,            // InfoFinding enum value (see below)
+    const void *payload,       // null for presence-only findings
+    size_t payload_len
+);
+void tiffz_set_finding_callback(
+    tiffz_decoder *dec,
+    tiffz_finding_cb cb,
+    void *userdata
+);
+void tiffz_scan_findings(tiffz_decoder *dec);
+```
+
+### Per-finding firing policy
+
+| Finding | Payload | Fires |
+|---|---|---|
+| `bigtiff_format` (1) | none | once per Decoder |
+| `multi_ifd_chain` (2) | u32 LE: IFD count | per IFD beyond 0 (consumer dedupes) |
+| `old_style_lzw_codes` (3) | none | once per Decoder (first strip that triggers the LZW new→old fallback) |
+| `pre_multiplied_alpha` (4) | none | per IFD with ExtraSamples=1 |
+| `predictor_applied` (5) | u32 LE: predictor value (2 or 3) | per IFD with Predictor != 1 |
+| `geotiff_tags_present` (6) | none | per IFD with any known GeoTIFF tag |
+| `cfa_pattern_present` (7) | none | per IFD with photometric=CFA or CFAPattern tag |
+| `opcode_list_present` (8) | u32 LE: opcode count | once per opcode list (1/2/3) per IFD |
+| `jpeg_in_tiff` (9) | none | per IFD with Compression=7 |
+| `tiled_layout` (10) | none | per IFD with a TileOffsets tag |
+| `planar_separate` (11) | none | per IFD with PlanarConfiguration=2 |
+
+Numeric finding codes are **stable** — they never change once
+assigned. New findings append at the end. The Zig enum
+(`tiffz.findings.InfoFinding`) is declared `enum(u32)` with an open
+catch-all (`_`) so consumers can decode unknown codes as
+forward-compat unknowns.
 
 ## Routing taxonomy
 
@@ -141,8 +197,8 @@ pub const RoutedFinding = union(enum) {
 };
 
 /// Map a tiffz status (terminal error code) to validate's routing
-/// channel. INFO findings are surfaced via separate getter calls on
-/// the Decoder after a successful decode — see `routeInfoFinding`.
+/// channel. INFO findings are emitted via the Decoder's callback —
+/// see the integration recipe below `routeInfoFinding`.
 pub fn routeStatus(status: c.tiffz_status_t) RoutedFinding {
     return switch (status) {
         // ── Structural FAIL ──
@@ -197,40 +253,115 @@ pub fn routeStatus(status: c.tiffz_status_t) RoutedFinding {
     };
 }
 
-/// INFO-tier finding codes — these are not error returns; they're
-/// observations validate's shim collects after a successful decode
-/// via accessor calls on the Decoder. The enum below is a stable
-/// identifier for the table above; the actual emission mechanism is
-/// scalar Decoder getters in tiffz v1, replaceable with a
-/// callback-based finding API in a later milestone.
-pub const TiffzInfoFinding = enum {
-    bigtiff_format,
-    multi_ifd_chain,
-    old_style_lzw_codes,
-    pre_multiplied_alpha,
-    predictor_applied,
-    geotiff_tags_present,
-    cfa_pattern_present,
-    opcode_list_present,
-    jpeg_in_tiff,
-    tiled_layout,
-    planar_separate,
+/// INFO-tier finding codes — emitted via tiffz.Decoder's callback.
+/// validate's per-file accumulator drains these into the file's
+/// `info_message` list. Codes match `tiffz.findings.InfoFinding`
+/// (stable u32; never renumbered).
+pub const TiffzInfoFinding = enum(u32) {
+    bigtiff_format = 1,
+    multi_ifd_chain = 2,
+    old_style_lzw_codes = 3,
+    pre_multiplied_alpha = 4,
+    predictor_applied = 5,
+    geotiff_tags_present = 6,
+    cfa_pattern_present = 7,
+    opcode_list_present = 8,
+    jpeg_in_tiff = 9,
+    tiled_layout = 10,
+    planar_separate = 11,
+    _, // forward-compat: new tiffz versions may introduce codes
 };
 
-pub fn routeInfoFinding(finding: TiffzInfoFinding) RoutedFinding {
+pub fn routeInfoFinding(finding: TiffzInfoFinding, payload_u32: ?u32) RoutedFinding {
     return switch (finding) {
         .bigtiff_format        => .{ .info = "BigTIFF (64-bit offsets)" },
         .multi_ifd_chain       => .{ .info = "multi-IFD TIFF" },
-        .old_style_lzw_codes   => .{ .info = "old-style LZW (libtiff fallback used)" },
+        // Per validate's 2026-05-18 reply: promote to WARN at the shim
+        // level (file is technically non-spec; tiff still decodes via
+        // libtiff-style heuristic).
+        .old_style_lzw_codes   => .{ .warning = "TIFF uses legacy LZW codes (off-by-one from spec); decoded via libtiff-style heuristic — file is technically non-spec" },
         .pre_multiplied_alpha  => .{ .info = "associated alpha (ExtraSamples=1)" },
-        .predictor_applied     => .{ .info = "TIFF Predictor applied" },
+        .predictor_applied     => blk: {
+            // payload_u32 is the predictor value (2 or 3); could be
+            // formatted into the message if validate's INFO sink
+            // accepts dynamic strings.
+            _ = payload_u32;
+            break :blk .{ .info = "TIFF Predictor applied" };
+        },
         .geotiff_tags_present  => .{ .info = "GeoTIFF tags present" },
         .cfa_pattern_present   => .{ .info = "CFA mosaic raw (DNG / TIFF-EP)" },
         .opcode_list_present   => .{ .info = "DNG opcode list" },
         .jpeg_in_tiff          => .{ .info = "JPEG-in-TIFF (Compression=7)" },
         .tiled_layout          => .{ .info = "tiled layout" },
         .planar_separate       => .{ .info = "separate planar configuration" },
+        _                      => .{ .other = "unknown tiffz finding code" },
     };
+}
+
+/// Per-file accumulator: a thread-local-friendly ArrayList that the
+/// callback appends to. Drain after the decode completes and map
+/// each entry through routeInfoFinding.
+pub const FindingAccumulator = struct {
+    findings: std.ArrayListUnmanaged(Entry),
+    allocator: std.mem.Allocator,
+
+    pub const Entry = struct {
+        code: TiffzInfoFinding,
+        payload_u32: ?u32,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) FindingAccumulator {
+        return .{ .findings = .empty, .allocator = allocator };
+    }
+    pub fn deinit(self: *FindingAccumulator) void {
+        self.findings.deinit(self.allocator);
+    }
+
+    pub fn callback(
+        userdata: ?*anyopaque,
+        finding_id: i32,
+        payload: ?[*]const u8,
+        payload_len: usize,
+    ) callconv(.c) void {
+        const self: *FindingAccumulator = @ptrCast(@alignCast(userdata.?));
+        const code: TiffzInfoFinding = @enumFromInt(@as(u32, @intCast(finding_id)));
+        const payload_u32: ?u32 = if (payload_len >= 4 and payload != null) blk: {
+            const slice = payload.?[0..4];
+            break :blk std.mem.readInt(u32, slice, .little);
+        } else null;
+        self.findings.append(self.allocator, .{
+            .code = code,
+            .payload_u32 = payload_u32,
+        }) catch {}; // OOM during accumulation — silently drop; the
+                     // decode itself is unaffected.
+    }
+};
+```
+
+### Integration recipe
+
+```zig
+// Inside validate's validateTiffDeep:
+var acc = FindingAccumulator.init(allocator);
+defer acc.deinit();
+
+var dec = try tiffz.Decoder.open(allocator, source);
+defer dec.deinit();
+dec.setFindingCallback(&FindingAccumulator.callback, @ptrCast(&acc));
+dec.scanFindings(); // replay IFD-0 findings into the accumulator
+
+// ... decode strips / walk additional IFDs as needed ...
+
+// After decode: drain the accumulator into validate's result.
+for (acc.findings.items) |entry| {
+    const routed = routeInfoFinding(entry.code, entry.payload_u32);
+    switch (routed) {
+        .info => |msg| result.appendInfo(msg),
+        .warning => |msg| result.appendWarning(msg),
+        .error_code => |ec| return ec, // shouldn't happen for INFO codes
+        .malformation => |m| result.malformations.insert(m),
+        .other => |msg| result.appendInfo(msg),
+    }
 }
 ```
 

@@ -205,6 +205,16 @@ src/
                              horizontal-8 paths ignore both. Stride is
                              samples_per_pixel for chunky planar, 1 for
                              separate (per-plane strip).
+  findings.zig               INFO finding emission to a caller-supplied
+                             callback. InfoFinding enum (stable u32
+                             codes, 1..11) + Callback type with C
+                             calling convention. Decoder fires findings
+                             at IFD-parse time (per-IFD scan) plus
+                             one-shots for file-level facts (BigTIFF,
+                             LZW old-style fallback). Mirrors jpegz's
+                             callback shape. Per-finding payload
+                             semantics documented in the module
+                             docstring and `docs/tiffz_findings_mapping.md`.
   dng.zig                    DNG auxiliary metadata parsers (M8). tiffz
                              parses only — it does not act on these
                              structures; consumers (validate, raw-pipeline

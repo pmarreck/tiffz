@@ -562,6 +562,178 @@ test "rgb_separate.tif (uncompressed 16x16 RGB 8-bit, planar=separate): RGBA mat
     );
 }
 
+// ---- finding-callback tests ----
+
+/// Per-test accumulator for INFO findings emitted via the callback API.
+/// Lives in a thread-local-friendly shape (the callback gets a pointer
+/// to one of these via userdata).
+const FindingRecorder = struct {
+    findings: std.ArrayListUnmanaged(Record),
+    allocator: std.mem.Allocator,
+
+    const Record = struct {
+        finding: tiffz.findings.InfoFinding,
+        payload_u32: ?u32, // decoded from a 4-byte little-endian payload, else null
+    };
+
+    fn init(allocator: std.mem.Allocator) FindingRecorder {
+        return .{ .findings = .empty, .allocator = allocator };
+    }
+
+    fn deinit(self: *FindingRecorder) void {
+        self.findings.deinit(self.allocator);
+    }
+
+    fn callback(
+        userdata: ?*anyopaque,
+        finding_id: i32,
+        payload: ?[*]const u8,
+        payload_len: usize,
+    ) callconv(.c) void {
+        const self: *FindingRecorder = @ptrCast(@alignCast(userdata.?));
+        const finding: tiffz.findings.InfoFinding = @enumFromInt(@as(u32, @intCast(finding_id)));
+        const payload_u32: ?u32 = if (payload_len >= 4 and payload != null) blk: {
+            const slice = payload.?[0..4];
+            break :blk std.mem.readInt(u32, slice, .little);
+        } else null;
+        self.findings.append(self.allocator, .{
+            .finding = finding,
+            .payload_u32 = payload_u32,
+        }) catch unreachable;
+    }
+
+    fn has(self: *const FindingRecorder, finding: tiffz.findings.InfoFinding) bool {
+        for (self.findings.items) |r| if (r.finding == finding) return true;
+        return false;
+    }
+
+    fn payloadFor(self: *const FindingRecorder, finding: tiffz.findings.InfoFinding) ?u32 {
+        for (self.findings.items) |r| if (r.finding == finding) return r.payload_u32;
+        return null;
+    }
+};
+
+test "findings: bali.btf fires bigtiff_format finding" {
+    const allocator = std.testing.allocator;
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+
+    const bytes = try loadFile(allocator, "tests/fixtures/bigtiff/bali.btf");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    dec.scanFindings();
+
+    try std.testing.expect(recorder.has(.bigtiff_format));
+}
+
+test "findings: predictor2_lzw.tif fires predictor_applied=2" {
+    const allocator = std.testing.allocator;
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+
+    const bytes = try loadFile(allocator, "tests/fixtures/predictor/predictor2_lzw.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    dec.scanFindings();
+
+    try std.testing.expect(recorder.has(.predictor_applied));
+    try std.testing.expectEqual(@as(?u32, 2), recorder.payloadFor(.predictor_applied));
+}
+
+test "findings: ycbcr_jpeg.tif fires jpeg_in_tiff" {
+    const allocator = std.testing.allocator;
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+
+    const bytes = try loadFile(allocator, "tests/fixtures/jpeg/ycbcr_jpeg.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    dec.scanFindings();
+
+    try std.testing.expect(recorder.has(.jpeg_in_tiff));
+}
+
+test "findings: cramps-tile.tif fires tiled_layout" {
+    const allocator = std.testing.allocator;
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+
+    const bytes = try loadFile(allocator, "tests/fixtures/tiled/cramps-tile.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    dec.scanFindings();
+
+    try std.testing.expect(recorder.has(.tiled_layout));
+}
+
+test "findings: rgb_separate.tif fires planar_separate" {
+    const allocator = std.testing.allocator;
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+
+    const bytes = try loadFile(allocator, "tests/fixtures/photometric/rgb_separate.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    dec.scanFindings();
+
+    try std.testing.expect(recorder.has(.planar_separate));
+}
+
+test "findings: predictor3_deflate_fp32.tif fires predictor_applied=3" {
+    const allocator = std.testing.allocator;
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+
+    const bytes = try loadFile(allocator, "tests/fixtures/predictor/predictor3_deflate_fp32.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    dec.scanFindings();
+
+    try std.testing.expect(recorder.has(.predictor_applied));
+    try std.testing.expectEqual(@as(?u32, 3), recorder.payloadFor(.predictor_applied));
+}
+
+test "findings: rgb-3c-8b.tiff (uncompressed, no special tags) fires no findings" {
+    const allocator = std.testing.allocator;
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+
+    const bytes = try loadFile(allocator, "tests/fixtures/uncompressed/rgb-3c-8b.tiff");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    dec.scanFindings();
+
+    try std.testing.expectEqual(@as(usize, 0), recorder.findings.items.len);
+}
+
 /// Sequential reader backed by a byte slice. Used as the underlying
 /// reader for `Source.fromBufferedReader` end-to-end tests.
 const SequentialReader = struct {
