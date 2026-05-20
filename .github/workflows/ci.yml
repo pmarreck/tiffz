@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [yolo]
+  pull_request:
+    branches: [yolo]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: macOS ARM
+          - os: ubuntu-latest
+            name: Linux Intel
+          - os: ubuntu-24.04-arm
+            name: Linux ARM
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install system deps (Linux)
+        # tiffz links zlib for Deflate (compression=8/32946) and pulls
+        # jpegz transitively for compression=7. jpegz needs system
+        # libjpeg-turbo + openjpeg (charls is disabled via the
+        # `with-charls = false` dep option in tiffz/build.zig).
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libjpeg-dev libopenjp2-7-dev
+
+      - name: Install system deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install jpeg-turbo openjpeg
+          # zlib ships with macOS
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test
