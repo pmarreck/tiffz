@@ -331,9 +331,9 @@ tests/
     packbits_oracle/         Matching .rgba ground truth from ImageMagick.
     lzw/                     Real TIFF fixtures with compression=5: bali.tif
                              (725×489 palette, big-endian — passes oracle),
-                             quad-lzw.tif (passes oracle after the
-                             2026-05-21 KwKwK-boundary fix), strike.tif
-                             (deferred: needs assoc-alpha un-pre-multiply, M9).
+                             quad-lzw.tif (deferred: needs LZWFixupTags-style
+                             variant detection), strike.tif (deferred:
+                             needs assoc-alpha un-pre-multiply, M9).
     lzw_oracle/              Matching .rgba ground truth from ImageMagick.
     deflate/                 deflate-last-strip.tiff (500×500 MinIsBlack,
                              little-endian, compression=8/Deflate). Oracle

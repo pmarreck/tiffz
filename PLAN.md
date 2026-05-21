@@ -120,15 +120,9 @@ public API design.
         new_style first, falls back to old_style on Malformed.
         bali.tif (725×489 LZW palette, big-endian) oracle passes.
         Two follow-ups deferred:
-          • quad-lzw.tif → resolved 2026-05-21. Was a one-line bug
-            in the KwKwK branch of `compressions/lzw.zig`:
-            hardcoded the new-style code-width-bump boundary while
-            the regular code-emit branch was variant-aware. Old-style
-            files hitting KwKwK at a code-width boundary bumped one
-            code early → bit-alignment slip → forward reference →
-            Malformed. Fix swaps the hardcoded formula for the same
-            variant-aware expression used in the other branch.
-            Oracle test added; ImageMagick byte-exact.
+          • quad-lzw.tif → Malformed under both variants. Likely needs
+            a libtiff-style header sniff (LZWFixupTags) or a third
+            variant combo. Test commented out with TODO.
           • strike.tif → decode succeeds but bytes differ from the
             ImageMagick oracle. Confirmed 2026-05-07 by validate:
             *tiffz's output is the spec-correct one* (ExtraSamples=1

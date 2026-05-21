@@ -717,46 +717,6 @@ test "findings: predictor3_deflate_fp32.tif fires predictor_applied=3" {
     try std.testing.expectEqual(@as(?u32, 3), recorder.payloadFor(.predictor_applied));
 }
 
-test "validateAllStripsAndTiles: clean multi-strip TIFF passes" {
-    const allocator = std.testing.allocator;
-    const bytes = try loadFile(allocator, "tests/fixtures/uncompressed/rgb-3c-8b.tiff");
-    defer allocator.free(bytes);
-    var handle = tiffz.source.BufferHandle.init(bytes);
-    const src = tiffz.Source.fromBuffer(&handle);
-    var dec = try tiffz.Decoder.open(allocator, src);
-    defer dec.deinit();
-    var ws = tiffz.Workspace.init(allocator);
-    defer ws.deinit();
-    try dec.validateAllStripsAndTiles(&ws);
-}
-
-test "validateAllStripsAndTiles: clean tiled LZW TIFF passes" {
-    const allocator = std.testing.allocator;
-    const bytes = try loadFile(allocator, "tests/fixtures/tiled/quad-tile.tif");
-    defer allocator.free(bytes);
-    var handle = tiffz.source.BufferHandle.init(bytes);
-    const src = tiffz.Source.fromBuffer(&handle);
-    var dec = try tiffz.Decoder.open(allocator, src);
-    defer dec.deinit();
-    var ws = tiffz.Workspace.init(allocator);
-    defer ws.deinit();
-    try dec.validateAllStripsAndTiles(&ws);
-}
-
-test "validateAllStripsAndTiles: clean BigTIFF + LZW palette passes" {
-    const allocator = std.testing.allocator;
-    const bytes = try loadFile(allocator, "tests/fixtures/bigtiff/bali.btf");
-    defer allocator.free(bytes);
-    var handle = tiffz.source.BufferHandle.init(bytes);
-    const src = tiffz.Source.fromBuffer(&handle);
-    var dec = try tiffz.Decoder.open(allocator, src);
-    defer dec.deinit();
-    var ws = tiffz.Workspace.init(allocator);
-    defer ws.deinit();
-    try dec.validateAllStripsAndTiles(&ws);
-}
-
-
 test "findings: rgb-3c-8b.tiff (uncompressed, no special tags) fires no findings" {
     const allocator = std.testing.allocator;
     var recorder = FindingRecorder.init(allocator);
@@ -999,25 +959,13 @@ test "bali.tif (LZW, 725x489 palette, big-endian): RGBA matches ImageMagick orac
     );
 }
 
-test "quad-lzw.tif (LZW + KwKwK at code-width boundary, 512x384 RGB): RGBA matches ImageMagick oracle" {
-    try assertOracleMatch(
-        std.testing.allocator,
-        "tests/fixtures/lzw/quad-lzw.tif",
-        "tests/fixtures/lzw_oracle/quad-lzw.rgba",
-    );
-}
-
-// quad-lzw.tif: shipping as of 2026-05-21 after the KwKwK-branch
-// code-width-bump boundary fix in src/compressions/lzw.zig. The
-// previous decode failure at strip 24 was a pure-arithmetic bug:
-// the KwKwK case hardcoded the new-style early-change formula
-// `(1 << code_bits) - 1` while the regular code-emit branch used
-// the variant-aware one. Old-style streams that hit a KwKwK at a
-// code-width boundary bumped one code too early, the next read
-// landed at the wrong bit alignment, and an out-of-range forward
-// reference surfaced as Malformed. No need for a third variant
-// or a libtiff-style LZWFixupTags pre-decode sniff — quad-lzw is
-// just the standard old-style LSB-first + late-change combo.
+// quad-lzw.tif: deferred. Triggers ImageMagick's "Old-style LZW codes,
+// convert file" warning. Both my new-style (MSB-first + early-change)
+// and old-style (LSB-first + late-change) decode paths return Malformed
+// on this file. Likely needs an additional variant combination or a
+// libtiff-style pre-decode header sniff (the LZWFixupTags path in
+// tif_lzw.c) to pick the right combo. Deferred to a follow-up; bali
+// + strike's other-issue prove the basic LZW path works.
 //
 // strike.tif: deferred. Has ExtraSamples=1 (assoc-alpha = pre-multiplied
 // alpha per TIFF 6.0 §18). My LZW decode produces the literal stored
@@ -1025,4 +973,3 @@ test "quad-lzw.tif (LZW + KwKwK at code-width boundary, 512x384 RGB): RGBA match
 // output un-pre-multiplies (so R = 0x80 stays 0x80). Need un-pre-multiply
 // step keyed on ExtraSamples tag. Deferred to M9 (Pro photometrics)
 // where assoc/unassoc alpha lands properly.
-

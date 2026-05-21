@@ -209,20 +209,7 @@ pub fn decodeVariant(src: []const u8, dest: []u8, variant: Variant) errors.Error
                     .length = dict[pc].length + 1,
                 };
                 next_code += 1;
-                // Match the `code < next_code` branch's variant-aware
-                // boundary: new-style bumps width at (1 << code_bits) - 1
-                // (TIFF 6.0 early-change), old-style at (1 << code_bits)
-                // (libtiff "Compat" late-change). Prior to this fix the
-                // KwKwK branch hardcoded the new-style formula, so
-                // old-style streams that hit a KwKwK case at a width
-                // boundary advanced one code too early and the next
-                // read landed at the wrong bit alignment → forward
-                // reference → Malformed (e.g. quad-lzw.tif strip 24).
-                const boundary: u16 = if (variant == .new_style)
-                    (@as(u16, 1) << code_bits) - 1
-                else
-                    (@as(u16, 1) << code_bits);
-                if (next_code >= boundary and code_bits < 12) {
+                if (next_code >= (@as(u16, 1) << code_bits) - 1 and code_bits < 12) {
                     code_bits += 1;
                 }
             }
