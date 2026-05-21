@@ -999,13 +999,25 @@ test "bali.tif (LZW, 725x489 palette, big-endian): RGBA matches ImageMagick orac
     );
 }
 
-// quad-lzw.tif: deferred. Triggers ImageMagick's "Old-style LZW codes,
-// convert file" warning. Both my new-style (MSB-first + early-change)
-// and old-style (LSB-first + late-change) decode paths return Malformed
-// on this file. Likely needs an additional variant combination or a
-// libtiff-style pre-decode header sniff (the LZWFixupTags path in
-// tif_lzw.c) to pick the right combo. Deferred to a follow-up; bali
-// + strike's other-issue prove the basic LZW path works.
+test "quad-lzw.tif (LZW + KwKwK at code-width boundary, 512x384 RGB): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/lzw/quad-lzw.tif",
+        "tests/fixtures/lzw_oracle/quad-lzw.rgba",
+    );
+}
+
+// quad-lzw.tif: shipping as of 2026-05-21 after the KwKwK-branch
+// code-width-bump boundary fix in src/compressions/lzw.zig. The
+// previous decode failure at strip 24 was a pure-arithmetic bug:
+// the KwKwK case hardcoded the new-style early-change formula
+// `(1 << code_bits) - 1` while the regular code-emit branch used
+// the variant-aware one. Old-style streams that hit a KwKwK at a
+// code-width boundary bumped one code too early, the next read
+// landed at the wrong bit alignment, and an out-of-range forward
+// reference surfaced as Malformed. No need for a third variant
+// or a libtiff-style LZWFixupTags pre-decode sniff — quad-lzw is
+// just the standard old-style LSB-first + late-change combo.
 //
 // strike.tif: deferred. Has ExtraSamples=1 (assoc-alpha = pre-multiplied
 // alpha per TIFF 6.0 §18). My LZW decode produces the literal stored
@@ -1013,3 +1025,4 @@ test "bali.tif (LZW, 725x489 palette, big-endian): RGBA matches ImageMagick orac
 // output un-pre-multiplies (so R = 0x80 stays 0x80). Need un-pre-multiply
 // step keyed on ExtraSamples tag. Deferred to M9 (Pro photometrics)
 // where assoc/unassoc alpha lands properly.
+
