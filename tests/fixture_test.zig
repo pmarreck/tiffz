@@ -717,6 +717,46 @@ test "findings: predictor3_deflate_fp32.tif fires predictor_applied=3" {
     try std.testing.expectEqual(@as(?u32, 3), recorder.payloadFor(.predictor_applied));
 }
 
+test "validateAllStripsAndTiles: clean multi-strip TIFF passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/uncompressed/rgb-3c-8b.tiff");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try dec.validateAllStripsAndTiles(&ws);
+}
+
+test "validateAllStripsAndTiles: clean tiled LZW TIFF passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/tiled/quad-tile.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try dec.validateAllStripsAndTiles(&ws);
+}
+
+test "validateAllStripsAndTiles: clean BigTIFF + LZW palette passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/bigtiff/bali.btf");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try dec.validateAllStripsAndTiles(&ws);
+}
+
+
 test "findings: rgb-3c-8b.tiff (uncompressed, no special tags) fires no findings" {
     const allocator = std.testing.allocator;
     var recorder = FindingRecorder.init(allocator);
