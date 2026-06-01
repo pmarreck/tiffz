@@ -195,24 +195,51 @@ fn expandCmyk(
     while (rows_done < src_rows) : (rows_done += 1) {
         var x: u32 = 0;
         while (x < fmt.width) : (x += 1) {
-            // Each CMYK channel is downscaled to u8 first; the
-            // subtractive composition then runs in u32. For 16-bit
-            // CMYK the precision loss versus doing the composition in
-            // u16 throughout is <1 LSB in the output 8-bit RGB; the
-            // simpler shared 8-bit math path is plenty for v1.
-            const c: u32 = sampleU8(src_bytes, si + 0 * sample_bytes, fmt.bits_per_sample, fmt.endian);
-            const m: u32 = sampleU8(src_bytes, si + 1 * sample_bytes, fmt.bits_per_sample, fmt.endian);
-            const y: u32 = sampleU8(src_bytes, si + 2 * sample_bytes, fmt.bits_per_sample, fmt.endian);
-            const k: u32 = sampleU8(src_bytes, si + 3 * sample_bytes, fmt.bits_per_sample, fmt.endian);
-            const k_inv: u32 = 255 - k;
-            dest[di + 0] = @intCast(((255 - c) * k_inv + 127) / 255);
-            dest[di + 1] = @intCast(((255 - m) * k_inv + 127) / 255);
-            dest[di + 2] = @intCast(((255 - y) * k_inv + 127) / 255);
-            // Extra samples beyond CMYK become alpha if present, else opaque.
-            dest[di + 3] = if (fmt.samples_per_pixel >= 5)
-                sampleU8(src_bytes, si + 4 * sample_bytes, fmt.bits_per_sample, fmt.endian)
-            else
-                0xFF;
+            if (fmt.bits_per_sample == 16) {
+                // Full u16-precision subtractive composition: keeps
+                // all 16 bits of each channel through the multiply,
+                // downscale to u8 only at the end. Diverges from
+                // u8-first by up to 1 LSB on synthetic mid-range
+                // inputs (e.g. C=K=0x8000 → R=64 here, R=63 under
+                // u8-first). Real ICC-aware workflows want #3
+                // anyway, but the lossless-by-default math is the
+                // honest v1 shape now that we've measured the gap.
+                const std_endian: std.builtin.Endian = if (fmt.endian == .little) .little else .big;
+                const c16: u32 = std.mem.readInt(u16, src_bytes[si + 0 * sample_bytes ..][0..2], std_endian);
+                const m16: u32 = std.mem.readInt(u16, src_bytes[si + 1 * sample_bytes ..][0..2], std_endian);
+                const y16: u32 = std.mem.readInt(u16, src_bytes[si + 2 * sample_bytes ..][0..2], std_endian);
+                const k16: u32 = std.mem.readInt(u16, src_bytes[si + 3 * sample_bytes ..][0..2], std_endian);
+                const k_inv16: u32 = 65535 - k16;
+                // Composition stays in u32 (max product = 65535*65535 = 0xfffe_0001 < 2^32).
+                // Add 65535/2 = 32767 for round-to-nearest, then floor-divide.
+                const r16: u32 = ((65535 - c16) * k_inv16 + 32767) / 65535;
+                const g16: u32 = ((65535 - m16) * k_inv16 + 32767) / 65535;
+                const b16: u32 = ((65535 - y16) * k_inv16 + 32767) / 65535;
+                // Downscale each u16-ish u32 to u8 with the canonical
+                // (v*255+32767)/65535 mapping; same shape sampleU8 uses.
+                dest[di + 0] = @intCast((r16 * 255 + 32767) / 65535);
+                dest[di + 1] = @intCast((g16 * 255 + 32767) / 65535);
+                dest[di + 2] = @intCast((b16 * 255 + 32767) / 65535);
+                dest[di + 3] = if (fmt.samples_per_pixel >= 5)
+                    sampleU8(src_bytes, si + 4 * sample_bytes, fmt.bits_per_sample, fmt.endian)
+                else
+                    0xFF;
+            } else {
+                // u8 path: per-channel downscale to u8 (no-op when
+                // bits_per_sample==8), then composition in u32.
+                const c: u32 = sampleU8(src_bytes, si + 0 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+                const m: u32 = sampleU8(src_bytes, si + 1 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+                const y: u32 = sampleU8(src_bytes, si + 2 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+                const k: u32 = sampleU8(src_bytes, si + 3 * sample_bytes, fmt.bits_per_sample, fmt.endian);
+                const k_inv: u32 = 255 - k;
+                dest[di + 0] = @intCast(((255 - c) * k_inv + 127) / 255);
+                dest[di + 1] = @intCast(((255 - m) * k_inv + 127) / 255);
+                dest[di + 2] = @intCast(((255 - y) * k_inv + 127) / 255);
+                dest[di + 3] = if (fmt.samples_per_pixel >= 5)
+                    sampleU8(src_bytes, si + 4 * sample_bytes, fmt.bits_per_sample, fmt.endian)
+                else
+                    0xFF;
+            }
             si += @as(usize, fmt.samples_per_pixel) * sample_bytes;
             di += 4;
         }

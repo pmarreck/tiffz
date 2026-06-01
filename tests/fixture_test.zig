@@ -1056,3 +1056,79 @@ test "photometricAfterDecode: PackBits MinIsWhite returns MinIsWhite" {
     const effective = try dec.photometricAfterDecode(0);
     try std.testing.expectEqual(tiffz.tags.photometric_white_is_zero, effective);
 }
+
+// ── #2: True u16 CMYK composition ─────────────────────────────────
+//
+// Current path downscales each u16 channel to u8 before subtractive
+// composition: `(255-C)*(255-K)/255`. True u16 path keeps the full
+// precision: `(65535-C)*(65535-K)/65535` and downscales the final
+// RGB to u8 at the end. For values where the high byte of K is N
+// but K (as u16) has lower-byte contribution, the two paths differ
+// by 1 LSB.
+//
+// Test case: 1 pixel, C=K=0x8000, M=Y=0.
+//   u8-first: sampleU8(0x8000)=128. R = (255-128)*(255-128)/255 = 63
+//   true u16: (65535-32768)*(65535-32768)/65535 = 16383
+//             downscale: (16383*255+32767)/65535 = 64
+// → assert R=64 (the spec-precise answer). Test fails under the
+// current u8-first path (which returns 63); passes after the fix.
+// G and B are unaffected (M=Y=0 means the C channel quirk doesn'''t apply).
+
+test "expandCmyk u16: high-precision composition diverges by 1 LSB from u8-first" {
+    const allocator = std.testing.allocator;
+
+    // One pixel of 16-bit CMYK, little-endian: C=0x8000, M=0, Y=0, K=0x8000.
+    const src = [_]u8{
+        0x00, 0x80, // C=0x8000
+        0x00, 0x00, // M=0
+        0x00, 0x00, // Y=0
+        0x00, 0x80, // K=0x8000
+    };
+
+    var dest: [4]u8 = .{ 0xAA, 0xAA, 0xAA, 0xAA };
+
+    const fmt: tiffz.photometrics.PixelFormat = .{
+        .photometric = tiffz.tags.photometric_separated_cmyk,
+        .bits_per_sample = 16,
+        .samples_per_pixel = 4,
+        .width = 1,
+        .colormap = null,
+        .endian = .little,
+    };
+
+    try tiffz.photometrics.expandRowsToRgba(&src, 1, fmt, &dest);
+    _ = allocator;
+
+    // u8-first path (current): R=63, G=127, B=127. Asserts true-u16: R=64.
+    try std.testing.expectEqual(@as(u8, 64), dest[0]); // R (diverges)
+    try std.testing.expectEqual(@as(u8, 127), dest[1]); // G (M=0 → no divergence)
+    try std.testing.expectEqual(@as(u8, 127), dest[2]); // B (Y=0 → no divergence)
+    try std.testing.expectEqual(@as(u8, 0xFF), dest[3]); // A (opaque, no extra sample)
+}
+
+test "expandCmyk u8: 8-bit input behavior unchanged after u16 fix" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    // One pixel: C=0, M=0, Y=0, K=128 (matches the u16 sample's
+    // sampleU8(0x8000)=127 quantization, but the u8 input is exact).
+    const src = [_]u8{ 0, 0, 0, 128 };
+    var dest: [4]u8 = .{ 0xAA, 0xAA, 0xAA, 0xAA };
+
+    const fmt: tiffz.photometrics.PixelFormat = .{
+        .photometric = tiffz.tags.photometric_separated_cmyk,
+        .bits_per_sample = 8,
+        .samples_per_pixel = 4,
+        .width = 1,
+        .colormap = null,
+        .endian = .little,
+    };
+
+    try tiffz.photometrics.expandRowsToRgba(&src, 1, fmt, &dest);
+
+    // u8 path: (255-0)*(255-128)/255 = 255*127/255 = 127 (with +127 rounding)
+    // → 32512/255 = 127. Path unchanged by u16 fix.
+    try std.testing.expectEqual(@as(u8, 127), dest[0]);
+    try std.testing.expectEqual(@as(u8, 127), dest[1]);
+    try std.testing.expectEqual(@as(u8, 127), dest[2]);
+}
