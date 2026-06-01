@@ -1007,3 +1007,52 @@ test "ifd chain cycle: self-loop fails with IfdChainCycle not LimitExceededIfdCo
     const result = dec.ifd(1);
     try std.testing.expectError(error.IfdChainCycle, result);
 }
+
+// ── #C: photometricAfterDecode public-API getter ─────────────────
+//
+// JPEG-in-TIFF case: jpegz silently converts YCbCr→RGB internally
+// (matching libjpeg-turbo default). The IFD photometric tag says
+// YCbCr but the bytes returned from decodeStrip are RGB-ordered.
+// Without an API to surface this, callers either get wrong colors
+// or have to know about the quirk and hardcode the override. The
+// new Decoder.photometricAfterDecode(ifd_index) returns the
+// effective photometric the caller should pass to expansion.
+
+test "photometricAfterDecode: Compression=7 + YCbCr returns RGB override" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/jpeg/ycbcr_jpeg.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+
+    const effective = try dec.photometricAfterDecode(0);
+    try std.testing.expectEqual(tiffz.tags.photometric_rgb, effective);
+}
+
+test "photometricAfterDecode: non-JPEG passes IFD photometric through unchanged" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/uncompressed/rgb-3c-8b.tiff");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+
+    const effective = try dec.photometricAfterDecode(0);
+    try std.testing.expectEqual(tiffz.tags.photometric_rgb, effective);
+}
+
+test "photometricAfterDecode: PackBits MinIsWhite returns MinIsWhite" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/packbits/cramps.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+
+    const effective = try dec.photometricAfterDecode(0);
+    try std.testing.expectEqual(tiffz.tags.photometric_white_is_zero, effective);
+}

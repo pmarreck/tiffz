@@ -310,6 +310,31 @@ pub const Decoder = struct {
         return written;
     }
 
+    /// Return the effective photometric interpretation that the
+    /// caller should pass to photometric-expansion code AFTER
+    /// strip/tile decode. Mostly mirrors the IFD's PhotometricInterpretation
+    /// tag, but handles a known codec-side quirk:
+    ///
+    /// JPEG-in-TIFF (Compression=7) with PhotometricInterpretation=YCbCr:
+    /// jpegz (matching libjpeg-turbo's `JCS_RGB` default) internally
+    /// converts YCbCr → RGB during decode, so the bytes returned from
+    /// `decodeStrip` / `decodeTile` are RGB-ordered. Callers must NOT
+    /// re-apply a YCbCr → RGB transform during photometric expansion.
+    /// This getter returns `photometric_rgb` for that case.
+    ///
+    /// All other (compression, photometric) combinations pass the IFD
+    /// value through unchanged. Errors propagate from the IFD parse if
+    /// the requested index isn't materializable.
+    pub fn photometricAfterDecode(self: *Decoder, ifd_index: usize) errors.Error!u16 {
+        const dir = try self.ifd(ifd_index);
+        const photometric = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse return error.Malformed;
+        const compression = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse tags.compression_none;
+        if (compression == tags.compression_jpeg and photometric == tags.photometric_ycbcr) {
+            return tags.photometric_rgb;
+        }
+        return photometric;
+    }
+
     /// Validate every strip / tile of every materialized IFD by
     /// pushing each chunk through `decodeStrip` / `decodeTile`.
     /// Exists as a convenience for consumers (e.g. validate's TIFF
