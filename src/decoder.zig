@@ -40,6 +40,12 @@ pub const Decoder = struct {
     /// IFD chain. We populate IFD0 eagerly in open(); siblings are
     /// resolved on demand by ifd().
     ifds: std.ArrayListUnmanaged(Ifd),
+    /// File offsets each IFD in `ifds` was parsed from. Parallel to
+    /// `ifds.items`. Used for cycle detection: before parsing the
+    /// next IFD we check `next_ifd_offset` against this list; a
+    /// repeat means the chain loops back on itself (malformed file
+    /// defense — TIFF spec doesn't permit cycles).
+    ifd_offsets: std.ArrayListUnmanaged(u64),
     /// Offset of the next-IFD pointer for the last IFD we've parsed
     /// — 0 if we've reached the end of the chain.
     next_ifd_offset: u64,
@@ -67,9 +73,13 @@ pub const Decoder = struct {
         var ifds: std.ArrayListUnmanaged(Ifd) = .empty;
         errdefer ifds.deinit(allocator);
 
+        var ifd_offsets: std.ArrayListUnmanaged(u64) = .empty;
+        errdefer ifd_offsets.deinit(allocator);
+
         var ifd0 = try ifd_mod.parse(allocator, source, h.endian, h.ifd0_offset, limits, offset_width);
         errdefer ifd0.deinit();
         ifds.append(allocator, ifd0) catch return error.OutOfMemory;
+        ifd_offsets.append(allocator, h.ifd0_offset) catch return error.OutOfMemory;
 
         return .{
             .allocator = allocator,
@@ -78,6 +88,7 @@ pub const Decoder = struct {
             .endian = h.endian,
             .bigtiff = h.bigtiff,
             .ifds = ifds,
+            .ifd_offsets = ifd_offsets,
             .next_ifd_offset = ifd0.next_offset,
         };
     }
@@ -218,6 +229,7 @@ pub const Decoder = struct {
     pub fn deinit(self: *Decoder) void {
         for (self.ifds.items) |*i| i.deinit();
         self.ifds.deinit(self.allocator);
+        self.ifd_offsets.deinit(self.allocator);
     }
 
     pub fn ifdCount(self: *const Decoder) usize {
@@ -233,17 +245,26 @@ pub const Decoder = struct {
             if (self.ifds.items.len >= self.limits.max_ifds) {
                 return error.LimitExceededIfdCount;
             }
+            // Cycle defense: malformed files can have next_ifd_offset
+            // point back to a previously-parsed IFD (self-loop, or a
+            // multi-step cycle through the chain). Linear scan is fine
+            // — capped at max_ifds (1024 default) so this stays cheap.
+            for (self.ifd_offsets.items) |seen| {
+                if (seen == self.next_ifd_offset) return error.IfdChainCycle;
+            }
             const offset_width: ifd_mod.OffsetWidth = if (self.bigtiff) .big else .classic;
+            const parsed_from = self.next_ifd_offset;
             var next = try ifd_mod.parse(
                 self.allocator,
                 self.source,
                 self.endian,
-                self.next_ifd_offset,
+                parsed_from,
                 self.limits,
                 offset_width,
             );
             errdefer next.deinit();
             self.ifds.append(self.allocator, next) catch return error.OutOfMemory;
+            self.ifd_offsets.append(self.allocator, parsed_from) catch return error.OutOfMemory;
             self.next_ifd_offset = next.next_offset;
             // Fire findings for the newly-materialized IFD. The
             // freshly-appended IFD lives at `self.ifds.items.len - 1`.

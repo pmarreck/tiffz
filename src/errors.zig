@@ -30,6 +30,7 @@ pub const Error = error{
     OutOfMemory,                         // 21
     Io,                                  // 22 — Source.read_at error pass-through
     Bug,                                 // 23 — internal invariant violated
+    IfdChainCycle,                       // 24 — next_ifd_offset revisits a previously-parsed IFD
 };
 
 test "Error type compiles and references resolve" {

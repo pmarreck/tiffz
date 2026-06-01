@@ -973,3 +973,37 @@ test "bali.tif (LZW, 725x489 palette, big-endian): RGBA matches ImageMagick orac
 // output un-pre-multiplies (so R = 0x80 stays 0x80). Need un-pre-multiply
 // step keyed on ExtraSamples tag. Deferred to M9 (Pro photometrics)
 // where assoc/unassoc alpha lands properly.
+
+// ── #H: IFD chain cycle detection ─────────────────────────────────
+//
+// Adversarial TIFF: IFD0's next_ifd_offset points back to itself.
+// Currently the decoder walks the same IFD up to max_ifds (1024)
+// times before failing with LimitExceededIfdCount. With cycle
+// detection it should fail immediately with IfdChainCycle the
+// moment a previously-seen offset reappears in the chain.
+
+test "ifd chain cycle: self-loop fails with IfdChainCycle not LimitExceededIfdCount" {
+    const allocator = std.testing.allocator;
+
+    // Minimal classic TIFF, little-endian, IFD0 at offset 8,
+    // entry_count = 0, next_ifd_offset = 8 (back to itself).
+    const cyclic = [_]u8{
+        'I', 'I',             // little-endian magic
+        0x2A, 0x00,           // TIFF version 42
+        0x08, 0x00, 0x00, 0x00, // IFD0 offset = 8
+        0x00, 0x00,           // entry_count = 0
+        0x08, 0x00, 0x00, 0x00, // next_ifd_offset = 8 (CYCLE)
+    };
+
+    var handle = tiffz.source.BufferHandle.init(&cyclic);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+
+    // Reach for IFD index 1 — forces the walker to follow the
+    // cycle. With cycle detection, this fires IfdChainCycle on
+    // first reappearance. Without it, max_ifds is hit after 1024
+    // redundant parses.
+    const result = dec.ifd(1);
+    try std.testing.expectError(error.IfdChainCycle, result);
+}
