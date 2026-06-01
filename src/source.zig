@@ -232,11 +232,6 @@ fn bufferedReaderReadAt(ctx: *anyopaque, dst: []u8, offset: u64) anyerror!usize 
     return copied;
 }
 
-test "Source type compiles" {
-    _ = Source;
-    _ = Source.VTable;
-}
-
 test "fromBuffer: size matches the underlying slice length" {
     const data = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x42 };
     var handle = BufferHandle.init(&data);

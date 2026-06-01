@@ -42,12 +42,6 @@ pub const Workspace = struct {
     }
 };
 
-test "Workspace init/deinit roundtrip" {
-    var ws = Workspace.init(std.testing.allocator);
-    defer ws.deinit();
-    ws.reset();
-}
-
 test "Workspace.ensureScratch grows monotonically" {
     var ws = Workspace.init(std.testing.allocator);
     defer ws.deinit();

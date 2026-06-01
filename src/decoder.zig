@@ -902,7 +902,3 @@ test "decodeStrip: compression=6 (OJPEG, never supported) rejected as Unsupporte
         dec.decodeStrip(0, 0, &dest, &ws),
     );
 }
-
-test "Decoder type compiles" {
-    _ = Decoder;
-}
