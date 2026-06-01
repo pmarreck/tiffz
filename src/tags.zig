@@ -55,6 +55,7 @@ pub const photometric_transparency_mask: u16 = 4;
 pub const photometric_separated_cmyk: u16 = 5;
 pub const photometric_ycbcr: u16 = 6;
 pub const photometric_cielab: u16 = 8;
+pub const photometric_icclab: u16 = 9;  // TIFF Tech Note 3: unsigned a/b with bias 128
 
 /// Planar configuration codes (tag 284).
 pub const planar_chunky: u16 = 1;            // RGBRGBRGB...

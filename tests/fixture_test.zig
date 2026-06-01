@@ -1132,3 +1132,73 @@ test "expandCmyk u8: 8-bit input behavior unchanged after u16 fix" {
     try std.testing.expectEqual(@as(u8, 127), dest[1]);
     try std.testing.expectEqual(@as(u8, 127), dest[2]);
 }
+
+// ── #4: photometric=9 (ICCLab) — TIFF Tech Note 3 variant ────────
+//
+// CIELAB (photometric=8): a/b stored as signed two's-complement bytes
+//   (-128..127 maps to L*a*b* a/b in roughly -127..127 spec range).
+// ICCLab  (photometric=9): a/b stored as UNSIGNED bytes with bias 128
+//   (so a_star = a_byte - 128). Same L* encoding either way.
+//
+// For an achromatic mid-gray pixel:
+//   CIELAB encoding: a_byte=0, b_byte=0 → a_star=0, b_star=0
+//   ICCLab encoding: a_byte=128, b_byte=128 → a_star=0, b_star=0
+// Both should produce the same RGB. The dispatch needs to switch on
+// fmt.photometric or the result differs by ~100 LSBs in each channel.
+
+test "expandIccLab photometric=9 mid-gray matches photometric=8 mid-gray" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    // Mid-gray pixel encoded both ways.
+    const src_cielab = [_]u8{ 128, 0, 0 }; // L=50%, a=0, b=0 (signed)
+    const src_icclab = [_]u8{ 128, 128, 128 }; // L=50%, a=0, b=0 (biased)
+
+    var dest_cielab: [4]u8 = .{ 0, 0, 0, 0 };
+    var dest_icclab: [4]u8 = .{ 0, 0, 0, 0 };
+
+    const fmt_cielab: tiffz.photometrics.PixelFormat = .{
+        .photometric = tiffz.tags.photometric_cielab,
+        .bits_per_sample = 8,
+        .samples_per_pixel = 3,
+        .width = 1,
+        .colormap = null,
+    };
+    const fmt_icclab: tiffz.photometrics.PixelFormat = .{
+        .photometric = tiffz.tags.photometric_icclab,
+        .bits_per_sample = 8,
+        .samples_per_pixel = 3,
+        .width = 1,
+        .colormap = null,
+    };
+
+    try tiffz.photometrics.expandRowsToRgba(&src_cielab, 1, fmt_cielab, &dest_cielab);
+    try tiffz.photometrics.expandRowsToRgba(&src_icclab, 1, fmt_icclab, &dest_icclab);
+
+    try std.testing.expectEqual(dest_cielab[0], dest_icclab[0]); // R
+    try std.testing.expectEqual(dest_cielab[1], dest_icclab[1]); // G
+    try std.testing.expectEqual(dest_cielab[2], dest_icclab[2]); // B
+}
+
+test "expandIccLab photometric=9 max-positive-a encodes a*=127 (red shift)" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    // ICCLab a=255 → a_star = 255-128 = 127 (max positive a → red shift)
+    const src = [_]u8{ 128, 255, 128 }; // L=50%, a=+127, b=0
+    var dest: [4]u8 = .{ 0, 0, 0, 0 };
+
+    const fmt: tiffz.photometrics.PixelFormat = .{
+        .photometric = tiffz.tags.photometric_icclab,
+        .bits_per_sample = 8,
+        .samples_per_pixel = 3,
+        .width = 1,
+        .colormap = null,
+    };
+
+    try tiffz.photometrics.expandRowsToRgba(&src, 1, fmt, &dest);
+    // Strong red shift: R should be substantially higher than G and B.
+    try std.testing.expect(dest[0] > dest[1]);
+    try std.testing.expect(dest[0] > dest[2]);
+}
+

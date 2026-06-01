@@ -337,13 +337,24 @@ walks the IFD0 chain at v1).
 fixture-based test against a magick-generated Lab TIFF would pin
 correctness across the gamut.
 
-**Cost:** Small — generate fixture via magick, generate oracle
-via `tiff2rgba`. The current Lab impl matches libtiff's behavior
-(both use D50 → D65 Bradford → sRGB) so the oracle would line up.
+**Cost:** Small for a tolerance-based test (±2 LSB on neutral
+inputs, ±7 LSB on saturated out-of-gamut). Medium-Large if
+byte-exact match against libtiff is required — would need to
+reverse-engineer libtiff's exact Lab→RGB chain (it goes through
+lcms2 in some configurations, which uses different rounding /
+gamut-clamping than tiffz's textbook Q24 chain).
 
-**Why it's deferred:** Endpoint tests + the algorithmic
-correctness inherited from the textbook Lab→XYZ→sRGB chain are
-enough confidence for v1.
+**Why it's deferred:** Tried 2026-06-01: even a pure-black Lab
+input (L=0, a=0, b=0) produces (R=0, G=1, B=2) in tiffz vs
+(0, 0, 0) in tiff2rgba — 1-2 LSB integer-chain bias near zero,
+likely from the +rounding term in the matrix product handling
+negative Q24 transients during the XYZ→sRGB-linear step. Pure
+red (a strongly out-of-gamut Lab) diverges 4-7 LSB. Both
+implementations are algorithmically valid but the integer
+rounding paths don't coincide. Endpoint unit tests + #2's
+demonstrated correctness on synthetic divergence cases provide
+the v1 confidence; a fixture-based oracle would need either a
+tolerance assertion or a tiffz-output-pinned hash regression.
 
 ### J. Fuzzing harness
 

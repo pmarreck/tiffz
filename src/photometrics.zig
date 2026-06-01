@@ -147,6 +147,7 @@ pub fn expandRowsToRgba(
             tags.photometric_color_filter_array,
             tags.photometric_ycbcr,
             tags.photometric_cielab,
+            tags.photometric_icclab,
             => return error.UnsupportedBitDepth,
             else => return error.UnsupportedPhotometric,
         }
@@ -160,6 +161,10 @@ pub fn expandRowsToRgba(
         tags.photometric_separated_cmyk => expandCmyk(src_bytes, src_rows, fmt, dest),
         tags.photometric_ycbcr => expandYCbCr(src_bytes, src_rows, fmt, dest),
         tags.photometric_cielab => expandCieLab(src_bytes, src_rows, fmt, dest),
+        // ICCLab: same chain, different a/b byte encoding (TIFF
+        // Tech Note 3). expandCieLab selects the LUT based on
+        // fmt.photometric.
+        tags.photometric_icclab => expandCieLab(src_bytes, src_rows, fmt, dest),
         // CFA mosaic raw — v1 emits each sample as gray RGBA. The
         // consumer (validate, raw-pipeline tools) does demosaic later
         // using the CFAPattern tag (parsed in src/dng.zig). Full
@@ -527,6 +532,30 @@ const lab_a_offset_q24: [256]i32 = blk: {
     break :blk t;
 };
 
+/// LUT: ICCLab (photometric=9) a_byte (unsigned, biased by 128) → a/500
+/// in Q24. Matches lab_a_offset_q24 but with a_star = (a_byte - 128)
+/// instead of the two's-complement reinterpretation.
+const lab_a_offset_icclab_q24: [256]i32 = blk: {
+    var t: [256]i32 = undefined;
+    for (0..256) |i| {
+        const a_star: f64 = @as(f64, @floatFromInt(@as(i32, @intCast(i)))) - 128.0;
+        const off: f64 = a_star / 500.0;
+        t[i] = @intFromFloat(@round(off * @as(f64, @floatFromInt(lab_q))));
+    }
+    break :blk t;
+};
+
+/// LUT: ICCLab b_byte (unsigned, biased by 128) → -b/200 in Q24.
+const lab_b_offset_icclab_q24: [256]i32 = blk: {
+    var t: [256]i32 = undefined;
+    for (0..256) |i| {
+        const b_star: f64 = @as(f64, @floatFromInt(@as(i32, @intCast(i)))) - 128.0;
+        const off: f64 = -b_star / 200.0;
+        t[i] = @intFromFloat(@round(off * @as(f64, @floatFromInt(lab_q))));
+    }
+    break :blk t;
+};
+
 /// LUT: signed b_byte → b/200 in Q24 (note sign convention: fz = fy - b/200,
 /// so we store the NEGATIVE here for an additive update).
 const lab_b_offset_q24: [256]i32 = blk: {
@@ -648,8 +677,16 @@ fn expandCieLab(
             // the next f_inv.
             const y_d50_q24: i64 = @intCast(lab_y_d50_q24[l_byte]);
             const fy_q24: i64 = @intCast(lab_fy_q24[l_byte]);
-            const fx_q24: i64 = fy_q24 + lab_a_offset_q24[a_byte];
-            const fz_q24: i64 = fy_q24 + lab_b_offset_q24[b_byte];
+            const a_lut = if (fmt.photometric == tags.photometric_icclab)
+                &lab_a_offset_icclab_q24
+            else
+                &lab_a_offset_q24;
+            const b_lut = if (fmt.photometric == tags.photometric_icclab)
+                &lab_b_offset_icclab_q24
+            else
+                &lab_b_offset_q24;
+            const fx_q24: i64 = fy_q24 + a_lut[a_byte];
+            const fz_q24: i64 = fy_q24 + b_lut[b_byte];
             const x_d50_q24: i64 = @divTrunc(@as(i64, lab_xn_q24) * labFInvQ24(fx_q24) + (1 << 23), 1 << 24);
             const z_d50_q24: i64 = @divTrunc(@as(i64, lab_zn_q24) * labFInvQ24(fz_q24) + (1 << 23), 1 << 24);
 
