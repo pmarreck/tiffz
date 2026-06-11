@@ -6,6 +6,13 @@
 //! `docs/superpowers/specs/2026-05-04-tiffz-api-design.md`.
 
 pub const errors = @import("errors.zig");
+// Re-export jpegz so downstream consumers (e.g. validate) can reach the JPEG
+// family decoder through tiffz instead of depending on jpegz a second time.
+// Two independent `b.dependency("jpegz")` calls (one here, one in the consumer)
+// create two module instances sharing one root file, which Zig 0.16 rejects
+// ("file exists in modules 'jpegz' and 'jpegz0'") and the nix sandbox SEGVs on.
+// Single source of truth = no dual-pin drift. See validate #32.
+pub const jpegz = @import("jpegz");
 pub const limits = @import("limits.zig");
 pub const source = @import("source.zig");
 pub const workspace = @import("workspace.zig");
