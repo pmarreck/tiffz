@@ -67,17 +67,14 @@ pub fn decode(
     // jpegz returns a fully realized RGB (or grayscale) image. The
     // pixel buffer is owned by jpegz's allocator; copy into `dest` so
     // the caller's lifetime story stays simple.
-    // Use jpegz.internal.wrapperDecode (the libjpeg path) directly
-    // instead of the regular jpegz.decode dispatch. Reason: jpegz's
-    // baseline cleanroom (B0 milestone) is currently byte-perfect on
-    // ~72% of libjpeg's corpus and within ≤2 LSB on the rest. For
-    // TIFF Compression=7 we need exact agreement with the magick
-    // oracle (which also goes through libjpeg), so we pin the libjpeg
-    // wrapper. When jpegz Phase 2 cleanroom becomes byte-exact on
-    // RGB-marked baseline + spliced abbreviated streams, this swaps
-    // back to plain jpegz.decode and the cleanroom takes over with
-    // no behavioral change.
-    const img = jpegz.internal.wrapperDecode(allocator, stream) catch |e| switch (e) {
+    // Use jpegz.decode (the pure-Zig cleanroom). jpegz reached byte-exact
+    // parity with libjpeg for the TIFF Compression=7 cases we need: RGB/YCbCr
+    // baseline AND Mode-2 spliced abbreviated (JPEGTables) streams, including
+    // RGB signaled purely via component IDs 'R','G','B' with no JFIF/APP14
+    // (jpegz 7e93e957, verified by a differential test vs the libjpeg oracle).
+    // The libjpeg oracle is no longer linked (built -Dwith-libjpeg-oracle=false),
+    // which also unblocks Windows cross-compile (libjpeg-turbo has no mingw static).
+    const img = jpegz.decode(allocator, stream) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.Malformed,
     };

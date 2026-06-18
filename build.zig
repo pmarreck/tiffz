@@ -92,6 +92,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
                 .@"with-charls" = false,
+                .@"with-libjpeg-oracle" = false,
                 .@"openjpeg-include" = opt_openjpeg_inc,
                 .@"openjpeg-lib" = opt_openjpeg_lib,
                 .@"libjpeg-include" = opt_libjpeg_inc,
@@ -103,6 +104,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
                 .@"with-charls" = false,
+                .@"with-libjpeg-oracle" = false,
                 .@"openjpeg-include" = opt_openjpeg_inc,
             });
         }
@@ -110,6 +112,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .@"with-charls" = false,
+            .@"with-libjpeg-oracle" = false,
         });
     };
     const jpegz_mod = jpegz_dep.module("jpegz");
