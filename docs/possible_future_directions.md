@@ -243,20 +243,24 @@ surface yet; the quirk has been documented in
 `src/compressions/jpeg.zig` and the integration test demonstrates
 the override pattern.
 
-### D. Cleanroom-JPEG byte parity for Compression=7
+### D. Cleanroom-JPEG byte parity for Compression=7 — SHIPPED 2026-06-22
 
-**What:** `src/compressions/jpeg.zig` calls jpegz's
-`wrapperDecode` (libjpeg-turbo path) rather than `jpegz.decode`
-(cleanroom) because the cleanroom isn't byte-exact on RGB-marked
-baseline + spliced abbreviated streams. When jpegz Phase 2 closes
-that gap, tiffz can flip to plain `jpegz.decode` — a one-line swap
-in `decode()`.
+**Status:** Done. tiffz `2d0c6d74` (Windows-ready cleanroom flip) +
+`059ff38b` (jpegz bump to `f60da91f` for lazy vendored openjpeg).
+Committed by validate while tiffz's session was down, with jpegz's
+authorization.
 
-**Cost:** Trivial change in tiffz; substantial upstream work in
-jpegz.
-
-**Why it's deferred:** Tracked on jpegz's roadmap. No tiffz-side
-blocking work.
+**What landed:**
+- `src/compressions/jpeg.zig`: Compression=7 decode flipped from
+  `jpegz.internal.wrapperDecode` (libjpeg-turbo) to `jpegz.decode`
+  (cleanroom).
+- `build.zig.zon`: jpegz pin → `f60da91f` (carrying the Mode-2
+  RGB-by-component-ID cleanroom fix + lazy vendored openjpeg).
+- `build.zig`: `.@"with-libjpeg-oracle" = false` on all three jpegz
+  consumer branches.
+- libjpeg-turbo fully dropped from the link closure.
+- `rgb-jpeg.tif` Mode-2 JPEGTables fixture still byte-exact;
+  full `./test` 183/183 green.
 
 ### E. Memory-mapped Source
 
