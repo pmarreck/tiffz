@@ -135,6 +135,20 @@ but not widely shipped:
 **Cost:** Medium per codec. Each needs an upstream C wrapper +
 flake.nix entry + dispatch arm.
 
+**JP2-in-TIFF guardrails (Einstein, 2026-06-29):**
+- Pin the **Einstein-blessed jpegz commit** rather than jpegz-yolo HEAD
+  (the blessed pin transitively pins the blessed jp2z; jpegz/jp2z
+  share Namespace A and the version pair is contract-stable).
+- Nested jpegz/jp2z findings emitted during the JP2 decode MUST
+  reach validate **tagged as jpegz/jp2z findings (Namespace A)** —
+  never flatten/re-code them into tiffz's `InfoFinding` u32 space.
+  Tiffz's own `jpeg_in_tiff` (B-9) is the correct in-namespace
+  signal that a JPEG-family stream lives at this IFD; the nested
+  stream's *internal* findings belong to A.
+- Likely new B-namespace code: `jp2_in_tiff` (per-IFD, empty
+  payload). Pre-approved in principle; ping Einstein
+  (`~/Code/inbox/`) for the code number assignment before merging.
+
 **Why it's deferred:** No customer ask for any of these. ZSTD
 already covers the modern-compression use case that mattered.
 

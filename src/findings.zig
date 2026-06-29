@@ -44,6 +44,18 @@
 /// assigned; new findings append at the end. Validate's
 /// `tiffz_shim.zig` maps these to its own `TiffzInfoFinding` enum
 /// per `docs/tiffz_findings_mapping.md`.
+///
+/// **Cross-board ruling 2026-06-29 (Einstein):** These codes form
+/// **Namespace B** in the shared cross-decoder registry. They are
+/// DISJOINT from Namespace A (jpegz + jp2z share that one), and
+/// validate disambiguates findings by the emitting decoder — so
+/// e.g. tiffz `1 bigtiff_format` and jpegz `1 missing_soi` do NOT
+/// collide. Never renumber 1–11 to avoid Namespace A; do NOT add
+/// new codes without Einstein's sign-off (drop a note in
+/// `~/Code/inbox/`). Future JP2-in-TIFF path (`Compression 33003 /
+/// 33005`) must keep nested jpegz/jp2z findings tagged in
+/// Namespace A — never flatten them into this enum — to preserve
+/// the (decoder, code) pair through the seam.
 pub const InfoFinding = enum(u32) {
     bigtiff_format = 1,
     multi_ifd_chain = 2,
