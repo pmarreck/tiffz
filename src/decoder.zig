@@ -920,6 +920,10 @@ pub const Decoder = struct {
             error.MalformedCode => error.Malformed,
             error.IncompleteSource => error.SourceTooShort,
             error.DestTooSmall => error.DestTooSmall,
+            // decode() never returns this count-only API error, but retain a
+            // conservative malformed-data mapping if lzwz extends its
+            // shared error set through this adapter in the future.
+            error.DecodedLengthMismatch => error.Malformed,
         };
     }
 };

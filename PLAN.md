@@ -27,7 +27,10 @@ public API design.
       `SourceTooShort`, keeps the existing malformed-only old-style fallback
       and INFO finding, and avoids a second Zig module instance downstream.
       Fresh fixed-output dependency hash, release build, and full sandboxed
-      test suite green 18:42 EDT.
+      test suite green 18:42 EDT. Updated to `lzwz` v0.2.0's shared
+      count-only exact-extent API surface (including exhaustive error mapping)
+      with fresh Nix hash, release build, and sandboxed test suite green
+      19:05 EDT.
 - [x] **16-bit-per-sample photometric expansion (RGB / Gray / CMYK)**
       (2026-05-17). `PixelFormat` gained `endian: Endian = .little`;
       new `sampleU8` helper does endian-aware u16 reads + canonical
