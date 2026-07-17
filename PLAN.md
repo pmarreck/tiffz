@@ -20,6 +20,14 @@ public API design.
       rejected. This closes the complementary PASS path where a terminator
       existed but the declared pixels were absent. Full sandboxed suite green
       18:33 EDT.
+- [x] **Migrate TIFF LZW to shared `lzwz`** (2026-07-17). `tiffz` now
+      imports and re-exports the single profile-configured core used by PDF,
+      GIF, and TIFF; its 346-line private decoder and duplicate dictionary
+      tests are deleted. The thin adapter maps `IncompleteSource` to
+      `SourceTooShort`, keeps the existing malformed-only old-style fallback
+      and INFO finding, and avoids a second Zig module instance downstream.
+      Fresh fixed-output dependency hash, release build, and full sandboxed
+      test suite green 18:42 EDT.
 - [x] **16-bit-per-sample photometric expansion (RGB / Gray / CMYK)**
       (2026-05-17). `PixelFormat` gained `endian: Endian = .little`;
       new `sampleU8` helper does endian-aware u16 reads + canonical

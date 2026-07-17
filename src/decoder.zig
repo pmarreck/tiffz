@@ -22,7 +22,7 @@ const Ifd = ifd_mod.Ifd;
 const tags = @import("tags.zig");
 const compressions_none = @import("compressions/none.zig");
 const compressions_packbits = @import("compressions/packbits.zig");
-const compressions_lzw = @import("compressions/lzw.zig");
+const lzwz = @import("lzwz");
 const compressions_deflate = @import("compressions/deflate.zig");
 const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
 const compressions_ccitt_t6 = @import("compressions/ccitt_t6.zig");
@@ -53,9 +53,9 @@ pub const Decoder = struct {
     /// See `src/findings.zig` for the per-finding payload semantics.
     finding_cb: findings_mod.Callback = null,
     finding_userdata: ?*anyopaque = null,
-    /// One-shot flag for `old_style_lzw_codes` — the LZW codec falls
-    /// back from new-style to old-style per strip on malformed
-    /// streams; we only want to surface the file-level fact once.
+    /// One-shot flag for `old_style_lzw_codes` — LZW falls back from
+    /// new-style to old-style per strip on malformed streams; surface
+    /// the file-level compatibility fact only once.
     lzw_old_style_fired: bool = false,
 
     pub fn open(allocator: Allocator, source: Source) errors.Error!Decoder {
@@ -744,24 +744,13 @@ pub const Decoder = struct {
                 break :blk written;
             },
             tags.compression_lzw => blk: {
-                // LZW: try TIFF 6.0 new-style first; if Malformed,
-                // retry with old-style (Adobe/Sun original timing,
-                // common in 1990s TIFF writers — libtiff's
-                // "Old-style LZW codes" warning territory).
+                // LZW is delegated to the shared, profile-configured core.
+                // This wrapper owns only TIFF's legacy-warning and public
+                // error vocabulary; it contains no bit or dictionary logic.
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
                 if (got < byte_count) break :blk error.SourceShortRead;
-                const written = if (compressions_lzw.decodeVariant(scratch, dest, .new_style)) |n| n else |first_err| switch (first_err) {
-                    error.Malformed => fb: {
-                        const n = compressions_lzw.decodeVariant(scratch, dest, .old_style) catch |e| break :blk e;
-                        if (!self.lzw_old_style_fired) {
-                            self.lzw_old_style_fired = true;
-                            self.emit(.old_style_lzw_codes, &.{});
-                        }
-                        break :fb n;
-                    },
-                    else => break :blk first_err,
-                };
+                const written = self.decodeLzw(scratch, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -901,6 +890,36 @@ pub const Decoder = struct {
                 break :blk written;
             },
             else => error.UnsupportedCompression,
+        };
+    }
+
+    /// Adapt the shared strict LZW core to TIFF's public error vocabulary.
+    /// Only a malformed TIFF-6 stream attempts the established old-style
+    /// compatibility profile; incomplete new-style data remains truncation.
+    fn decodeLzw(self: *Decoder, src: []const u8, dest: []u8) errors.Error!usize {
+        const primary = lzwz.decode(lzwz.Profile.tiff6(), src, dest) catch |first_err| {
+            switch (first_err) {
+                error.MalformedCode => {},
+                else => return mapLzwError(first_err),
+            }
+
+            const legacy = lzwz.decode(lzwz.Profile.tiffLegacy(), src, dest) catch |legacy_err| {
+                return mapLzwError(legacy_err);
+            };
+            if (!self.lzw_old_style_fired) {
+                self.lzw_old_style_fired = true;
+                self.emit(.old_style_lzw_codes, &.{});
+            }
+            return legacy.decoded_len;
+        };
+        return primary.decoded_len;
+    }
+
+    fn mapLzwError(err: lzwz.DecodeError) errors.Error {
+        return switch (err) {
+            error.MalformedCode => error.Malformed,
+            error.IncompleteSource => error.SourceTooShort,
+            error.DestTooSmall => error.DestTooSmall,
         };
     }
 };

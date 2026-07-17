@@ -1,6 +1,9 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
 annotate=[
-	src/decoder.zig = Core TIFF decoder and deep strip/tile validator; enforces exact declared decoded extent per chunk.
+	build.zig = Build graph for tiffz C/Zig artifacts and one re-exported lzwz module instance.
+	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
+	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz and validates exact declared chunk extent.
+	src/lib.zig = Public tiffz API and re-exports for exact jpegz/lzwz module identity downstream.
 	tests/fixture_test.zig = Independent TIFF fixture and inline-byte regressions, including strict LZW terminator and decoded-extent coverage.
 ]

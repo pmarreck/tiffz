@@ -4,6 +4,13 @@
     .fingerprint = 0x4373ea0a0149ebaa,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        // lzwz — shared strict LZW core for TIFF, PDF, and GIF. tiffz
+        // re-exports this exact module so downstream consumers do not create
+        // a second Zig module instance for the same source.
+        .lzwz = .{
+            .url = "git+https://github.com/pmarreck/lzwz#3c8e904a48d45301e17a6b05f82a8922634b0d5a",
+            .hash = "lzwz-0.1.0-gkUIt8GsAABtYfmrjml_q015wiO6_CoW9Rsowjv_4qHb",
+        },
         // jpegz — Peter's spec-complete pure-Zig JPEG family decoder
         // (cleanroom replacement target; Phase 1 currently wraps
         // libjpeg-turbo + openjpeg). Provides the codec for

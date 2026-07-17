@@ -6,6 +6,10 @@
 //! `docs/superpowers/specs/2026-05-04-tiffz-api-design.md`.
 
 pub const errors = @import("errors.zig");
+// Re-export the one shared LZW module. Validate's PDF/GIF adapters consume
+// this instance through tiffz so Zig 0.16 never sees two modules with the
+// same lzwz source root.
+pub const lzwz = @import("lzwz");
 // Re-export jpegz so downstream consumers (e.g. validate) can reach the JPEG
 // family decoder through tiffz instead of depending on jpegz a second time.
 // Two independent `b.dependency("jpegz")` calls (one here, one in the consumer)
@@ -26,7 +30,7 @@ pub const findings = @import("findings.zig");
 pub const compressions = struct {
     pub const none = @import("compressions/none.zig");
     pub const packbits = @import("compressions/packbits.zig");
-    pub const lzw = @import("compressions/lzw.zig");
+    pub const lzw = lzwz;
     pub const deflate = @import("compressions/deflate.zig");
     pub const ccitt_t4 = @import("compressions/ccitt_t4.zig");
     pub const ccitt_t6 = @import("compressions/ccitt_t6.zig");

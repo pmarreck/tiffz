@@ -20,6 +20,16 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // lzwz is shared with Validate's PDF and GIF adapters. Keep one module
+    // instance rooted in tiffz and re-export it from src/lib.zig; a downstream
+    // second b.dependency call would make Zig 0.16 reject duplicate roots.
+    const lzwz_dep = b.dependency("lzwz", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const lzwz_mod = lzwz_dep.module("lzwz");
+    lib_module.addImport("lzwz", lzwz_mod);
+
     // zlib for compression=8 / compression=32946 (Deflate / AdobeDeflate).
     // Use the system zlib (provided via flake.nix buildInputs) rather
     // than the allyourcodebase/zlib Zig-builds-the-C-source wrapper.
@@ -145,6 +155,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_inc.len > 0) tiffz_named_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) tiffz_named_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     tiffz_named_module.linkSystemLibrary("z", .{});
+    tiffz_named_module.addImport("lzwz", lzwz_mod);
     tiffz_named_module.addImport("jpegz", jpegz_mod);
     tiffz_named_module.addImport("zstd", zstdz_mod);
 
@@ -184,6 +195,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_inc.len > 0) unit_tests_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) unit_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     unit_tests_module.linkSystemLibrary("z", .{});
+    unit_tests_module.addImport("lzwz", lzwz_mod);
     unit_tests_module.addImport("jpegz", jpegz_mod);
     unit_tests_module.addImport("zstd", zstdz_mod);
     const unit_tests = b.addTest(.{ .root_module = unit_tests_module });
