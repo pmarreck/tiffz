@@ -1202,3 +1202,45 @@ test "expandIccLab photometric=9 max-positive-a encodes a*=127 (red shift)" {
     try std.testing.expect(dest[0] > dest[2]);
 }
 
+// The 1-bit LZW route must stay in the general TIFF decoder. Validate used
+// to carry a duplicate TIFF parser/decoder solely for this case; this compact
+// TIFF proves `Decoder.decodeStrip` handles a packed bilevel LZW strip before
+// that fallback is removed.
+test "Decoder decodes inline 1-bit LZW strip through the general path" {
+    // Little-endian classic TIFF: 8×1, 1-bit MinisBlack, LZW, one strip.
+    // Payload codes are CLEAR(256), literal 0xAA, EOD(257), MSB-packed.
+    const bytes = [_]u8{
+        'I', 'I', 42, 0, 8, 0, 0, 0,
+        8, 0,
+        // ImageWidth = 8
+        0x00, 0x01, 0x04, 0x00, 1, 0, 0, 0, 8, 0, 0, 0,
+        // ImageLength = 1
+        0x01, 0x01, 0x04, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        // BitsPerSample = 1
+        0x02, 0x01, 0x03, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        // Compression = LZW (5)
+        0x03, 0x01, 0x03, 0x00, 1, 0, 0, 0, 5, 0, 0, 0,
+        // PhotometricInterpretation = MinisBlack (1)
+        0x06, 0x01, 0x03, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        // StripOffsets = 110 (after this IFD)
+        0x11, 0x01, 0x04, 0x00, 1, 0, 0, 0, 110, 0, 0, 0,
+        // RowsPerStrip = 1
+        0x16, 0x01, 0x04, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        // StripByteCounts = 4
+        0x17, 0x01, 0x04, 0x00, 1, 0, 0, 0, 4, 0, 0, 0,
+        0, 0, 0, 0, // no next IFD
+        0x80, 0x2A, 0xA0, 0x20,
+    };
+
+    var handle = tiffz.source.BufferHandle.init(&bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(std.testing.allocator, source);
+    defer dec.deinit();
+    var workspace = tiffz.Workspace.init(std.testing.allocator);
+    defer workspace.deinit();
+    var decoded: [1]u8 = undefined;
+
+    const written = try dec.decodeStrip(0, 0, &decoded, &workspace);
+    try std.testing.expectEqual(@as(usize, 1), written);
+    try std.testing.expectEqual(@as(u8, 0xAA), decoded[0]);
+}

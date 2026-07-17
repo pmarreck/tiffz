@@ -159,7 +159,10 @@ pub fn decodeVariant(src: []const u8, dest: []u8, variant: Variant) errors.Error
     var di: usize = 0;
 
     while (true) {
-        const code = reader.readCode(code_bits) orelse break;
+        // TIFF LZW has a mandatory EOD code. Physical EOF is never a
+        // successful terminator: accepting it turns a truncated strip into a
+        // valid image and removes an integrity signal from deep validation.
+        const code = reader.readCode(code_bits) orelse return error.SourceTooShort;
 
         if (code == EOD_CODE) break;
 
@@ -299,6 +302,15 @@ test "lzw.decode: empty (just EOD) yields zero output" {
     var dest: [16]u8 = undefined;
     const n = try decode(&encoded, &dest);
     try std.testing.expectEqual(@as(usize, 0), n);
+}
+
+test "lzw.decode: rejects physical EOF before mandatory EOD" {
+    // TIFF 6.0 requires the EOD code. A complete literal code followed by
+    // byte-alignment padding is still an incomplete compressed stream.
+    const codes = [_]u16{65};
+    const encoded = packCodes9(1, codes);
+    var dest: [16]u8 = undefined;
+    try std.testing.expectError(error.SourceTooShort, decode(&encoded, &dest));
 }
 
 test "lzw.decode: KwKwK pattern emits new-string from prev_code + first byte" {
