@@ -13,6 +13,13 @@ public API design.
       inline 8×1 bilevel LZW TIFF proves the ordinary `Decoder.decodeStrip`
       path handles packed 1-bit LZW data, so Validate can remove its duplicate
       TIFF fallback after the shared `lzwz` migration.
+- [x] **Require exact decoded extent per strip and tile** (2026-07-17).
+      `validateAllStripsAndTiles` now derives each chunk's byte extent from
+      image geometry, sample depths, planar layout, and edge-strip/tile shape;
+      a valid LZW EOD with zero output for a declared 8×1 bilevel strip is
+      rejected. This closes the complementary PASS path where a terminator
+      existed but the declared pixels were absent. Full sandboxed suite green
+      18:33 EDT.
 - [x] **16-bit-per-sample photometric expansion (RGB / Gray / CMYK)**
       (2026-05-17). `PixelFormat` gained `endian: Endian = .little`;
       new `sampleU8` helper does endian-aware u16 reads + canonical

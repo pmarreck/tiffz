@@ -1244,3 +1244,35 @@ test "Decoder decodes inline 1-bit LZW strip through the general path" {
     try std.testing.expectEqual(@as(usize, 1), written);
     try std.testing.expectEqual(@as(u8, 0xAA), decoded[0]);
 }
+
+test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
+    // Same 8×1 bilevel layout as the positive integration fixture, but its
+    // LZW strip is CLEAR + EOD. The terminator is valid; its zero decoded
+    // bytes are not enough for the one declared image byte. Deep validation
+    // must reject that mismatch rather than treating any successful codec
+    // return as complete coverage.
+    const bytes = [_]u8{
+        'I', 'I', 42, 0, 8, 0, 0, 0,
+        8, 0,
+        0x00, 0x01, 0x04, 0x00, 1, 0, 0, 0, 8, 0, 0, 0,
+        0x01, 0x01, 0x04, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        0x02, 0x01, 0x03, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        0x03, 0x01, 0x03, 0x00, 1, 0, 0, 0, 5, 0, 0, 0,
+        0x06, 0x01, 0x03, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        0x11, 0x01, 0x04, 0x00, 1, 0, 0, 0, 110, 0, 0, 0,
+        0x16, 0x01, 0x04, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        0x17, 0x01, 0x04, 0x00, 1, 0, 0, 0, 3, 0, 0, 0,
+        0, 0, 0, 0,
+        // CLEAR(256) + EOD(257), MSB-packed; zero decoded pixels.
+        0x80, 0x40, 0x40,
+    };
+
+    var handle = tiffz.source.BufferHandle.init(&bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(std.testing.allocator, source);
+    defer dec.deinit();
+    var workspace = tiffz.Workspace.init(std.testing.allocator);
+    defer workspace.deinit();
+
+    try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&workspace));
+}

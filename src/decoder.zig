@@ -373,14 +373,22 @@ pub const Decoder = struct {
             if (dir.get(tags.tile_offsets)) |tile_off_entry| {
                 const tile_byte_counts_entry = dir.get(tags.tile_byte_counts) orelse return error.Malformed;
                 if (tile_off_entry.count != tile_byte_counts_entry.count) return error.Malformed;
+                if (tile_off_entry.count > self.limits.max_strips_or_tiles) return error.LimitExceededStripCount;
                 var t: u32 = 0;
                 while (t < tile_off_entry.count) : (t += 1) {
-                    try self.runWithGrowingDest(&dest_buf, max_dest_bytes, .tile, ifd_index, t, workspace);
+                    const written = try self.runWithGrowingDest(&dest_buf, max_dest_bytes, .tile, ifd_index, t, workspace);
+                    if (written != try self.expectedChunkBytes(dir, .tile, t, tile_off_entry.count)) {
+                        return error.Malformed;
+                    }
                 }
             } else if (dir.get(tags.strip_byte_counts)) |strip_bc_entry| {
+                if (strip_bc_entry.count > self.limits.max_strips_or_tiles) return error.LimitExceededStripCount;
                 var s: u32 = 0;
                 while (s < strip_bc_entry.count) : (s += 1) {
-                    try self.runWithGrowingDest(&dest_buf, max_dest_bytes, .strip, ifd_index, s, workspace);
+                    const written = try self.runWithGrowingDest(&dest_buf, max_dest_bytes, .strip, ifd_index, s, workspace);
+                    if (written != try self.expectedChunkBytes(dir, .strip, s, strip_bc_entry.count)) {
+                        return error.Malformed;
+                    }
                 }
             }
             // IFDs with no strip/tile arrays (e.g. SubIFD chains
@@ -393,21 +401,29 @@ pub const Decoder = struct {
     /// `DestTooSmall` up to `max_dest_bytes`. Used by
     /// `validateAllStripsAndTiles` so callers don't have to size
     /// the scratch ahead of time.
+    const ChunkKind = enum { strip, tile };
+
+    const ChunkShape = struct {
+        width: u32,
+        rows: u32,
+        chunks_per_plane: usize,
+    };
+
     fn runWithGrowingDest(
         self: *Decoder,
         dest_buf: *[]u8,
         max_dest_bytes: usize,
-        kind: enum { strip, tile },
+        kind: ChunkKind,
         ifd_index: usize,
         chunk_index: u32,
         workspace: *Workspace,
-    ) errors.Error!void {
+    ) errors.Error!usize {
         while (true) {
             const result = switch (kind) {
                 .strip => self.decodeStrip(ifd_index, chunk_index, dest_buf.*, workspace),
                 .tile => self.decodeTile(ifd_index, chunk_index, dest_buf.*, workspace),
             };
-            if (result) |_| return else |err| switch (err) {
+            if (result) |written| return written else |err| switch (err) {
                 error.DestTooSmall => {
                     if (dest_buf.len >= max_dest_bytes) return err;
                     const new_size = @min(dest_buf.len * 2, max_dest_bytes);
@@ -416,6 +432,115 @@ pub const Decoder = struct {
                 else => return err,
             }
         }
+    }
+
+    /// Derive the exact byte extent of one decoded strip/tile from its IFD
+    /// layout. This makes a successful codec terminator insufficient: every
+    /// chunk must also account for all pixels the directory declares.
+    fn expectedChunkBytes(
+        self: *Decoder,
+        dir: *const Ifd,
+        kind: ChunkKind,
+        chunk_index: u32,
+        chunk_count: u64,
+    ) errors.Error!usize {
+        const image_width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
+        const image_length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
+        if (image_width == 0 or image_length == 0) return error.Malformed;
+
+        const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+        if (samples == 0) return error.Malformed;
+        const planar_raw = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse tags.planar_chunky;
+        const planar = switch (planar_raw) {
+            tags.planar_chunky, tags.planar_separate => planar_raw,
+            else => return error.Malformed,
+        };
+
+        const shape: ChunkShape = switch (kind) {
+            .strip => blk: {
+                const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse image_length;
+                if (rps_raw == 0) return error.Malformed;
+                const rows_per_strip: u32 = @min(rps_raw, image_length);
+                const strips_per_plane = try ceilDivU32(image_length, rows_per_strip);
+                const strip_in_plane = chunk_index % strips_per_plane;
+                const first_row = strip_in_plane * rows_per_strip;
+                break :blk .{
+                    .width = image_width,
+                    .rows = @min(rows_per_strip, image_length - first_row),
+                    .chunks_per_plane = strips_per_plane,
+                };
+            },
+            .tile => blk: {
+                const tile_width = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
+                const tile_length = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
+                if (tile_width == 0 or tile_length == 0) return error.Malformed;
+                const tiles_across = try ceilDivU32(image_width, tile_width);
+                const tiles_down = try ceilDivU32(image_length, tile_length);
+                break :blk .{
+                    .width = tile_width,
+                    .rows = tile_length,
+                    .chunks_per_plane = try checkedMul(@as(usize, tiles_across), @as(usize, tiles_down)),
+                };
+            },
+        };
+
+        const planes: usize = if (planar == tags.planar_separate) samples else 1;
+        const expected_chunk_count = try checkedMul(shape.chunks_per_plane, planes);
+        if (chunk_count != @as(u64, expected_chunk_count) or @as(usize, chunk_index) >= expected_chunk_count) {
+            return error.Malformed;
+        }
+        const plane_index: u16 = if (planar == tags.planar_separate)
+            @intCast(@as(usize, chunk_index) / shape.chunks_per_plane)
+        else
+            0;
+        const bits_per_pixel = try self.bitsPerPixel(dir, samples, planar, plane_index);
+        const bits_per_row = try checkedMul(@as(usize, shape.width), bits_per_pixel);
+        const bytes_per_row = bits_per_row / 8 + @intFromBool(bits_per_row % 8 != 0);
+        const expected = try checkedMul(bytes_per_row, @as(usize, shape.rows));
+        if (expected > self.limits.max_decompressed_strip_bytes) {
+            return error.LimitExceededDecompressedStripBytes;
+        }
+        return expected;
+    }
+
+    /// Read per-sample bit depths without allocating. TIFF permits either a
+    /// uniform scalar or one SHORT per sample; planar-separate chunks use the
+    /// depth of their own plane while chunky chunks sum all sample depths.
+    fn bitsPerPixel(
+        self: *Decoder,
+        dir: *const Ifd,
+        samples: u16,
+        planar: u16,
+        plane_index: u16,
+    ) errors.Error!usize {
+        const bps_entry = dir.get(tags.bits_per_sample) orelse {
+            return if (planar == tags.planar_separate) 1 else @as(usize, samples);
+        };
+        if (bps_entry.field_type != .short) return error.UnsupportedTagType;
+        if (bps_entry.count != 1 and bps_entry.count != samples) return error.Malformed;
+
+        const valueAt = struct {
+            fn read(decoder: *Decoder, directory: *const Ifd, index: u16) errors.Error!usize {
+                const value = try directory.arrayElementU64(tags.bits_per_sample, index, decoder.endian, decoder.source);
+                if (value == 0 or value > std.math.maxInt(usize)) return error.Malformed;
+                return @intCast(value);
+            }
+        }.read;
+
+        if (planar == tags.planar_separate) {
+            const bps_index: u16 = if (bps_entry.count == 1) 0 else plane_index;
+            return valueAt(self, dir, bps_index);
+        }
+
+        var total: usize = 0;
+        var sample_index: u16 = 0;
+        while (sample_index < samples) : (sample_index += 1) {
+            const bps_index: u16 = if (bps_entry.count == 1) 0 else sample_index;
+            const value = try valueAt(self, dir, bps_index);
+            if (value > std.math.maxInt(usize) - total) return error.Malformed;
+            total += value;
+        }
+        return total;
     }
 
     /// Common shared per-IFD metadata that both strip and tile
@@ -779,6 +904,21 @@ pub const Decoder = struct {
         };
     }
 };
+
+/// Divide a non-zero TIFF dimension, rounding up without an overflow-prone
+/// `(numerator + denominator - 1)` intermediate.
+fn ceilDivU32(numerator: u32, denominator: u32) errors.Error!u32 {
+    if (denominator == 0) return error.Malformed;
+    return numerator / denominator + @intFromBool(numerator % denominator != 0);
+}
+
+/// Multiply layout quantities only after proving the product fits the native
+/// address size, preventing malformed dimensions from wrapping into a small
+/// expected output extent.
+fn checkedMul(a: usize, b: usize) errors.Error!usize {
+    if (a != 0 and b > std.math.maxInt(usize) / a) return error.Malformed;
+    return a * b;
+}
 
 /// Read a single u32-shaped scalar tag (ImageWidth / ImageLength /
 /// RowsPerStrip / etc.). Tolerates SHORT-typed encoders too.
