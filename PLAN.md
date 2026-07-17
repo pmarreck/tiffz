@@ -7,6 +7,12 @@ public API design.
 
 ## Next up
 
+- [x] **Require LZW EOD and prove general 1-bit LZW decoding**
+      (2026-07-17). The TIFF LZW loop now returns `SourceTooShort` rather
+      than accepting physical EOF before its required EOD code. A compact
+      inline 8×1 bilevel LZW TIFF proves the ordinary `Decoder.decodeStrip`
+      path handles packed 1-bit LZW data, so Validate can remove its duplicate
+      TIFF fallback after the shared `lzwz` migration.
 - [x] **16-bit-per-sample photometric expansion (RGB / Gray / CMYK)**
       (2026-05-17). `PixelFormat` gained `endian: Endian = .little`;
       new `sampleU8` helper does endian-aware u16 reads + canonical
