@@ -102,8 +102,8 @@ public API design.
 
 ## Milestones (from SPEC §9 — implement in order)
 
-- [ ] M1: Audit + spec freeze (no code). Spec frozen 2026-05-04.
-      Audit pending (task #4).
+- [x] M1: Audit + spec freeze (2026-05-04). Spec frozen; audit
+      corpus + coverage matrix committed (see Recently completed).
 - [x] **M2: Skeleton** (2026-05-04). build.zig + build.zig.zon, Zig
       core (errors, limits, source, workspace, decoder, version, ffi,
       lib), C FFI (`tiffz_version` exported), C CLI (--version /
@@ -129,7 +129,7 @@ public API design.
       match against committed .rgba oracles generated via `magick
       ... RGBA:...`. Decoder/IFD pipeline now produces full RGBA
       images for the uncompressed cases.
-- [ ] M4: Compressions, in order:
+- [x] M4: Compressions (all sub-items complete; see below).
   - [x] PackBits (2026-05-07): src/compressions/packbits.zig + dispatch in
         Decoder.decodeStrip on Compression=32773. Two real-fixture oracle
         tests pass byte-exact: cramps.tif (800×607 MinIsWhite, big-endian)
@@ -204,9 +204,6 @@ public API design.
         same dep validate uses). flake.nix gained the fixed-output
         zigDeps pattern for sandboxed Nix builds. deflate-last-strip.tiff
         (500×500 MinIsBlack, little-endian) oracle passes byte-exact.
-  - [ ] LZW
-  - [ ] ZLib Deflate
-  - [ ] CCITT T.4 (Group 3)
   - [x] CCITT T.6 (Group 4) (2026-05-13). src/compressions/ccitt_t6.zig.
         2D modified-modified-Huffman: pass / vertical (V0, VR1-3,
         VL1-3) / horizontal mode codes; reference-line management
@@ -220,7 +217,16 @@ public API design.
         SHA-256 4514c30c... (oracle is 693 MB so committed via hash
         rather than raw bytes). Test runs in seconds thanks to the
         O(1) lookup-table refactor shared with T.4.
-  - [ ] (JPEG-in-TIFF deferred to M9.5 — needs sibling `jpegz`)
+  - [x] JPEG-in-TIFF (2026-05-17). `src/compressions/jpeg.zig`
+        dispatches Compression=7 through the sibling `jpegz`
+        module (imported via `build.zig.zon`, re-exported as
+        `tiffz.jpegz` in `lib.zig` so downstream consumers share
+        a single jpegz module instance). Caller-side YCbCr
+        photometric override in `decodeFixtureToRgba`: when
+        compression=7 + photometric=YCbCr, force photometric=RGB
+        before expansion (libjpeg already converts internally).
+        `ycbcr_jpeg.tif` fixture (tiffcp -c jpeg:90, subsampling
+        2:2) matches libtiff `tiff2rgba` byte-exact.
 - [x] M5: Predictors (None / Horizontal) (2026-05-13).
       src/predictors.zig: applyInverse handles Predictor tag 317 values
       1 (none, no-op) and 2 (horizontal differencing). 8-bit-per-sample
