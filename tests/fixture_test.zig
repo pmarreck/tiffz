@@ -858,6 +858,78 @@ test "rgb16_lerc.tif (Compression=34887 LERC, 16x16 RGB 8-bit chunky): RGBA matc
     );
 }
 
+test "gray16_geotiff.tif: parse metadata surface (pixel scale, tiepoint, keys, params)" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+
+    const meta = (try tiffz.geotiff.parseFromIfd(dec.ifds.items[0], src, dec.endian, allocator)) orelse return error.TestExpectedEqual;
+    defer meta.deinit(allocator);
+
+    // ModelPixelScale (3 doubles)
+    try std.testing.expect(meta.pixel_scale != null);
+    const ps = meta.pixel_scale.?;
+    try std.testing.expectApproxEqAbs(@as(f64, 0.03125), ps[0], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.03125), ps[1], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ps[2], 1e-9);
+
+    // ModelTiepoint (single 6-tuple: image origin at [0,0] → lon=-80.5, lat=40.5)
+    try std.testing.expectEqual(@as(usize, 1), meta.tiepoints.len);
+    const tp = meta.tiepoints[0];
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), tp[0], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), tp[1], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), tp[2], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, -80.5), tp[3], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 40.5), tp[4], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), tp[5], 1e-9);
+
+    // ModelTransformation absent for tiepoint+scale-shaped GeoTIFFs.
+    try std.testing.expect(meta.transformation == null);
+
+    // GeoKeyDirectory header + keys
+    try std.testing.expectEqual(@as(u16, 1), meta.key_directory_version);
+    try std.testing.expectEqual(@as(u16, 1), meta.key_revision);
+    try std.testing.expectEqual(@as(u16, 0), meta.minor_revision);
+    try std.testing.expectEqual(@as(usize, 7), meta.keys.len);
+
+    // Spot-check a few keys by ID
+    const key_by_id = struct {
+        fn get(keys: []const tiffz.geotiff.GeoKey, id: u16) ?tiffz.geotiff.GeoKey {
+            for (keys) |k| if (k.id == id) return k;
+            return null;
+        }
+    };
+
+    // GTModelType (1024) = 2 (Geographic)
+    const gt_model = key_by_id.get(meta.keys, 1024) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u16, 0), gt_model.tag_location);
+    try std.testing.expectEqual(@as(u16, 1), gt_model.count);
+    try std.testing.expectEqual(@as(u16, 2), gt_model.value_offset);
+
+    // GeodeticCRSGeoKey (2048) = 4326 (WGS84)
+    const crs = key_by_id.get(meta.keys, 2048) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u16, 4326), crs.value_offset);
+
+    // GeodeticCitationGeoKey (2049): references geo_ascii_params [offset 0, count 7]
+    const citation = key_by_id.get(meta.keys, 2049) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u16, tiffz.tags.geo_ascii_params), citation.tag_location);
+    try std.testing.expectEqual(@as(u16, 7), citation.count);
+    try std.testing.expectEqual(@as(u16, 0), citation.value_offset);
+
+    // GeoDoubleParams populated with the two ellipsoid constants
+    try std.testing.expectEqual(@as(usize, 2), meta.double_params.len);
+    try std.testing.expectApproxEqAbs(@as(f64, 298.257224), meta.double_params[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f64, 6378137.0), meta.double_params[1], 1e-3);
+
+    // GeoAsciiParams contains "WGS 84|" (the '|' terminator is included)
+    try std.testing.expect(std.mem.startsWith(u8, meta.ascii_params, "WGS 84"));
+}
+
 test "cmyk.tif (uncompressed 16x16 CMYK 8-bit): RGBA matches ImageMagick oracle" {
     try assertOracleMatch(
         std.testing.allocator,

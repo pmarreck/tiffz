@@ -55,6 +55,14 @@ pub const lerc_add_compression_none: u32 = 0;
 pub const lerc_add_compression_deflate: u32 = 1;
 pub const lerc_add_compression_zstd: u32 = 2;
 
+/// GeoTIFF spec tags (M11 metadata surface). See OGC GeoTIFF 1.1.
+pub const model_pixel_scale: u16 = 33550;      // 3 DOUBLE: [Sx, Sy, Sz]
+pub const model_tiepoint: u16 = 33922;         // 6N DOUBLE: N × [I, J, K, X, Y, Z]
+pub const model_transformation: u16 = 34264;   // 16 DOUBLE: 4×4 affine matrix
+pub const geo_key_directory: u16 = 34735;      // 4+4N SHORT: header + N keys
+pub const geo_double_params: u16 = 34736;      // M DOUBLE: values referenced by keys
+pub const geo_ascii_params: u16 = 34737;       // ASCII: '|'-separated strings referenced by keys
+
 /// Photometric interpretation codes (tag 262).
 pub const photometric_white_is_zero: u16 = 0;
 pub const photometric_black_is_zero: u16 = 1;

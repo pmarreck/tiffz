@@ -456,7 +456,29 @@ public API design.
               et al.; resolves the "skipped fixture" follow-up from M4-B)
             • predictor_applied = N (M5-gated)
             • geotiff_tags_present (M11-gated)
-- [ ] M11: GeoTIFF, TIFF/EP as needed.
+- [x] M11: GeoTIFF metadata surface (2026-07-19).
+      New `src/geotiff.zig` exposes `parseFromIfd(dir, source,
+      endian, allocator) -> ?Metadata`, returning the fully
+      parsed OGC GeoTIFF 1.1 metadata:
+      `ModelPixelScale` (3 doubles), `ModelTiepoint`
+      (N × 6 doubles), `ModelTransformation` (16 doubles),
+      `GeoKeyDirectory` (header + N `GeoKey` entries with
+      `id / tag_location / count / value_offset`),
+      `GeoDoubleParams`, `GeoAsciiParams`. Metadata-only —
+      no CRS resolution or coordinate transforms; callers walk
+      keys and dereference into the params arrays. Strict
+      parse: GeoKeyDirectory whose `count != 4 + 4×N_keys`
+      rejects `error.Malformed`. Real 16×16 EPSG:4326 fixture
+      passes byte-exact against a hand-derived expected surface
+      (7 keys, WGS 84 ellipsoid constants). Sandboxed suite
+      green 10:54 EDT. TIFF/EP tag surface deferred as a
+      follow-up — not blocking validate M10 integration.
+- [x] M11: Wire GeoTIFF surface into the public tiffz namespace
+      (2026-07-19). `tiffz.geotiff.parseFromIfd` reachable via
+      `pub const geotiff = @import("geotiff.zig")` in
+      `src/lib.zig` and re-exported through the
+      `tiffz_named_module` — validate can consume without
+      any additional shim.
 - [x] M12: Modern compressions (LERC, ZSTD-in-TIFF).
       ZSTD landed 2026-05-17 (see Next up).
       LERC-in-TIFF landed 2026-07-19: sibling
