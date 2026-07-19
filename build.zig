@@ -137,6 +137,16 @@ pub fn build(b: *std.Build) void {
     });
     const zstdz_mod = zstdz_dep.module("zstd");
     lib_module.addImport("zstd", zstdz_mod);
+
+    // lercz — pmarreck's Zig-wrap fork of Esri/lerc (Apache-2.0),
+    // C++ sources built by lercz itself. Provides the codec for
+    // Compression=34887 (LERC, GDAL/libtiff extension).
+    const lercz_dep = b.dependency("lercz", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const lercz_mod = lercz_dep.module("lercz");
+    lib_module.addImport("lercz", lercz_mod);
     const lib = b.addLibrary(.{
         .name = "tiffz",
         .linkage = .static,
@@ -158,6 +168,7 @@ pub fn build(b: *std.Build) void {
     tiffz_named_module.addImport("lzwz", lzwz_mod);
     tiffz_named_module.addImport("jpegz", jpegz_mod);
     tiffz_named_module.addImport("zstd", zstdz_mod);
+    tiffz_named_module.addImport("lercz", lercz_mod);
 
     // --- C CLI executable (dogfoods the C FFI per project convention) ---
     const cli = b.addExecutable(.{
@@ -198,6 +209,7 @@ pub fn build(b: *std.Build) void {
     unit_tests_module.addImport("lzwz", lzwz_mod);
     unit_tests_module.addImport("jpegz", jpegz_mod);
     unit_tests_module.addImport("zstd", zstdz_mod);
+    unit_tests_module.addImport("lercz", lercz_mod);
     const unit_tests = b.addTest(.{ .root_module = unit_tests_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
 

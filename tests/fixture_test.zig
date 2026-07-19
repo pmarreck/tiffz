@@ -826,6 +826,38 @@ test "rgb_zstd.tif (Compression=50000 ZSTD-in-TIFF, 16x16 RGB 8-bit): RGBA match
     );
 }
 
+test "gray16_lerc.tif (Compression=34887 LERC, 16x16 gray 8-bit, add_compression=0): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/lerc/gray16_lerc.tif",
+        "tests/fixtures/lerc_oracle/gray16_lerc.rgba",
+    );
+}
+
+test "gray16_lerc_deflate.tif (Compression=34887 LERC + Deflate post-filter, 16x16 gray 8-bit): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/lerc/gray16_lerc_deflate.tif",
+        "tests/fixtures/lerc_oracle/gray16_lerc_deflate.rgba",
+    );
+}
+
+test "gray16_lerc_zstd.tif (Compression=34887 LERC + Zstd post-filter, 16x16 gray 8-bit): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/lerc/gray16_lerc_zstd.tif",
+        "tests/fixtures/lerc_oracle/gray16_lerc_zstd.rgba",
+    );
+}
+
+test "rgb16_lerc.tif (Compression=34887 LERC, 16x16 RGB 8-bit chunky): RGBA matches ImageMagick oracle" {
+    try assertOracleMatch(
+        std.testing.allocator,
+        "tests/fixtures/lerc/rgb16_lerc.tif",
+        "tests/fixtures/lerc_oracle/rgb16_lerc.rgba",
+    );
+}
+
 test "cmyk.tif (uncompressed 16x16 CMYK 8-bit): RGBA matches ImageMagick oracle" {
     try assertOracleMatch(
         std.testing.allocator,

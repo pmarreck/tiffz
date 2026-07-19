@@ -457,7 +457,21 @@ public API design.
             • predictor_applied = N (M5-gated)
             • geotiff_tags_present (M11-gated)
 - [ ] M11: GeoTIFF, TIFF/EP as needed.
-- [ ] M12: Modern compressions (LERC, ZSTD-in-TIFF) as needed.
+- [x] M12: Modern compressions (LERC, ZSTD-in-TIFF).
+      ZSTD landed 2026-05-17 (see Next up).
+      LERC-in-TIFF landed 2026-07-19: sibling
+      `pmarreck/lercz` (Zig-wrap fork of Esri/lerc under
+      Apache-2.0), consumed via `build.zig.zon`. New
+      `src/compressions/lerc.zig` mediates Compression=34887
+      with a strict two-u32 `LercParameters` (50674) parse
+      (codec_version ∈ 2..6, add_compression ∈ {0,1,2}) and
+      chains the Deflate/Zstd post-filter when present. Four
+      real-fixture oracle tests pass byte-exact vs
+      ImageMagick RGBA: 16×16 gray bare-LERC,
+      LERC+Deflate, LERC+Zstd, and 16×16 chunky RGB LERC.
+      Sandboxed suite green 10:41 EDT.
+      LERC finding-code emission deferred pending Einstein
+      Namespace B sign-off (see ~/Code/inbox/ ping-out).
 
 ## Recently completed
 

@@ -27,6 +27,14 @@
             .url = "https://github.com/pmarreck/zstdz/archive/f5a61699f1958c7bc152a417ff86336a6efa4689.tar.gz",
             .hash = "zstdz-1.6.0-yDWjziFdNAAbdfO9bwVKQyiOTmFFNnuIVlFD00msI-t3",
         },
+        // lercz — Peter's Zig-wrap fork of Esri/lerc (Apache-2.0),
+        // packaged the same way as zstdz. Provides the codec for
+        // Compression=34887 (LERC, GDAL/libtiff extension) with the
+        // optional Deflate/Zstd post-filter carried in LercParameters.
+        .lercz = .{
+            .url = "git+https://github.com/pmarreck/lercz#f1e7dea1d1fd54e6ef8e4a826274f15a960da893",
+            .hash = "lercz-4.1.1-y1r8kXdUBgDd-awtA9QE3q4RWxReMfg2apMu1p5i-pBj",
+        },
     },
     .paths = .{
         "build.zig",

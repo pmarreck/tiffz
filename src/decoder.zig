@@ -28,6 +28,7 @@ const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
 const compressions_ccitt_t6 = @import("compressions/ccitt_t6.zig");
 const compressions_jpeg = @import("compressions/jpeg.zig");
 const compressions_zstd = @import("compressions/zstd.zig");
+const compressions_lerc = @import("compressions/lerc.zig");
 const predictors_mod = @import("predictors.zig");
 const findings_mod = @import("findings.zig");
 
@@ -848,6 +849,53 @@ pub const Decoder = struct {
                 }
                 break :blk written;
             },
+            tags.compression_lerc => blk: {
+                // LERC-in-TIFF (Compression=34887, Esri / GDAL /
+                // libtiff extension). LercParameters (tag 50674) is
+                // REQUIRED and strictly validated: two u32 values
+                // [codec_version, add_compression]. add_compression
+                // ∈ {0=none, 1=Deflate, 2=Zstd} — if 1 or 2, the strip
+                // is post-filtered by that codec into the inner LERC
+                // blob. Any missing / malformed / out-of-range value →
+                // Malformed. No forgiving fallback.
+                const params_raw = readTwoU32(dir.*, tags.lerc_parameters, self.endian, self.source) catch break :blk error.Malformed;
+                const lerc_params = compressions_lerc.parseParameters(params_raw) catch break :blk error.Malformed;
+
+                // For AddCompression != none we need a scratch buffer
+                // sized for the inner LERC blob (post-Deflate/Zstd).
+                // LERC's own header overhead can make its blob LARGER
+                // than the uncompressed strip for tiny strips (e.g.
+                // 16x16 grayscale: raw 256 B, LERC blob ~300 B). Size
+                // generously: `max(dest.len, byte_count * 8) + 4 KiB`
+                // covers the small-strip header case and any realistic
+                // inflated LERC blob.
+                const scratch_len = if (lerc_params.add_compression == .none)
+                    0
+                else blk_scratch: {
+                    const bc_upper = byte_count *| 8;
+                    const base = if (dest.len > bc_upper) dest.len else bc_upper;
+                    break :blk_scratch base +| 4096;
+                };
+                const scratch_slice = if (scratch_len == 0)
+                    dest[0..0]
+                else
+                    workspace.ensureScratch(scratch_len) catch break :blk error.OutOfMemory;
+
+                const src_buf = workspace.ensureScratch2(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(src_buf, offset) catch break :blk error.Io;
+                if (got < byte_count) break :blk error.SourceShortRead;
+
+                const written = compressions_lerc.decode(
+                    src_buf[0..byte_count],
+                    dest,
+                    scratch_slice,
+                    lerc_params,
+                ) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
             tags.compression_jpeg => blk: {
                 // JPEG-in-TIFF (Compression=7, TIFF Tech Note 2).
                 // Supports photometric=RGB (2) and photometric=YCbCr (6).
@@ -972,6 +1020,26 @@ fn readScalarU16(dir: Ifd, tag: u16, endian: Endian) errors.Error!?u16 {
         return error.UnsupportedTagType;
     }
     return header_mod.readU16(e.raw_value_or_offset[0..2], endian);
+}
+
+/// Read a two-element u32 array tag (LercParameters payload — count
+/// must be exactly 2 and field_type LONG). Fails Malformed on any
+/// other shape. Strict by design: LercParameters is a small private
+/// tag with a well-known schema, so a permissive read would only hide
+/// producer bugs.
+///
+/// Two u32 = 8 bytes, which OVERFLOWS classic TIFF's 4-byte inline
+/// value slot — the payload is stored out-of-line at `raw_value_or_offset`.
+/// We read via `arrayElementU64`, which honors the eager out-of-line
+/// value cache and the inline / read-through fallbacks.
+fn readTwoU32(dir: Ifd, tag: u16, endian: Endian, source: Source) errors.Error![2]u32 {
+    const e = dir.get(tag) orelse return error.Malformed;
+    if (e.count != 2) return error.Malformed;
+    if (e.field_type != .long) return error.Malformed;
+    const a = try dir.arrayElementU64(tag, 0, endian, source);
+    const b = try dir.arrayElementU64(tag, 1, endian, source);
+    if (a > std.math.maxInt(u32) or b > std.math.maxInt(u32)) return error.Malformed;
+    return .{ @intCast(a), @intCast(b) };
 }
 
 /// Read element [index] from a SHORT/LONG/LONG8 array tag, widened to u64.

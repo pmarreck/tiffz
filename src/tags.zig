@@ -45,6 +45,15 @@ pub const compression_deflate: u16 = 8;
 pub const compression_deflate_adobe: u16 = 32946;
 pub const compression_packbits: u16 = 32773;
 pub const compression_zstd: u16 = 50000;     // GDAL/libtiff extension, M12
+pub const compression_lerc: u16 = 34887;     // Esri LERC (GDAL/libtiff), M12
+
+/// LercParameters tag (private). Two u32 values:
+/// [codec_version, add_compression] where add_compression ∈
+/// {0 = none, 1 = Deflate post-filter, 2 = Zstd post-filter}.
+pub const lerc_parameters: u16 = 50674;
+pub const lerc_add_compression_none: u32 = 0;
+pub const lerc_add_compression_deflate: u32 = 1;
+pub const lerc_add_compression_zstd: u32 = 2;
 
 /// Photometric interpretation codes (tag 262).
 pub const photometric_white_is_zero: u16 = 0;

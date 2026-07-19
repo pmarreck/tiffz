@@ -13,14 +13,25 @@ const Allocator = std.mem.Allocator;
 pub const Workspace = struct {
     allocator: Allocator,
     scratch: []u8,
+    /// Secondary scratch, used by codecs that need two live buffers at
+    /// once — e.g. LERC-with-Deflate/Zstd post-filter, where scratch
+    /// holds the compressed strip bytes read from Source and scratch2
+    /// holds the inner LERC blob after post-filter removal.
+    scratch2: []u8,
 
     pub fn init(allocator: Allocator) Workspace {
-        return .{ .allocator = allocator, .scratch = &.{} };
+        return .{
+            .allocator = allocator,
+            .scratch = &.{},
+            .scratch2 = &.{},
+        };
     }
 
     pub fn deinit(self: *Workspace) void {
         if (self.scratch.len > 0) self.allocator.free(self.scratch);
+        if (self.scratch2.len > 0) self.allocator.free(self.scratch2);
         self.scratch = &.{};
+        self.scratch2 = &.{};
     }
 
     /// Ensure scratch is at least `min_bytes` long. Returns a slice
@@ -33,6 +44,17 @@ pub const Workspace = struct {
             self.scratch = new;
         }
         return self.scratch[0..min_bytes];
+    }
+
+    /// Ensure scratch2 is at least `min_bytes` long. Same semantics as
+    /// `ensureScratch` on the secondary buffer.
+    pub fn ensureScratch2(self: *Workspace, min_bytes: usize) error{OutOfMemory}![]u8 {
+        if (self.scratch2.len < min_bytes) {
+            const new = try self.allocator.alloc(u8, min_bytes);
+            if (self.scratch2.len > 0) self.allocator.free(self.scratch2);
+            self.scratch2 = new;
+        }
+        return self.scratch2[0..min_bytes];
     }
 
     /// Reset (logically empty) the scratch — capacity stays for the
