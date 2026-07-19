@@ -68,6 +68,14 @@ pub const InfoFinding = enum(u32) {
     jpeg_in_tiff = 9,
     tiled_layout = 10,
     planar_separate = 11,
+    /// Compression=34887 present on any IFD (LERC-in-TIFF, Esri /
+    /// GDAL / libtiff extension). Payload empty. Allocated by
+    /// Einstein 2026-07-19 per Namespace B convention. The
+    /// Deflate/Zstd post-filter distinction (LercParameters bit 1)
+    /// is deliberately NOT surfaced as a separate finding for now —
+    /// a future `lerc_post_compression = 13` would carry that
+    /// detail if validate needs it.
+    lerc_compression = 12,
     _,
 };
 

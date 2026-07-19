@@ -90,6 +90,7 @@ void tiffz_scan_findings(tiffz_decoder *dec);
 | `jpeg_in_tiff` (9) | none | per IFD with Compression=7 |
 | `tiled_layout` (10) | none | per IFD with a TileOffsets tag |
 | `planar_separate` (11) | none | per IFD with PlanarConfiguration=2 |
+| `lerc_compression` (12) | none | per IFD with Compression=34887 |
 
 Numeric finding codes are **stable** — they never change once
 assigned. New findings append at the end. The Zig enum
@@ -140,6 +141,7 @@ forward-compat unknowns.
 | `jpeg_in_tiff`                    | info             | `info_message = "JPEG-in-TIFF (Compression=7)"`                        |
 | `tiled_layout`                    | info             | `info_message = "tiled layout (TileWidth×TileLength)"`                 |
 | `planar_separate`                 | info             | `info_message = "separate planar configuration"`                       |
+| `lerc_compression`                | info             | `info_message = "LERC-in-TIFF (Compression=34887)"`                    |
 
 Notes on taxonomy:
 
@@ -269,6 +271,7 @@ pub const TiffzInfoFinding = enum(u32) {
     jpeg_in_tiff = 9,
     tiled_layout = 10,
     planar_separate = 11,
+    lerc_compression = 12,
     _, // forward-compat: new tiffz versions may introduce codes
 };
 
@@ -294,6 +297,7 @@ pub fn routeInfoFinding(finding: TiffzInfoFinding, payload_u32: ?u32) RoutedFind
         .jpeg_in_tiff          => .{ .info = "JPEG-in-TIFF (Compression=7)" },
         .tiled_layout          => .{ .info = "tiled layout" },
         .planar_separate       => .{ .info = "separate planar configuration" },
+        .lerc_compression      => .{ .info = "LERC-in-TIFF (Compression=34887)" },
         _                      => .{ .other = "unknown tiffz finding code" },
     };
 }

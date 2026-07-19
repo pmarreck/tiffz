@@ -157,9 +157,11 @@ pub const Decoder = struct {
             self.emitU32(.multi_ifd_chain, @intCast(self.ifds.items.len));
         }
 
-        // Compression == 7 → JPEG-in-TIFF.
+        // Compression-code-driven findings. Each IFD emits at most one
+        // finding per code (the callback interface is presence-only).
         if (readScalarU16(dir.*, tags.compression, self.endian) catch null) |comp| {
             if (comp == tags.compression_jpeg) self.emit(.jpeg_in_tiff, &.{});
+            if (comp == tags.compression_lerc) self.emit(.lerc_compression, &.{});
         }
 
         // Photometric=CFA or CFAPattern tag presence.

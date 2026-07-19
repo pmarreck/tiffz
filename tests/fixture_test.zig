@@ -648,6 +648,23 @@ test "findings: predictor2_lzw.tif fires predictor_applied=2" {
     try std.testing.expectEqual(@as(?u32, 2), recorder.payloadFor(.predictor_applied));
 }
 
+test "findings: gray16_lerc.tif fires lerc_compression" {
+    const allocator = std.testing.allocator;
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+
+    const bytes = try loadFile(allocator, "tests/fixtures/lerc/gray16_lerc.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    dec.scanFindings();
+
+    try std.testing.expect(recorder.has(.lerc_compression));
+}
+
 test "findings: ycbcr_jpeg.tif fires jpeg_in_tiff" {
     const allocator = std.testing.allocator;
     var recorder = FindingRecorder.init(allocator);
