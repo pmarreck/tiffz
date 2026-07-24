@@ -1267,3 +1267,37 @@ test "subsampledYCbCrExtent: exceeding the decompressed-byte limit errors" {
         subsampledYCbCrExtent(1_000_000, 1_000_000, 1_000_000, 2, 2, 1, 1000),
     );
 }
+
+test "validateAllStripsAndTiles: tag-absent YCbCrSubSampling uses the {2,2} default extent" {
+    // Chunky YCbCr 2×2 image, uncompressed, with NO YCbCrSubSampling tag (530):
+    // the decoder must fall back to the TIFF 6.0 default {2,2} when sizing the
+    // subsampled chunk. One 2×2 data unit = 4·Y + Cb + Cr = 6 stored bytes; the
+    // flat non-subsampled model would demand 2×2×3 = 12, so acceptance proves the
+    // default-subsampling path is exercised end-to-end (not the flat fallback).
+    const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 }; // ImageWidth = 2
+    const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 }; // ImageLength = 2
+    const bps_entry: [12]u8 = .{ 0x02, 0x01, 0x03, 0x00, 0x03, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00 }; // BitsPerSample = 3×SHORT @ 0x80
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 }; // Compression = 1 (none)
+    const photo_entry: [12]u8 = .{ 0x06, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00 }; // Photometric = 6 (YCbCr)
+    const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00 }; // StripOffsets = 0x88
+    const spp_entry: [12]u8 = .{ 0x15, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00 }; // SamplesPerPixel = 3
+    const rps_entry: [12]u8 = .{ 0x16, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 }; // RowsPerStrip = 2
+    const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00 }; // StripByteCounts = 6
+
+    const strip = [_]u8{ 0x10, 0x20, 0x30, 0x40, 0x80, 0x80 }; // 4·Y + Cb + Cr
+
+    var bytes = synthesize(9, .{ w_entry, h_entry, bps_entry, comp_entry, photo_entry, so_entry, spp_entry, rps_entry, sbc_entry }, &strip, 0x88);
+    // BitsPerSample {8,8,8} out-of-line at 0x80 (synthesize writes only the strip).
+    bytes[0x80] = 8;
+    bytes[0x82] = 8;
+    bytes[0x84] = 8;
+
+    var handle = BufferHandle.init(&bytes);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+
+    try dec.validateAllStripsAndTiles(&ws);
+}

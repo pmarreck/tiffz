@@ -43,6 +43,27 @@ Response is expected durably in `~/Code/inbox/`.
       (exact-equality gate unchanged). Tag 530 added; 6 pure-formula unit tests
       (odd dims, 2:1/1:2/2:2/4:4, limit) + flipped product-path fixture test.
       JPEG-in-TIFF excluded (jpegz returns upsampled RGB).
+- [ ] **YCbCr residual slices** (Einstein continue-note 2026-07-24 13:08).
+      Smallest-first, product-path (not formula-only), red-first:
+      - [ ] tag-absent `YCbCrSubSampling` default `{2,2}` behavior (this slice).
+      - [ ] planar-separate subsampled YCbCr (Y full-res + subsampled Cb/Cr
+            planes) — currently unhandled; needs a fixture.
+      - [ ] tiled subsampled YCbCr end-to-end fixture (only formula-tested now).
+      Keep exact-equality for non-subsampled; keep characterized-red short-return
+      fixtures separate from padded-final-strip acceptance.
+- [ ] **Flip JPEG decode to jpegz cleanroom** (jpegz note 2026-07-24: gap D
+      landed at `a59df43`). One-liner `src/compressions/jpeg.zig:decode`
+      `jpegz.internal.wrapperDecode` → `jpegz.decode`; must hold byte-exact vs
+      ImageMagick oracle across ALL jpeg-in-TIFF fixtures (not just rgb-jpeg.tif).
+      Unblocks jpegz's libjpeg graduation (two-step handshake). No timeline
+      pressure; ship only if the full jpeg oracle suite stays green, else report
+      the failing fixture(s) back to jpegz as a blocker.
+- [x] **validate byte-value correction acknowledged** (2026-07-24, FYI). Old-byte
+      transcription fixed (corrupt_1 83→00, _2 A4→00, _3 8D→00, _4 02→00,
+      _5 C7→00); offsets/coords/`valid_modified_payload` conclusion unchanged, so
+      all five tiffz direct verdicts stand. Authoritative TSV: validate_gui
+      `8fb1699`, verified by validate `74a1f17e0`.
+
 
 - [ ] **Produce per-fixture, per-compression sniper/bolter/shotgun scores.**
       Never let one uncompressed largest fixture stand in for TIFF. Report
