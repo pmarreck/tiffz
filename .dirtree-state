@@ -1,6 +1,9 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
+depth=3
+
 annotate=[
+	CODE_REVIEW.md = 1.0 audit surface (Einstein 2026-07-23 dispatch): measured state, reproducers, root cause, per-fixture attribution, smallest next release slice. Audit-only, no fixes.
 	build.zig = Build graph for tiffz C/Zig artifacts and one re-exported lzwz module instance.
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
 	src/compressions/lerc.zig = LERC-in-TIFF (Compression=34887) codec adapter: strict LercParameters parse (codec_version 2..6, add_compression 0/1/2), chains Deflate/Zstd post-filter, then calls lercz C ABI via lerc_getBlobInfo + lerc_decode.
@@ -9,6 +12,7 @@ annotate=[
 	src/lib.zig = Public tiffz API and re-exports for exact jpegz/lzwz module identity downstream.
 	tests/fixture_test.zig = Independent TIFF fixture and inline-byte regressions, including strict LZW terminator and decoded-extent coverage.
 	tests/fixtures/geotiff = GeoTIFF fixtures: gray16_geotiff.tif is 16x16 EPSG:4326 grayscale with WGS 84 GeoKeyDirectory (7 keys, 2 doubles, ASCII citation).
+	tests/fixtures/labeled_good = Byte-verbatim copies of validate's labeled-good corpus at ~/Code/validate_gui/ground_truth_examples/tiff/. Distinct dir to sidestep name-collision drift with tests/fixtures/tiled/.
 	tests/fixtures/lerc = GDAL-produced LERC-in-TIFF fixtures: gray16_lerc (bare), gray16_lerc_deflate (post-filter=1), gray16_lerc_zstd (post-filter=2), rgb16_lerc (chunky RGB).
 	tests/fixtures/lerc_oracle = ImageMagick RGBA oracles for tests/fixtures/lerc/.
 ]

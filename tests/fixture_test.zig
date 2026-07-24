@@ -1398,6 +1398,79 @@ test "Decoder maps an LZW strip without EOD to SourceTooShort" {
     try std.testing.expectError(error.SourceTooShort, dec.decodeStrip(0, 0, &decoded, &workspace));
 }
 
+// -------------------------------------------------------------------------
+// Einstein 1.0 audit (2026-07-23): labeled-good false rejects.
+//
+// These fixtures are byte-verbatim copies of validate's labeled-good corpus
+// at `~/Code/validate_gui/ground_truth_examples/tiff/`. Two of the five —
+// cramps-tile.tif and quad-tile.tif — DIFFER byte-for-byte from the
+// same-named files under `tests/fixtures/tiled/`, so the pre-existing
+// oracle tests do not exercise the exact bytes validate measured.
+//
+// Each test opens the file, calls the product path
+// `Decoder.validateAllStripsAndTiles` (the same call Einstein specified as
+// the mandatory reproduction vector), and expects it to succeed. The
+// canonical `./test` currently passes; these tests are the failing wedge
+// the audit needs. When they eventually go green, per-fixture root causes
+// go into CODE_REVIEW.md.
+// -------------------------------------------------------------------------
+
+/// Assert `validateAllStripsAndTiles` on a labeled-good fixture returns the
+/// WRONG-BUT-CURRENT error. This is a negative characterization test — it
+/// keeps `./test` green while documenting the exact regression. When the
+/// underlying gate is corrected, this call fires (expected error not
+/// produced), demanding the assertion be flipped to a bare positive call.
+fn characterizeCurrentReject(
+    fixture_path: []const u8,
+    expected_err: tiffz.Error,
+) !void {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, fixture_path);
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var workspace = tiffz.Workspace.init(allocator);
+    defer workspace.deinit();
+    try std.testing.expectError(expected_err, dec.validateAllStripsAndTiles(&workspace));
+}
+
+test "audit 1.0 [reg]: cramps-tile.tif currently REJECTED as Malformed (extent-gate) — labeled-good, uncompressed tiled 800x607 MinIsWhite" {
+    try characterizeCurrentReject(
+        "tests/fixtures/labeled_good/cramps-tile.tif",
+        error.Malformed,
+    );
+}
+
+test "audit 1.0 [reg]: deflate-last-strip.tiff currently REJECTED as Malformed (extent-gate) — 500x500 Deflate, RowsPerStrip=16 (last strip = 4 rows)" {
+    try characterizeCurrentReject(
+        "tests/fixtures/labeled_good/deflate-last-strip.tiff",
+        error.Malformed,
+    );
+}
+
+test "audit 1.0 [reg]: lzw-single-strip.tiff currently REJECTED as SourceTooShort (required-EOD gate) — bilevel 7795x3122 LZW historical no-EOD variant" {
+    try characterizeCurrentReject(
+        "tests/fixtures/labeled_good/lzw-single-strip.tiff",
+        error.SourceTooShort,
+    );
+}
+
+test "audit 1.0 [reg]: quad-tile.tif currently REJECTED as Malformed (extent-gate) — 512x384 LZW RGB tiled 3ch chunky" {
+    try characterizeCurrentReject(
+        "tests/fixtures/labeled_good/quad-tile.tif",
+        error.Malformed,
+    );
+}
+
+test "audit 1.0 [reg]: ycbcr-cat.tif currently REJECTED as Malformed (extent-gate) — 250x325 LZW YCbCr subsampling 2:2" {
+    try characterizeCurrentReject(
+        "tests/fixtures/labeled_good/ycbcr-cat.tif",
+        error.Malformed,
+    );
+}
+
 test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
     // Same 8×1 bilevel layout as the positive integration fixture, but its
     // LZW strip is CLEAR + EOD. The terminator is valid; its zero decoded

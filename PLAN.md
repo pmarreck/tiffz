@@ -7,6 +7,57 @@ public API design.
 
 ## Next up
 
+### 1.0 finish-line audit (Einstein, 2026-07-23) — audit-only, no broad fixes
+
+Sequencing per Einstein Note 2: stop at the verified audit/report milestone
+so the orchestrator can merge all four parser audits into one master list.
+Response is expected durably in `~/Code/inbox/`.
+
+- [x] **Reproduce every false-reject as a failing library test**
+      (2026-07-24). Byte-verbatim fixtures under
+      `tests/fixtures/labeled_good/`; 5 negative-characterization
+      tests in `tests/fixture_test.zig` under the `audit 1.0 [reg]:`
+      prefix assert the wrong-but-current error through
+      `validateAllStripsAndTiles`. Attribution: 4/5 =
+      exact-extent gate (post-codec), 1/5 = required-EOD gate
+      (codec). Both gates shipped 2026-07-17 — single-commit-range
+      strictness regression. See `CODE_REVIEW.md` §3.
+- [ ] **Independently adjudicate the 5 labeled-corrupt fixtures**
+      (`rgb-3c-8b_corrupt_{1..5}.tiff`). Classify each mutation:
+      valid-but-different pixels → relabel; touches an enforceable invariant
+      → make it fail.
+- [ ] **Produce per-fixture, per-compression sniper/bolter/shotgun scores.**
+      Never let one uncompressed largest fixture stand in for TIFF. Report
+      exact commands, corpus provenance/counts, and a confusion matrix.
+- [ ] **Bounded sub-source / base-offset API — add it or prove the current
+      caller-owned slice contract.** Include tests that no strip/tag offset
+      escapes the embedded TIFF range and diagnostics distinguish
+      payload-relative from host-file offsets.
+- [ ] **Strictness audit vs libtiff / ImageMagick.** Truncation, malformed
+      IFD/tag structures, illegal offsets/counts, decompressor
+      terminators/extents, overlapping/cyclic structures, trailing data,
+      resource limits, unsupported-vs-invalid classification.
+- [ ] **Diagnostics audit.** Every finding must carry byte offset,
+      IFD/tag/chunk context, expected constraint, actual value, severity;
+      accumulate multiple safe-to-report findings rather than opaque
+      fail-fast.
+- [x] **Update `CODE_REVIEW.md`** (2026-07-24). First-slice
+      audit surface written directly (skill invocation deferred —
+      the findings are domain-specific and the audit is scoped to
+      the labeled-good regression + adjacent gaps). Doc covers
+      measured state, reproducers, root cause, strictness /
+      diagnostics / embedded-stream gap sketches, and the ordered
+      smallest-next-release-slice list.
+- [ ] **Refresh `PLAN.md` with every concrete pre-1.0 gap** the audit
+      surfaces (this section itself may split further as evidence lands).
+- [ ] **Identify API/FFI work validate still needs** and any integration
+      blocker in either repository.
+- [ ] **Reply to `~/Code/inbox/`** with: current commit, dirty-state
+      ownership, exact scores, critical findings, and the smallest next
+      release slice — NOT a broad fix batch.
+
+### Previously completed (2026-07-19)
+
 - [x] **Require LZW EOD and prove general 1-bit LZW decoding**
       (2026-07-17). The TIFF LZW loop now returns `SourceTooShort` rather
       than accepting physical EOF before its required EOD code. A compact
