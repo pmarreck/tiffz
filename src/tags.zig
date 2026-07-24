@@ -23,6 +23,7 @@ pub const tile_offsets: u16 = 324;           // 0x0144
 pub const tile_byte_counts: u16 = 325;       // 0x0145
 pub const extra_samples: u16 = 338;          // 0x0152; SHORT[N]; per extra sample: 0=unspec, 1=associated alpha (pre-multiplied), 2=unassociated alpha
 pub const jpeg_tables: u16 = 347;            // 0x015B; TIFF TN2 Mode 2 — shared JPEG abbreviated table datastream
+pub const ycbcr_subsampling: u16 = 530;      // 0x0212; SHORT[2] [ChromaSubsampleHoriz, ChromaSubsampleVert], default [2,2]
 
 /// DNG / TIFF-EP tags (M8).
 pub const cfa_repeat_pattern_dim: u16 = 33421; // 0x828D; SHORT[2] — pattern dims (width, height)

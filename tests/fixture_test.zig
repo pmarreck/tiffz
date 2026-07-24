@@ -1436,6 +1436,22 @@ fn characterizeCurrentReject(
     try std.testing.expectError(expected_err, dec.validateAllStripsAndTiles(&workspace));
 }
 
+/// Assert `validateAllStripsAndTiles` ACCEPTS a labeled-good fixture through
+/// the product path — the positive form of `characterizeCurrentReject`, used
+/// once a gate is corrected and the characterization assertion is flipped.
+fn expectFixtureValidates(fixture_path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, fixture_path);
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var workspace = tiffz.Workspace.init(allocator);
+    defer workspace.deinit();
+    try dec.validateAllStripsAndTiles(&workspace);
+}
+
 test "audit 1.0 [reg]: cramps-tile.tif currently REJECTED as Malformed (extent-gate) — labeled-good, uncompressed tiled 800x607 MinIsWhite" {
     try characterizeCurrentReject(
         "tests/fixtures/labeled_good/cramps-tile.tif",
@@ -1464,12 +1480,10 @@ test "audit 1.0 [reg]: quad-tile.tif currently REJECTED as Malformed (extent-gat
     );
 }
 
-test "audit 1.0 [reg]: ycbcr-cat.tif currently REJECTED as Malformed (extent-gate) — 250x325 LZW YCbCr subsampling 2:2" {
-    try characterizeCurrentReject(
-        "tests/fixtures/labeled_good/ycbcr-cat.tif",
-        error.Malformed,
-    );
+test "audit 1.0 [fixed]: ycbcr-cat.tif ACCEPTED via subsampling-aware extent gate — 250x325 LZW YCbCr subsampling 2:2" {
+    try expectFixtureValidates("tests/fixtures/labeled_good/ycbcr-cat.tif");
 }
+
 
 test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
     // Same 8×1 bilevel layout as the positive integration fixture, but its
@@ -1502,3 +1516,4 @@ test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
 
     try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&workspace));
 }
+

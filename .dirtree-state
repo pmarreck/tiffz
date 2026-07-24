@@ -7,9 +7,10 @@ annotate=[
 	build.zig = Build graph for tiffz C/Zig artifacts and one re-exported lzwz module instance.
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
 	src/compressions/lerc.zig = LERC-in-TIFF (Compression=34887) codec adapter: strict LercParameters parse (codec_version 2..6, add_compression 0/1/2), chains Deflate/Zstd post-filter, then calls lercz C ABI via lerc_getBlobInfo + lerc_decode.
-	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz and validates exact declared chunk extent.
+	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz; validates each chunk's decoded extent (ExpectedExtent min..max) — exact for non-subsampled, TIFF 6.0 §21 YCbCr chroma-subsampling range (final strip may pad to full RowsPerStrip) for chunky subsampled YCbCr.
 	src/geotiff.zig = GeoTIFF metadata parser: strict parseFromIfd → Metadata with pixel_scale, tiepoints, transformation, key directory + double/ascii params. Reads DOUBLE payloads via cachedValueBytes since Ifd.arrayElementU64 is SHORT/LONG/LONG8 only.
 	src/lib.zig = Public tiffz API and re-exports for exact jpegz/lzwz module identity downstream.
+	src/tags.zig = Named TIFF tag constants (incl. ycbcr_subsampling=530) + compression/photometric/planar code enums.
 	tests/fixture_test.zig = Independent TIFF fixture and inline-byte regressions, including strict LZW terminator and decoded-extent coverage.
 	tests/fixtures/geotiff = GeoTIFF fixtures: gray16_geotiff.tif is 16x16 EPSG:4326 grayscale with WGS 84 GeoKeyDirectory (7 keys, 2 doubles, ASCII citation).
 	tests/fixtures/labeled_good = Byte-verbatim copies of validate's labeled-good corpus at ~/Code/validate_gui/ground_truth_examples/tiff/. Distinct dir to sidestep name-collision drift with tests/fixtures/tiled/.

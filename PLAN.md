@@ -22,10 +22,28 @@ Response is expected durably in `~/Code/inbox/`.
       exact-extent gate (post-codec), 1/5 = required-EOD gate
       (codec). Both gates shipped 2026-07-17 — single-commit-range
       strictness regression. See `CODE_REVIEW.md` §3.
-- [ ] **Independently adjudicate the 5 labeled-corrupt fixtures**
-      (`rgb-3c-8b_corrupt_{1..5}.tiff`). Classify each mutation:
-      valid-but-different pixels → relabel; touches an enforceable invariant
-      → make it fail.
+- [x] **Independently adjudicate the 5 labeled-corrupt fixtures**
+      (2026-07-24). Ran `Decoder.open` + `validateAllStripsAndTiles` over the
+      clean control + all five `rgb-3c-8b_corrupt_{1..5}.tiff` at `83064193`
+      and again on the post-YCbCr tree: **all six return OK (exit-0
+      equivalent)**. Each mutation is one byte → `0x00` in an uncompressed RGB
+      strip payload (no header/IFD/offset/count/codec touch): category =
+      uncompressed pixel/sample data with no integrity oracle (5/5 pixel-only,
+      0 structural, 0 codec-payload, 0 unadjudicated). Reconciles byte-for-byte
+      with validate's table; confirmed compatible with validate's
+      `valid_modified_payload` reclassification. Corpus labels need correcting,
+      not a tiffz decoder/shim change.
+- [x] **YCbCr subsampling extent correction** (2026-07-24). CODE_REVIEW §10
+      slice #1. `ycbcr-cat.tif` (250×325 LZW YCbCr 2:2) now validates.
+      `expectedChunkBytes` returns `ExpectedExtent {min,max}`: chunky subsampled
+      YCbCr sizes data units of (H·V·Y + Cb + Cr) per TIFF 6.0 §21, the final
+      strip permitted to pad from required (libtiff `TIFFVStripSize`) up to
+      full-RowsPerStrip (`TIFFStripSize`) — libtiff probe captured last strip
+      required 2250 / stored 3750. Non-subsampled chunks keep min==max
+      (exact-equality gate unchanged). Tag 530 added; 6 pure-formula unit tests
+      (odd dims, 2:1/1:2/2:2/4:4, limit) + flipped product-path fixture test.
+      JPEG-in-TIFF excluded (jpegz returns upsampled RGB).
+
 - [ ] **Produce per-fixture, per-compression sniper/bolter/shotgun scores.**
       Never let one uncompressed largest fixture stand in for TIFF. Report
       exact commands, corpus provenance/counts, and a confusion matrix.

@@ -380,7 +380,8 @@ pub const Decoder = struct {
                 var t: u32 = 0;
                 while (t < tile_off_entry.count) : (t += 1) {
                     const written = try self.runWithGrowingDest(&dest_buf, max_dest_bytes, .tile, ifd_index, t, workspace);
-                    if (written != try self.expectedChunkBytes(dir, .tile, t, tile_off_entry.count)) {
+                    const ext = try self.expectedChunkBytes(dir, .tile, t, tile_off_entry.count);
+                    if (written < ext.min or written > ext.max) {
                         return error.Malformed;
                     }
                 }
@@ -389,7 +390,8 @@ pub const Decoder = struct {
                 var s: u32 = 0;
                 while (s < strip_bc_entry.count) : (s += 1) {
                     const written = try self.runWithGrowingDest(&dest_buf, max_dest_bytes, .strip, ifd_index, s, workspace);
-                    if (written != try self.expectedChunkBytes(dir, .strip, s, strip_bc_entry.count)) {
+                    const ext = try self.expectedChunkBytes(dir, .strip, s, strip_bc_entry.count);
+                    if (written < ext.min or written > ext.max) {
                         return error.Malformed;
                     }
                 }
@@ -409,6 +411,7 @@ pub const Decoder = struct {
     const ChunkShape = struct {
         width: u32,
         rows: u32,
+        full_rows: u32,
         chunks_per_plane: usize,
     };
 
@@ -446,7 +449,7 @@ pub const Decoder = struct {
         kind: ChunkKind,
         chunk_index: u32,
         chunk_count: u64,
-    ) errors.Error!usize {
+    ) errors.Error!ExpectedExtent {
         const image_width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
         const image_length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
         if (image_width == 0 or image_length == 0) return error.Malformed;
@@ -470,6 +473,7 @@ pub const Decoder = struct {
                 break :blk .{
                     .width = image_width,
                     .rows = @min(rows_per_strip, image_length - first_row),
+                    .full_rows = rows_per_strip,
                     .chunks_per_plane = strips_per_plane,
                 };
             },
@@ -482,6 +486,7 @@ pub const Decoder = struct {
                 break :blk .{
                     .width = tile_width,
                     .rows = tile_length,
+                    .full_rows = tile_length,
                     .chunks_per_plane = try checkedMul(@as(usize, tiles_across), @as(usize, tiles_down)),
                 };
             },
@@ -497,13 +502,38 @@ pub const Decoder = struct {
         else
             0;
         const bits_per_pixel = try self.bitsPerPixel(dir, samples, planar, plane_index);
+
+        // TIFF 6.0 §21: chunky YCbCr with chroma subsampling stores H×V-pixel
+        // data units of (H·V luma + 1 Cb + 1 Cr) samples, not one full sample
+        // set per pixel, so the flat per-row model below over-counts by the
+        // subsample ratio. JPEG-in-TIFF (compression 7) is excluded: jpegz
+        // returns upsampled RGB, which the flat model already sizes correctly.
+        if (planar == tags.planar_chunky and samples == 3 and bits_per_pixel == 24) {
+            const photometric = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse 0;
+            const compression = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse tags.compression_none;
+            if (photometric == tags.photometric_ycbcr and compression != tags.compression_jpeg) {
+                const sub = try readYCbCrSubSampling(dir.*, self.endian);
+                if (sub[0] > 1 or sub[1] > 1) {
+                    return subsampledYCbCrExtent(
+                        @as(usize, shape.width),
+                        @as(usize, shape.rows),
+                        @as(usize, shape.full_rows),
+                        @as(usize, sub[0]),
+                        @as(usize, sub[1]),
+                        1,
+                        self.limits.max_decompressed_strip_bytes,
+                    );
+                }
+            }
+        }
+
         const bits_per_row = try checkedMul(@as(usize, shape.width), bits_per_pixel);
         const bytes_per_row = bits_per_row / 8 + @intFromBool(bits_per_row % 8 != 0);
         const expected = try checkedMul(bytes_per_row, @as(usize, shape.rows));
         if (expected > self.limits.max_decompressed_strip_bytes) {
             return error.LimitExceededDecompressedStripBytes;
         }
-        return expected;
+        return .{ .min = expected, .max = expected };
     }
 
     /// Read per-sample bit depths without allocating. TIFF permits either a
@@ -985,6 +1015,60 @@ fn ceilDivU32(numerator: u32, denominator: u32) errors.Error!u32 {
     return numerator / denominator + @intFromBool(numerator % denominator != 0);
 }
 
+/// One decoded strip/tile's permitted byte extent. `min` covers every logical
+/// (in-image) sample the directory declares; `max` additionally permits
+/// spec-legal trailing padding (e.g. a final subsampled strip padded up to a
+/// full RowsPerStrip). For every non-subsampled chunk min == max, so the
+/// historical exact-equality gate is preserved bit-for-bit.
+const ExpectedExtent = struct { min: usize, max: usize };
+
+/// Ceiling division for usize. Denominators here are subsample factors
+/// (1/2/4), always nonzero.
+fn ceilDivUsize(numerator: usize, denominator: usize) usize {
+    return numerator / denominator + @intFromBool(numerator % denominator != 0);
+}
+
+/// TIFF 6.0 §21 chunky YCbCr chroma-subsampling storage extent for one chunk.
+/// A data unit packs `sub_h × sub_v` luma samples + one Cb + one Cr, each
+/// `sample_bytes` wide, so one unit = (sub_h·sub_v + 2)·sample_bytes bytes and
+/// `blocks_across = ceil(width / sub_h)` units span a block row. The vertical
+/// direction may be padded: a chunk carries at least `ceil(logical_rows /
+/// sub_v)` block rows (`min`) and at most `ceil(full_rows / sub_v)` (`max`, the
+/// encoder padding the final strip up to RowsPerStrip). libtiff's
+/// TIFFVStripSize/TIFFStripSize yield exactly these bounds — verified against
+/// ycbcr-cat.tif whose last strip requires 2250 but stores 3750.
+fn subsampledYCbCrExtent(
+    width: usize,
+    logical_rows: usize,
+    full_rows: usize,
+    sub_h: usize,
+    sub_v: usize,
+    sample_bytes: usize,
+    max_bytes: usize,
+) errors.Error!ExpectedExtent {
+    const blocks_across = ceilDivUsize(width, sub_h);
+    const unit_bytes = try checkedMul(sub_h * sub_v + 2, sample_bytes);
+    const req_block_rows = ceilDivUsize(logical_rows, sub_v);
+    const pad_block_rows = ceilDivUsize(full_rows, sub_v);
+    const min = try checkedMul(try checkedMul(blocks_across, req_block_rows), unit_bytes);
+    const max = try checkedMul(try checkedMul(blocks_across, pad_block_rows), unit_bytes);
+    if (max > max_bytes) return error.LimitExceededDecompressedStripBytes;
+    return .{ .min = min, .max = max };
+}
+
+/// Read YCbCrSubSampling (tag 530): two SHORTs [ChromaSubsampleHoriz,
+/// ChromaSubsampleVert]. Absent ⇒ TIFF 6.0 default {2,2}. Only {1,2,4} are
+/// spec-legal per axis; anything else is Malformed.
+fn readYCbCrSubSampling(dir: Ifd, endian: Endian) errors.Error![2]u16 {
+    const e = dir.get(tags.ycbcr_subsampling) orelse return .{ 2, 2 };
+    if (e.count != 2) return error.Malformed;
+    if (e.field_type != .short) return error.UnsupportedTagType;
+    const h = header_mod.readU16(e.raw_value_or_offset[0..2], endian);
+    const v = header_mod.readU16(e.raw_value_or_offset[2..4], endian);
+    if ((h != 1 and h != 2 and h != 4) or (v != 1 and v != 2 and v != 4)) return error.Malformed;
+    return .{ h, v };
+}
+
 /// Multiply layout quantities only after proving the product fits the native
 /// address size, preventing malformed dimensions from wrapping into a small
 /// expected output extent.
@@ -1133,5 +1217,53 @@ test "decodeStrip: compression=6 (OJPEG, never supported) rejected as Unsupporte
     try std.testing.expectError(
         error.UnsupportedCompression,
         dec.decodeStrip(0, 0, &dest, &ws),
+    );
+}
+
+test "subsampledYCbCrExtent: interior 2:2 strip is exact (min == max)" {
+    // width 250, H=2 -> 125 blocks; unit=(2*2+2)=6B; 10 rows, V=2 -> 5 block rows.
+    // 125*5*6 = 3750, both bounds (full strip, no padding slack).
+    const ext = try subsampledYCbCrExtent(250, 10, 10, 2, 2, 1, 1 << 30);
+    try std.testing.expectEqual(@as(usize, 3750), ext.min);
+    try std.testing.expectEqual(@as(usize, 3750), ext.max);
+}
+
+test "subsampledYCbCrExtent: final 2:2 strip permits pad from required to full" {
+    // ycbcr-cat.tif last strip: 5 logical rows in a RowsPerStrip=10 strip.
+    // required = 125*ceil(5/2)*6 = 125*3*6 = 2250 (libtiff TIFFVStripSize).
+    // padded   = 125*ceil(10/2)*6 = 125*5*6 = 3750 (libtiff TIFFStripSize).
+    const ext = try subsampledYCbCrExtent(250, 5, 10, 2, 2, 1, 1 << 30);
+    try std.testing.expectEqual(@as(usize, 2250), ext.min);
+    try std.testing.expectEqual(@as(usize, 3750), ext.max);
+}
+
+test "subsampledYCbCrExtent: horizontal-only 2:1 with odd width rounds blocks up" {
+    // width 251, H=2 -> ceil(251/2)=126 blocks; unit=(2*1+2)=4B; V=1 -> 8 block rows.
+    // 126*8*4 = 4032, exact.
+    const ext = try subsampledYCbCrExtent(251, 8, 8, 2, 1, 1, 1 << 30);
+    try std.testing.expectEqual(@as(usize, 4032), ext.min);
+    try std.testing.expectEqual(@as(usize, 4032), ext.max);
+}
+
+test "subsampledYCbCrExtent: vertical-only 1:2 final strip pads vertically" {
+    // width 100, H=1 -> 100 blocks; unit=(1*2+2)=4B; logical 5 rows -> ceil(5/2)=3,
+    // full 8 rows -> ceil(8/2)=4. min=100*3*4=1200, max=100*4*4=1600.
+    const ext = try subsampledYCbCrExtent(100, 5, 8, 1, 2, 1, 1 << 30);
+    try std.testing.expectEqual(@as(usize, 1200), ext.min);
+    try std.testing.expectEqual(@as(usize, 1600), ext.max);
+}
+
+test "subsampledYCbCrExtent: 4:4 subsampling with odd small dims" {
+    // width 10, H=4 -> ceil(10/4)=3 blocks; unit=(4*4+2)=18B; logical 10 rows ->
+    // ceil(10/4)=3, full 16 rows -> ceil(16/4)=4. min=3*3*18=162, max=3*4*18=216.
+    const ext = try subsampledYCbCrExtent(10, 10, 16, 4, 4, 1, 1 << 30);
+    try std.testing.expectEqual(@as(usize, 162), ext.min);
+    try std.testing.expectEqual(@as(usize, 216), ext.max);
+}
+
+test "subsampledYCbCrExtent: exceeding the decompressed-byte limit errors" {
+    try std.testing.expectError(
+        error.LimitExceededDecompressedStripBytes,
+        subsampledYCbCrExtent(1_000_000, 1_000_000, 1_000_000, 2, 2, 1, 1000),
     );
 }
