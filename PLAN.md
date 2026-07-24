@@ -43,14 +43,21 @@ Response is expected durably in `~/Code/inbox/`.
       (exact-equality gate unchanged). Tag 530 added; 6 pure-formula unit tests
       (odd dims, 2:1/1:2/2:2/4:4, limit) + flipped product-path fixture test.
       JPEG-in-TIFF excluded (jpegz returns upsampled RGB).
-- [ ] **YCbCr residual slices** (Einstein continue-note 2026-07-24 13:08).
-      Smallest-first, product-path (not formula-only), red-first:
-      - [ ] tag-absent `YCbCrSubSampling` default `{2,2}` behavior (this slice).
-      - [ ] planar-separate subsampled YCbCr (Y full-res + subsampled Cb/Cr
-            planes) — currently unhandled; needs a fixture.
-      - [ ] tiled subsampled YCbCr end-to-end fixture (only formula-tested now).
-      Keep exact-equality for non-subsampled; keep characterized-red short-return
-      fixtures separate from padded-final-strip acceptance.
+- [x] **YCbCr residual slices** (Einstein continue-note 2026-07-24 13:08). Done:
+      - [x] tag-absent `YCbCrSubSampling` default `{2,2}` — product-path test
+            (`2ec617b4`).
+      - [x] tiled chunky subsampled YCbCr — real libtiff 4.7.1 fixture
+            (`ycbcr_tiled_uncompressed_sub2x2.tif`, 16×16 one tile, 384 B vs flat
+            768) + product-path test; upgrades the `.tile` branch off formula-only.
+      - [x] planar-separate subsampled YCbCr — RESOLVED as correct-by-design, NOT
+            a gap: libtiff 4.7.1 itself cannot read it (`TIFFStripSize`=256 for
+            every plane; subsampling math is contig-only, so the 64-B chroma
+            planes error with "expected 256"). tiffz's `planar==chunky` guard
+            already matches libtiff — separate-plane YCbCr is treated full-res.
+            No code change; documented with the libtiff probe evidence.
+      Exact-equality preserved for non-subsampled; characterized-red short-return
+      fixtures kept separate from padded-final-strip acceptance.
+
 - [ ] **Flip JPEG decode to jpegz cleanroom** (jpegz note 2026-07-24: gap D
       landed at `a59df43`). One-liner `src/compressions/jpeg.zig:decode`
       `jpegz.internal.wrapperDecode` → `jpegz.decode`; must hold byte-exact vs

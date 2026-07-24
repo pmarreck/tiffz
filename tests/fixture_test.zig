@@ -1484,6 +1484,19 @@ test "audit 1.0 [fixed]: ycbcr-cat.tif ACCEPTED via subsampling-aware extent gat
     try expectFixtureValidates("tests/fixtures/labeled_good/ycbcr-cat.tif");
 }
 
+test "YCbCr tiled chunky subsampled 2:2 (uncompressed 16x16, one tile) validates via .tile extent branch" {
+    // Real libtiff-authored fixture (LIBTIFF 4.7.1): PHOTOMETRIC_YCBCR,
+    // YCBCRSUBSAMPLING 2,2, COMPRESSION_NONE, PLANARCONFIG_CONTIG, one 16x16 tile.
+    // The tile stores ceil(16/2)*ceil(16/2)=64 data units * (2*2+2)=6 B = 384 B,
+    // half the flat-model 16*16*3 = 768; acceptance proves the .tile branch of
+    // expectedChunkBytes applies the TIFF 6.0 subsampling extent end-to-end (not
+    // formula-only). Regenerate: TIFFWriteRawTile(t, 0, <384 pseudo-bytes>, 384)
+    // with the tags above (see docs; niche uncompressed subsampled tiling — tiffcp
+    // cannot copy subsampled images, so raw-tile authoring is required).
+    try expectFixtureValidates("tests/fixtures/photometric/ycbcr_tiled_uncompressed_sub2x2.tif");
+}
+
+
 
 test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
     // Same 8×1 bilevel layout as the positive integration fixture, but its
@@ -1516,4 +1529,5 @@ test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
 
     try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&workspace));
 }
+
 

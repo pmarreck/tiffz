@@ -16,4 +16,5 @@ annotate=[
 	tests/fixtures/labeled_good = Byte-verbatim copies of validate's labeled-good corpus at ~/Code/validate_gui/ground_truth_examples/tiff/. Distinct dir to sidestep name-collision drift with tests/fixtures/tiled/.
 	tests/fixtures/lerc = GDAL-produced LERC-in-TIFF fixtures: gray16_lerc (bare), gray16_lerc_deflate (post-filter=1), gray16_lerc_zstd (post-filter=2), rgb16_lerc (chunky RGB).
 	tests/fixtures/lerc_oracle = ImageMagick RGBA oracles for tests/fixtures/lerc/.
+	tests/fixtures/photometric/ycbcr_tiled_uncompressed_sub2x2.tif = Real libtiff 4.7.1 tiled chunky YCbCr 2:2 uncompressed fixture (16x16, one 384-byte tile); product-path coverage for the .tile subsampling extent branch.
 ]
