@@ -931,7 +931,7 @@ pub const Decoder = struct {
             tags.compression_jpeg => blk: {
                 // JPEG-in-TIFF (Compression=7, TIFF Tech Note 2).
                 // Supports photometric=RGB (2) and photometric=YCbCr (6).
-                // CAVEAT: the JPEG codec (libjpeg via jpegz.wrapperDecode)
+                // CAVEAT: the cleanroom JPEG codec (jpegz.decode)
                 // performs YCbCr→RGB conversion internally for YCbCr-marked
                 // JPEG streams. The bytes written to `dest` are therefore
                 // RGB pixels regardless of the TIFF photometric tag. The
