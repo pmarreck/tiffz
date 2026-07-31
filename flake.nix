@@ -197,7 +197,20 @@
               unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
             ''}
             export TERM=dumb
-            timeout 600 zig build test ${zigTargetFlag} \
+            # FLEET FLOOR — tests run ReleaseSafe (fleet finding 2026-07-01).
+            # ReleaseFast compiles OUT the runtime safety checks (integer
+            # overflow, bounds, illegal cast), so a green ReleaseFast suite
+            # cannot observe UB: it passes *because* the check that would have
+            # failed it is gone. rarz was carrying three real crashers behind a
+            # fully green ReleaseFast suite.
+            #
+            # Enforced HERE, not as a per-module `.optimize` in build.zig: Zig
+            # honours per-module optimize, so pinning only the test module
+            # would leave imported library code at ReleaseFast. The command
+            # line flips the whole test compilation at once.
+            #
+            # Shipped artifact and benchmarks stay ReleaseFast.
+            timeout 600 zig build test -Doptimize=ReleaseSafe ${zigTargetFlag} \
               -Dlibjpeg-include=${jpegPkgs.libjpeg.dev}/include \
               -Dlibjpeg-lib=${jpegPkgs.libjpeg.out}/lib \
               -Dopenjpeg-include=${jpegPkgs.openjpeg.dev}/include/openjpeg-2.5 \

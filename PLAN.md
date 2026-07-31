@@ -7,6 +7,26 @@ public API design.
 
 ## Next up
 
+- [x] **Fix planar=separate u32 underflow in strip row math** (2026-07-31,
+      Einstein note 2026-07-29). ReleaseSafe test builds (`flake.nix` now passes
+      `-Doptimize=ReleaseSafe` to `zig build test` — fleet UB floor) exposed a
+      real crasher: `length - strip_index*rps` in the strip paths underflows on
+      the 2nd+ sample plane when `PlanarConfiguration=2` makes StripOffsets span
+      all planes. Under ReleaseFast it wrapped huge and the next `@min` clamp
+      masked it into the right answer *by accident*. Fixed by extracting a pure
+      `stripRowSpan(length, rps, strip_index)` that reduces the index into its
+      plane band (`% strips_per_plane`, a no-op for chunky) and guards rps/length
+      == 0. **Two** call sites had the bug: `decodeStripRaw` (codec dispatch,
+      the one Einstein flagged) AND `applyPredictorStrip` (inverse predictor).
+      Tile paths confirmed unaffected (always full TileLength, no index math).
+      MFIC: classifier unit test over chunky/separate × single/multi-strip ×
+      short-last-band with hand-derived oracles — the separate odd-band cases
+      (idx 3,5 @ len=20,rps=16 → 4) give a WRONG 16 pre-fix even under
+      ReleaseFast, so the test bites in both build modes, not just via the
+      ReleaseSafe panic. `./test` + `./build` green; committed with the flake
+      change. **NEXT:** bounded sub-source / base-offset API (Peter elevated it
+      2026-07-31 — validate needs it for embedded streams).
+
 ### 1.0 finish-line audit (Einstein, 2026-07-23) — audit-only, no broad fixes
 
 Sequencing per Einstein Note 2: stop at the verified audit/report milestone

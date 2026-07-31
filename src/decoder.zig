@@ -621,8 +621,8 @@ pub const Decoder = struct {
         const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
         const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
         const rps: u32 = if (rps_raw > length) length else rps_raw;
-        const remaining_rows: u32 = length - strip_index * rps;
-        const this_rows: u32 = @min(rps, remaining_rows);
+        // Same planar-separate band reduction as decodeStripRaw (see stripRowSpan).
+        const this_rows: u32 = stripRowSpan(length, rps, strip_index);
         try predictors_mod.applyInverse(bytes, meta.predictor, width, this_rows, meta.samples, meta.bps, meta.planar, self.endian, self.allocator);
     }
 
@@ -687,8 +687,10 @@ pub const Decoder = struct {
         const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
         const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
         const rps: u32 = if (rps_raw > length) length else rps_raw;
-        const remaining_rows: u32 = length - strip_index * rps;
-        const this_rows: u32 = @min(rps, remaining_rows);
+        // Resolve the planar-separate plane band before the row math (see
+        // stripRowSpan) — a naive length - strip_index*rps underflows on the
+        // 2nd+ plane when StripOffsets spans all sample planes.
+        const this_rows: u32 = stripRowSpan(length, rps, strip_index);
 
         return self.decodeBytes(dir, .{
             .offset = offset,
@@ -1077,6 +1079,24 @@ fn checkedMul(a: usize, b: usize) errors.Error!usize {
     return a * b;
 }
 
+/// Scan-lines contributed by one strip, correct for both PlanarConfiguration
+/// values. For planar=separate, StripOffsets spans every sample plane
+/// (total strips = ceil(length/rps) × SamplesPerPixel), so a raw
+/// `length - strip_index*rps` runs off the end of the image on the 2nd+ plane —
+/// a u32 underflow (the ReleaseSafe-only crasher Einstein caught 2026-07-29;
+/// under ReleaseFast it wrapped huge and the very next @min clamp masked it into
+/// the right answer by accident). Reducing the index into its own plane band via
+/// `strip_index % strips_per_plane` fixes it; for chunky, strips_per_plane ==
+/// total strips so the modulo is a no-op. rps==0 / length==0 (malformed) yield 0
+/// rows rather than dividing by zero, preserving the prior clamp behaviour.
+fn stripRowSpan(length: u32, rps: u32, strip_index: u32) u32 {
+    if (rps == 0 or length == 0) return 0;
+    const strips_per_plane = (length + rps - 1) / rps; // ceil-div, ≥1 here
+    const band = strip_index % strips_per_plane;
+    const remaining_rows = length - band * rps; // > 0: band*rps < length by ceil
+    return @min(rps, remaining_rows);
+}
+
 /// Read a single u32-shaped scalar tag (ImageWidth / ImageLength /
 /// RowsPerStrip / etc.). Tolerates SHORT-typed encoders too.
 /// Returns null if the tag isn't present.
@@ -1266,6 +1286,44 @@ test "subsampledYCbCrExtent: exceeding the decompressed-byte limit errors" {
         error.LimitExceededDecompressedStripBytes,
         subsampledYCbCrExtent(1_000_000, 1_000_000, 1_000_000, 2, 2, 1, 1000),
     );
+}
+
+test "stripRowSpan: classifier over chunky/separate × single/multi-strip × short-last band" {
+    // Hand-derived oracle (MFIC — independent of the implementation formula).
+    // Bites in BOTH build modes: several separate-plane cases below produce a
+    // WRONG this_rows under the pre-fix `length - strip_index*rps` even under
+    // ReleaseFast (not merely a ReleaseSafe panic), because the @min clamp does
+    // not always mask the wrap back to the correct answer.
+    const S = struct {
+        len: u32,
+        rps: u32,
+        idx: u32,
+        want: u32,
+    };
+    const cases = [_]S{
+        // chunky single strip: one full strip.
+        .{ .len = 16, .rps = 16, .idx = 0, .want = 16 },
+        // chunky multi-strip, length divisible by rps.
+        .{ .len = 32, .rps = 16, .idx = 0, .want = 16 },
+        .{ .len = 32, .rps = 16, .idx = 1, .want = 16 },
+        // chunky multi-strip, short final band (length % rps != 0).
+        .{ .len = 20, .rps = 16, .idx = 0, .want = 16 },
+        .{ .len = 20, .rps = 16, .idx = 1, .want = 4 },
+        // planar=separate, 3 planes × 2 strips/plane over length=20, rps=16.
+        // strips_per_plane = ceil(20/16) = 2, total StripOffsets = 6.
+        // The odd indices on the 2nd/3rd plane are the killers: pre-fix they
+        // underflow (idx 3,5) and clamp to a wrong 16 instead of 4.
+        .{ .len = 20, .rps = 16, .idx = 2, .want = 16 }, // plane1 band0
+        .{ .len = 20, .rps = 16, .idx = 3, .want = 4 }, // plane1 band1  (pre-fix: 16, WRONG)
+        .{ .len = 20, .rps = 16, .idx = 4, .want = 16 }, // plane2 band0
+        .{ .len = 20, .rps = 16, .idx = 5, .want = 4 }, // plane2 band1  (pre-fix: 16, WRONG)
+        // degenerate guards: no divide-by-zero, yields 0 rows.
+        .{ .len = 16, .rps = 0, .idx = 0, .want = 0 },
+        .{ .len = 0, .rps = 16, .idx = 5, .want = 0 },
+    };
+    for (cases) |c| {
+        try std.testing.expectEqual(c.want, stripRowSpan(c.len, c.rps, c.idx));
+    }
 }
 
 test "validateAllStripsAndTiles: tag-absent YCbCrSubSampling uses the {2,2} default extent" {
