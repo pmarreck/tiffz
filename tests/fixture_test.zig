@@ -1496,6 +1496,44 @@ test "YCbCr tiled chunky subsampled 2:2 (uncompressed 16x16, one tile) validates
     try expectFixtureValidates("tests/fixtures/photometric/ycbcr_tiled_uncompressed_sub2x2.tif");
 }
 
+/// Metamorphic embedding proof for `Source.fromSubrange`: a labeled-good TIFF
+/// must validate identically whether opened at base 0 or embedded at a nonzero
+/// base inside junk padding (the real use case — a TIFF stream living inside a
+/// DNG/RAW/container). The padding is 0xAB (a non-TIFF, nonzero pattern); the
+/// sub-view being oblivious to it proves reads never leave [base, base+len).
+fn expectEmbeddedFixtureValidates(fixture_path: []const u8, prefix_len: usize, suffix_len: usize) !void {
+    const allocator = std.testing.allocator;
+    const tiff = try loadFile(allocator, fixture_path);
+    defer allocator.free(tiff);
+
+    const host = try allocator.alloc(u8, prefix_len + tiff.len + suffix_len);
+    defer allocator.free(host);
+    @memset(host, 0xAB);
+    @memcpy(host[prefix_len..][0..tiff.len], tiff);
+
+    var inner_handle = tiffz.source.BufferHandle.init(host);
+    const inner = tiffz.Source.fromBuffer(&inner_handle);
+    var sub_handle = tiffz.source.SubSourceHandle.init(&inner, prefix_len, tiff.len);
+    const source = tiffz.Source.fromSubrange(&sub_handle);
+
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var workspace = tiffz.Workspace.init(allocator);
+    defer workspace.deinit();
+    try dec.validateAllStripsAndTiles(&workspace);
+}
+
+test "fromSubrange: labeled-good TIFF validates embedded at a nonzero base in junk (metamorphic vs base 0)" {
+    const fx = "tests/fixtures/photometric/ycbcr_tiled_uncompressed_sub2x2.tif";
+    // base 0, no padding — parity with the fromBuffer path.
+    try expectEmbeddedFixtureValidates(fx, 0, 0);
+    // Embedded at a nonzero, unaligned base with leading + trailing junk — the
+    // real container shape. Identical outcome (success) proves the validation
+    // is invariant under the embedding offset AND that no strip/tile/tag/IFD
+    // offset spills into the 0xAB padding on either side.
+    try expectEmbeddedFixtureValidates(fx, 37, 19);
+}
+
 
 
 test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {

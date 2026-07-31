@@ -24,8 +24,43 @@ public API design.
       (idx 3,5 @ len=20,rps=16 → 4) give a WRONG 16 pre-fix even under
       ReleaseFast, so the test bites in both build modes, not just via the
       ReleaseSafe panic. `./test` + `./build` green; committed with the flake
-      change. **NEXT:** bounded sub-source / base-offset API (Peter elevated it
-      2026-07-31 — validate needs it for embedded streams).
+      change (`d03c9d24`).
+- [x] **Bounded sub-source / base-offset API — `Source.fromSubrange`**
+      (2026-07-31, Peter elevated it; Einstein Note 2 §6 fork). Read-only audit
+      first: the current `Source` is strictly 0-based pread (`readAt`+`sizeOf`),
+      NO base offset; embedding today = caller slices `[start,end)` into a
+      `fromBuffer`/`fromBufferedReader` 0-based view, and offsets provably cannot
+      escape (past-range read → 0 → `error.SourceShortRead`). So "prove the
+      contract" already held for *correctness*; the real gaps were (1) no
+      zero-copy view into a larger host Source, (2) host-absolute diagnostics.
+      Fork resolved: **built gap 1**, a `Source.fromSubrange(&SubSourceHandle{
+      inner, base, len })` bounded base-offset view — reads translate to
+      `base+off` and clamp to `len` (host bytes outside the window are
+      unreachable), `sizeOf`==len, no allocation, thread-safety follows inner.
+      Exactly what validate needs to hand tiffz an embedded TIFF (DNG/RAW preview,
+      container payload) without copying — the frozen API design already names
+      "DNG embedded thumbnails" as the motivating case. **Deferred gap 2**
+      (host-absolute diagnostics): findings.zig carries only enum codes + LE
+      numeric payloads, NO byte offsets, so there is no surface to map back to
+      the host yet — pairs with a future offsets-in-findings change nobody has
+      requested. MFIC: unit classifier over base translation / length clamp /
+      escape + declared-len-past-inner short-read, plus a metamorphic integration
+      proof (a real fixture validates identically at base 0 vs embedded at a
+      nonzero base in 0xAB junk). 207/207 tests; `./test` + `./build` green.
+
+**QUEUED (not dropped):**
+- [ ] **P1 — JPEG-in-TIFF error detail** (validate 2026-07-30, flagged a
+      *media-release blocker*). `compressions/jpeg.zig:77` collapses every
+      `jpegz.decode` failure to `error.Malformed`, losing the specific jpegz
+      cause; validate then can only say "Invalid TIFF structure". Fix shape:
+      surface the nested jpegz finding (validate prefers option 1 — call
+      `jpegz.validate` on failure, emit a namespaced nested finding, then return
+      the error). NB Peter 2026-07-31: jpegz is absorbing JPEG-XL + JP2 (WIP), so
+      design to stay valid as jpegz owns more embedded formats.
+- [ ] **P2 — joint reply to validate's labeled-corrupt Part B** (validate
+      2026-07-25): independently re-confirm Q1/Q3 at `83064193` (5 fixtures =
+      single-byte pixel mutations, no enforceable invariant → not a tiffz gap),
+      then send the joint Part A+B reply to `~/Code/inbox/`.
 
 ### 1.0 finish-line audit (Einstein, 2026-07-23) — audit-only, no broad fixes
 

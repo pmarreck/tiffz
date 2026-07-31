@@ -76,6 +76,25 @@ pub const Source = struct {
             .vtable = &buffered_reader_vtable,
         };
     }
+
+    /// Wrap an existing Source as a bounded, base-offset sub-view over
+    /// `[base, base+len)`, presented to tiffz as a self-contained 0-based
+    /// source of `len` bytes. Intended for validating a TIFF stream embedded
+    /// inside a larger host file (a DNG/RAW preview, a container payload)
+    /// **without copying** the embedded bytes: the caller keeps one Source over
+    /// the whole host file and hands tiffz a sub-range. TIFF's own offsets are
+    /// stream-relative (byte 0 = the II/MM header), so a 0-based view is exactly
+    /// what the decoder expects. Reads are clamped to the sub-range — a read
+    /// that would spill past `base+len` is truncated, so host bytes outside the
+    /// declared window can never be surfaced through this view. The inner Source
+    /// and the handle must outlive the returned Source; no allocation. Thread
+    /// safety follows the inner Source.
+    pub fn fromSubrange(handle: *const SubSourceHandle) Source {
+        return .{
+            .ctx = @constCast(@ptrCast(handle)),
+            .vtable = &subsource_vtable,
+        };
+    }
 };
 
 /// Caller-managed handle wrapping a byte slice for fromBuffer.
@@ -108,6 +127,43 @@ fn bufferReadAt(ctx: *anyopaque, dst: []u8, offset: u64) anyerror!usize {
 fn bufferSize(ctx: *anyopaque) anyerror!u64 {
     const handle: *const BufferHandle = @ptrCast(@alignCast(ctx));
     return @intCast(handle.bytes.len);
+}
+
+/// Caller-managed handle for `Source.fromSubrange`: a bounded, base-offset
+/// window `[base, base+len)` over an inner Source. Neither the inner Source
+/// nor its backing bytes are owned — the caller keeps both alive for the
+/// sub-view's lifetime.
+pub const SubSourceHandle = struct {
+    inner: *const Source,
+    base: u64,
+    len: u64,
+
+    pub fn init(inner: *const Source, base: u64, len: u64) SubSourceHandle {
+        return .{ .inner = inner, .base = base, .len = len };
+    }
+};
+
+const subsource_vtable: Source.VTable = .{
+    .read_at = subSourceReadAt,
+    .size = subSourceSize,
+};
+
+/// Translate a 0-based sub-view read to the inner Source at `base + offset`,
+/// clamping the length so the request can never read past `base + len`. Offsets
+/// at or beyond `len` return 0 (short read), matching the whole-source EOF
+/// convention — the sub-range boundary is enforced here, not delegated to the
+/// inner Source (whose size may be far larger).
+fn subSourceReadAt(ctx: *anyopaque, dst: []u8, offset: u64) anyerror!usize {
+    const handle: *const SubSourceHandle = @ptrCast(@alignCast(ctx));
+    if (offset >= handle.len) return 0;
+    const remaining: u64 = handle.len - offset;
+    const want: usize = @intCast(@min(@as(u64, dst.len), remaining));
+    return handle.inner.readAt(dst[0..want], handle.base + offset);
+}
+
+fn subSourceSize(ctx: *anyopaque) anyerror!u64 {
+    const handle: *const SubSourceHandle = @ptrCast(@alignCast(ctx));
+    return handle.len;
 }
 
 /// Sentinel error for back-seek beyond the cache window. Re-export of
@@ -293,6 +349,81 @@ test "fromBuffer: empty slice has zero size and reads return zero" {
 
     var dst: [4]u8 = undefined;
     try std.testing.expectEqual(@as(usize, 0), try src.readAt(&dst, 0));
+}
+
+// ---- fromSubrange (bounded sub-source / base-offset view) tests ----
+
+test "fromSubrange: classifier over base translation, length clamp, and escape" {
+    // Inner is 0..15. The sub-range view [base=4, len=8] must present as a
+    // self-contained 0-based source of exactly 8 bytes covering inner[4..12].
+    var inner_data: [16]u8 = undefined;
+    for (&inner_data, 0..) |*b, i| b.* = @intCast(i);
+    var inner_handle = BufferHandle.init(&inner_data);
+    const inner = Source.fromBuffer(&inner_handle);
+
+    var sub_handle = SubSourceHandle.init(&inner, 4, 8);
+    const sub = Source.fromSubrange(&sub_handle);
+
+    // sizeOf reports the sub-range length, not the inner size.
+    try std.testing.expectEqual(@as(u64, 8), try sub.sizeOf());
+
+    // Full read maps 0-based offset onto base: sub[0..8] == inner[4..12].
+    var d8: [8]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 8), try sub.readAt(&d8, 0));
+    try std.testing.expectEqualSlices(u8, inner_data[4..12], &d8);
+
+    // Partial read at sub-offset 0.
+    var d4: [4]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 4), try sub.readAt(&d4, 0));
+    try std.testing.expectEqualSlices(u8, inner_data[4..8], &d4);
+
+    // Read near the end clamps to the sub-range: sub-offset 6, want 8 -> 2.
+    var dtail: [8]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), try sub.readAt(&dtail, 6));
+    try std.testing.expectEqualSlices(u8, inner_data[10..12], dtail[0..2]);
+
+    // ESCAPE CHECK (the point of the type): inner HAS bytes at [12..16], but a
+    // read that would spill past base+len must never surface them. A big read
+    // straddling the boundary from sub-offset 4 returns only inner[8..12].
+    var dbig: [8]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 4), try sub.readAt(&dbig, 4));
+    try std.testing.expectEqualSlices(u8, inner_data[8..12], dbig[0..4]);
+
+    // At/after the sub-range end -> 0 (short read, not an inner read).
+    try std.testing.expectEqual(@as(usize, 0), try sub.readAt(&d8, 8));
+    try std.testing.expectEqual(@as(usize, 0), try sub.readAt(&d8, 100));
+}
+
+test "fromSubrange: base 0 full-length view is transparent over the inner source" {
+    const inner_data = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x42 };
+    var inner_handle = BufferHandle.init(&inner_data);
+    const inner = Source.fromBuffer(&inner_handle);
+
+    var sub_handle = SubSourceHandle.init(&inner, 0, inner_data.len);
+    const sub = Source.fromSubrange(&sub_handle);
+
+    try std.testing.expectEqual(@as(u64, 5), try sub.sizeOf());
+    var d: [5]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 5), try sub.readAt(&d, 0));
+    try std.testing.expectEqualSlices(u8, &inner_data, &d);
+}
+
+test "fromSubrange: declared len past the inner end short-reads, never over-reads" {
+    // len=20 declared, but inner only has bytes [8..16] = 8 available.
+    var inner_data: [16]u8 = undefined;
+    for (&inner_data, 0..) |*b, i| b.* = @intCast(i);
+    var inner_handle = BufferHandle.init(&inner_data);
+    const inner = Source.fromBuffer(&inner_handle);
+
+    var sub_handle = SubSourceHandle.init(&inner, 8, 20);
+    const sub = Source.fromSubrange(&sub_handle);
+
+    // sizeOf trusts the caller's declared length...
+    try std.testing.expectEqual(@as(u64, 20), try sub.sizeOf());
+    // ...but a read can only ever yield what the inner actually holds.
+    var d: [20]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 8), try sub.readAt(&d, 0));
+    try std.testing.expectEqualSlices(u8, inner_data[8..16], d[0..8]);
 }
 
 // ---- fromBufferedReader tests ----
