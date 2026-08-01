@@ -7,6 +7,37 @@ public API design.
 
 ## Next up
 
+### POLICY (Peter, 2026-08-01): readable-but-nonconformant → accept + WARN
+
+Standing rule. If data is technically wrong per the TIFF spec but still readable,
+and libtiff overlooks/allows it, tiffz accepts it too rather than FAILing — but
+emits a WARNING to callers. `docs/tiffz_findings_mapping.md:151-155` already
+reserved `warning_message` for exactly this; severity lives on validate's side,
+tiffz emits a finding code that validate routes to WARN.
+
+Investigation of the 4 held false-rejects (2026-08-01, instrumented the extent
+gate then reverted):
+
+- **deflate-last-strip.tiff** — last strip (idx 31) decodes to 8000 bytes but the
+  gate expects 2000 (4 logical rows × 500, RowsPerStrip=16 so the strip is padded
+  to a full 16 rows). Padded final strip = technically wrong, libtiff-tolerated →
+  **accept + WARN**.
+- **lzw-single-strip.tiff** — LZW stream ends at physical EOF with no required EOD
+  code (`SourceTooShort` from the codec, never reaches the extent gate). libtiff
+  tolerates → **accept + WARN**.
+- **cramps-tile.tif**, **quad-tile.tif** — reject `Malformed` from a path that is
+  NOT the extent-padding gate (no per-tile EXTDBG fired; origin is upstream of the
+  per-tile loop, lines 376-378, or elsewhere). Need one more instrumentation pass
+  to classify (accept-silently bug vs accept+WARN deviation). NOT yet confirmed as
+  padding cases.
+
+**Implementation is BLOCKED on new WARN finding codes** (findings.zig:53-58 gates
+Namespace-B codes behind sign-off). Proposed: `final_strip_padding_tolerated` and
+`lzw_missing_eod_tolerated`, appended after `lerc_compression = 12`. Needs Peter's
+or Einstein's blessing of the numbers before I commit them. The FAIL→accept gate
+relaxation is TDD-able immediately; the WARN emission is the gated half.
+
+
 - [x] **Fix planar=separate u32 underflow in strip row math** (2026-07-31,
       Einstein note 2026-07-29). ReleaseSafe test builds (`flake.nix` now passes
       `-Doptimize=ReleaseSafe` to `zig build test` — fleet UB floor) exposed a
