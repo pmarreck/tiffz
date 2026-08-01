@@ -74,10 +74,19 @@ public API design.
       to be sent to `~/Code/inbox/`. NB Peter 2026-07-31: jpegz is absorbing
       JPEG-XL + JP2 (WIP); design the seam to stay valid as jpegz owns more
       embedded formats.
-- [ ] **P2 — joint reply to validate's labeled-corrupt Part B** (validate
-      2026-07-25): independently re-confirm Q1/Q3 at `83064193` (5 fixtures =
-      single-byte pixel mutations, no enforceable invariant → not a tiffz gap),
-      then send the joint Part A+B reply to `~/Code/inbox/`.
+- [x] **P2 — joint labeled-good + labeled-corrupt adjudication reply**
+      (2026-08-01, validate 2026-07-25). Independently re-derived both answers on
+      the current tree (`8e02bc71`), not trusting validate's manifest: Q3 via my
+      own `cmp -l` vs the clean control (all 5 = exactly one byte → 0x00 at the
+      listed offsets, SHAs match), Q1 via a throwaway native harness running
+      `validateAllStripsAndTiles` over control + 5 corrupt (all six return OK;
+      harness read the external private corpus so it was run natively and removed,
+      not committed). Verdict `valid_modified_payload`, not a tiffz gap; concur
+      with validate's reclassification `74a1f17e0f14`. Joint Part A (labeled-good
+      false-reject root cause: exact-extent + required-EOD gates, 1/5 fixed via
+      the YCbCr work, 4/5 held pending a cross-parser padding/EOD policy ruling)
+      + Part B sent to `~/Code/inbox/`. Flagged the padding + EOD standards
+      decisions to Einstein.
 
 ### 1.0 finish-line audit (Einstein, 2026-07-23) — audit-only, no broad fixes
 
