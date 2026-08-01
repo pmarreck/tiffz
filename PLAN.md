@@ -49,14 +49,31 @@ public API design.
       nonzero base in 0xAB junk). 207/207 tests; `./test` + `./build` green.
 
 **QUEUED (not dropped):**
-- [ ] **P1 — JPEG-in-TIFF error detail** (validate 2026-07-30, flagged a
-      *media-release blocker*). `compressions/jpeg.zig:77` collapses every
-      `jpegz.decode` failure to `error.Malformed`, losing the specific jpegz
-      cause; validate then can only say "Invalid TIFF structure". Fix shape:
-      surface the nested jpegz finding (validate prefers option 1 — call
-      `jpegz.validate` on failure, emit a namespaced nested finding, then return
-      the error). NB Peter 2026-07-31: jpegz is absorbing JPEG-XL + JP2 (WIP), so
-      design to stay valid as jpegz owns more embedded formats.
+- [x] **P1 Tier 1 — JPEG-in-TIFF error categorization** (2026-08-01, validate
+      2026-07-30 media-release blocker). `compressions/jpeg.zig` collapsed every
+      `jpegz.decode` failure to `error.Malformed`, so validate's routeError could
+      only say "Invalid TIFF structure" for a bad embedded JPEG. Added
+      `error.JpegInTiffPayload` (errors.zig #25, append-only; C ABI status enum
+      is build-generated so no header edit) and remapped the non-OOM catch to it.
+      This is validate's option 2 (categorization), which they called a big
+      improvement over generic Malformed. TDD: added the two tests first, watched
+      them fail with `found error.Malformed` (proves jpegz errors on the inputs
+      and the tests bite), then remapped. Unit classifier over deterministic bad
+      streams (empty / no-SOI / SOI+EOI) plus an integration test that corrupts a
+      real fixture's SOF0 and asserts the error propagates through
+      `validateAllStripsAndTiles`, with the pristine fixture as the must-pass
+      member. 209/209; `./test` + `./build` green.
+- [ ] **P1 Tier 2 — specific jpegz cause via nested finding (BLOCKED on Einstein
+      sign-off).** validate's preferred option 1 (surface missing-SOI / bad-SOF /
+      huffman / truncated-scan). Blocked because findings.zig:53-58 requires
+      Einstein's sign-off for new Namespace-B codes AND rules that nested jpegz
+      findings stay tagged in Namespace A, never flattened into tiffz's enum.
+      tiffz's `Callback` has no decoder-tag field, so surfacing a Namespace-A
+      `FindingCode` through it needs a seam design (wrapper code + payload, or a
+      callback ABI change) that only the registry owner can bless. Proposal note
+      to be sent to `~/Code/inbox/`. NB Peter 2026-07-31: jpegz is absorbing
+      JPEG-XL + JP2 (WIP); design the seam to stay valid as jpegz owns more
+      embedded formats.
 - [ ] **P2 — joint reply to validate's labeled-corrupt Part B** (validate
       2026-07-25): independently re-confirm Q1/Q3 at `83064193` (5 fixtures =
       single-byte pixel mutations, no enforceable invariant → not a tiffz gap),

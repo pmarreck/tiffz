@@ -1534,6 +1534,56 @@ test "fromSubrange: labeled-good TIFF validates embedded at a nonzero base in ju
     try expectEmbeddedFixtureValidates(fx, 37, 19);
 }
 
+test "JPEG-in-TIFF: corrupt strip surfaces error.JpegInTiffPayload through the product path (was generic Malformed)" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/jpeg/ycbcr_jpeg.tif");
+    defer allocator.free(bytes);
+
+    // Specificity / must-pass member: the pristine fixture validates clean.
+    {
+        var handle = tiffz.source.BufferHandle.init(bytes);
+        const src = tiffz.Source.fromBuffer(&handle);
+        var dec = try tiffz.Decoder.open(allocator, src);
+        defer dec.deinit();
+        var ws = tiffz.Workspace.init(allocator);
+        defer ws.deinit();
+        try dec.validateAllStripsAndTiles(&ws);
+    }
+
+    // Locate the JPEG strip (StripOffsets[0]) before corrupting.
+    const strip_off: usize = blk: {
+        var probe = tiffz.source.BufferHandle.init(bytes);
+        const psrc = tiffz.Source.fromBuffer(&probe);
+        var pdec = try tiffz.Decoder.open(allocator, psrc);
+        defer pdec.deinit();
+        const dir = try pdec.ifd(0);
+        break :blk ifdScalarU32(dir, tiffz.tags.strip_offsets, pdec.endian) orelse return error.Malformed;
+    };
+
+    // The abbreviated image datastream begins SOI (FF D8) then SOF0 (FF C0).
+    // Guard the assumed layout so a regenerated fixture fails loudly here rather
+    // than silently weakening the test.
+    try std.testing.expectEqual(@as(u8, 0xFF), bytes[strip_off]);
+    try std.testing.expectEqual(@as(u8, 0xD8), bytes[strip_off + 1]);
+    try std.testing.expectEqual(@as(u8, 0xFF), bytes[strip_off + 2]);
+    try std.testing.expectEqual(@as(u8, 0xC0), bytes[strip_off + 3]);
+
+    // Zero the SOF0 marker + its 17-byte segment: jpegz is left with no frame
+    // header, a deterministic JPEG-payload decode failure (not a TIFF-structure
+    // defect). Corrupting the frame header, not the entropy data, is what makes
+    // the failure deterministic — entropy corruption can decode to garbage
+    // without erroring.
+    @memset(bytes[strip_off + 2 ..][0..19], 0x00);
+
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.JpegInTiffPayload, dec.validateAllStripsAndTiles(&ws));
+}
+
 
 
 test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {

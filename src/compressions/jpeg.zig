@@ -74,9 +74,15 @@ pub fn decode(
     // (jpegz 7e93e957, verified by a differential test vs the libjpeg oracle).
     // The libjpeg oracle is no longer linked (built -Dwith-libjpeg-oracle=false),
     // which also unblocks Windows cross-compile (libjpeg-turbo has no mingw static).
+    // A jpegz failure here is a defect in the embedded JPEG stream, not in the
+    // TIFF structure. Surface it as JpegInTiffPayload so the caller (validate)
+    // can route it to a JPEG-payload message instead of "Invalid TIFF
+    // structure". The specific jpegz cause (missing SOI / bad SOF / huffman /
+    // truncated scan) is a separate nested-finding change gated on Einstein's
+    // Namespace-A sign-off (see findings.zig) — this is the categorization tier.
     const img = jpegz.decode(allocator, stream) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return error.Malformed,
+        else => return error.JpegInTiffPayload,
     };
     defer allocator.free(img.pixels);
 
@@ -124,4 +130,23 @@ test "stripSoi: trims leading FF D8" {
 test "stripSoi: passes through when no SOI" {
     const no_soi = [_]u8{ 0x01, 0x02 };
     try std.testing.expectEqualSlices(u8, &no_soi, stripSoi(&no_soi));
+}
+
+test "decode: malformed JPEG payloads map to error.JpegInTiffPayload, not generic Malformed" {
+    // A jpegz decode failure on a Compression=7 strip is a JPEG-payload defect,
+    // not a TIFF-structure defect; it must surface as its own error so validate's
+    // routeError can label it correctly. Classifier over deterministic jpegz
+    // failures (Mode 1: strip bytes ARE the stream). The must-pass side (valid
+    // stream -> success) is covered by the ycbcr_jpeg.tif / rgb-jpeg.tif oracle
+    // tests in fixture_test.zig.
+    const allocator = std.testing.allocator;
+    var dest: [64]u8 = undefined;
+    const bad_streams = [_][]const u8{
+        &[_]u8{}, // empty — no SOI
+        &[_]u8{ 0x00, 0x01, 0x02, 0x03 }, // no SOI marker
+        &[_]u8{ 0xFF, 0xD8, 0xFF, 0xD9 }, // SOI + EOI, no frame
+    };
+    for (bad_streams) |s| {
+        try std.testing.expectError(error.JpegInTiffPayload, decode(allocator, s, null, &dest));
+    }
 }
