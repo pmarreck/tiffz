@@ -25,11 +25,25 @@ gate then reverted):
 - **lzw-single-strip.tiff** — LZW stream ends at physical EOF with no required EOD
   code (`SourceTooShort` from the codec, never reaches the extent gate). libtiff
   tolerates → **accept + WARN**.
-- **cramps-tile.tif**, **quad-tile.tif** — reject `Malformed` from a path that is
-  NOT the extent-padding gate (no per-tile EXTDBG fired; origin is upstream of the
-  per-tile loop, lines 376-378, or elsewhere). Need one more instrumentation pass
-  to classify (accept-silently bug vs accept+WARN deviation). NOT yet confirmed as
-  padding cases.
+- **cramps-tile.tif**, **quad-tile.tif** — CHARACTERIZED 2026-08-04 (instrumented
+  the strip branch + expectedChunkBytes, then reverted; cross-checked with
+  `tiffdump`/`tiffinfo`). NOT padding cases — a DISTINCT third deviation. Both are
+  TILED images (cramps 800×607 / 256×256 tiles = 4×3 = 12 tiles; quad 512×384 /
+  128×128 = 12 tiles) whose tile offsets + byte counts are stored under the STRIP
+  tags `StripOffsets(273)`/`StripByteCounts(279)` with a `RowsPerStrip` tag, and
+  which have NO `TileOffsets(324)`/`TileByteCounts(325)`. This violates TIFF 6.0
+  (tiled images must use tile tags, must not use RowsPerStrip), but libtiff
+  tolerates it: it aliases StripOffsets≡TileOffsets / StripByteCounts≡TileByteCounts
+  internally and keys "is tiled" on `TileWidth`. tiffz keys "is tiled" strictly on
+  `TileOffsets(324)`, so it misclassifies these as strip-based, then
+  `expectedChunkBytes(.strip, 0)` throws `Malformed` at the chunk-count check
+  (12 offset entries = 12 tiles, but RowsPerStrip=256/128 over the image height
+  implies only 3 strips → `chunk_count(12) != expected_cc(3)`). Correct handling
+  per Peter's policy: detect tiling via `TileWidth`/`TileLength` presence and read
+  tile offsets/counts from the strip tags when the tile tags are absent (a decode-
+  path change, NOT just a gate relaxation) + a THIRD WARN code (e.g.
+  `tiled_geometry_via_strip_tags_tolerated`). So the WARN set grows to 3, and this
+  one carries real decode work beyond the padding/EOD relaxations.
 
 **UNBLOCKED — Einstein ruled 2026-08-02** (`inbox/2026-08-02-from-Einstein-finding-seam-and-warning-codes.md`).
 Namespace-B codes assigned append-only: `13 final_strip_padding_tolerated`,
