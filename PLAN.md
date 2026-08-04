@@ -31,11 +31,20 @@ gate then reverted):
   to classify (accept-silently bug vs accept+WARN deviation). NOT yet confirmed as
   padding cases.
 
-**Implementation is BLOCKED on new WARN finding codes** (findings.zig:53-58 gates
-Namespace-B codes behind sign-off). Proposed: `final_strip_padding_tolerated` and
-`lzw_missing_eod_tolerated`, appended after `lerc_compression = 12`. Needs Peter's
-or Einstein's blessing of the numbers before I commit them. The FAIL→accept gate
-relaxation is TDD-able immediately; the WARN emission is the gated half.
+**UNBLOCKED — Einstein ruled 2026-08-02** (`inbox/2026-08-02-from-Einstein-finding-seam-and-warning-codes.md`).
+Namespace-B codes assigned append-only: `13 final_strip_padding_tolerated`,
+`14 lzw_missing_eod_tolerated`. The speculative `lerc_post_compression = 13`
+comment in findings.zig:73-78 must be removed (never assigned; 13 is now taken).
+Safety boundaries are part of the ruling and must gate the accept:
+- **LZW missing EOD** → accept+WARN ONLY if decode reached physical EOF cleanly
+  AND produced the exact bounded extent the container expects. Short, overlong,
+  invalid code transition, or any other entropy failure stays a hard failure.
+- **Final-strip padding** → accept+WARN ONLY inside a derived bounded
+  `[logical_min, permitted_full_chunk_max]`. Bytes past the max stay a failure.
+- **cramps-tile.tif / quad-tile.tif** NOT proved to hit the padding path.
+  Characterize before applying the policy (may be a distinct bug, not a WARN).
+- TDD the WARN emission and the callback ABI as a classifier; coordinate the
+  validate-side pin so neither repo's canonical gates go red between commits.
 
 
 - [x] **Fix planar=separate u32 underflow in strip row math** (2026-07-31,
@@ -94,17 +103,44 @@ relaxation is TDD-able immediately; the WARN emission is the gated half.
       real fixture's SOF0 and asserts the error propagates through
       `validateAllStripsAndTiles`, with the pristine fixture as the must-pass
       member. 209/209; `./test` + `./build` green.
-- [ ] **P1 Tier 2 — specific jpegz cause via nested finding (BLOCKED on Einstein
-      sign-off).** validate's preferred option 1 (surface missing-SOI / bad-SOF /
-      huffman / truncated-scan). Blocked because findings.zig:53-58 requires
-      Einstein's sign-off for new Namespace-B codes AND rules that nested jpegz
-      findings stay tagged in Namespace A, never flattened into tiffz's enum.
-      tiffz's `Callback` has no decoder-tag field, so surfacing a Namespace-A
-      `FindingCode` through it needs a seam design (wrapper code + payload, or a
-      callback ABI change) that only the registry owner can bless. Proposal note
-      to be sent to `~/Code/inbox/`. NB Peter 2026-07-31: jpegz is absorbing
-      JPEG-XL + JP2 (WIP); design the seam to stay valid as jpegz owns more
-      embedded formats.
+- [ ] **P1 Tier 2 — specific jpegz cause via nested finding. UNBLOCKED — Einstein
+      chose Option B 2026-08-02** (callback ABI extension, not a wrapper code).
+      The callback gains a typed source so every finding is the pair
+      `(source_decoder, finding_code)`, never a bare integer. Append-only source
+      registry shared at the ABI: `tiffz=1, jpegz=2, jp2z=3, libjxlz=4`, sized
+      `i32`/`int32_t` with named constants (C enum-width rules must not alter the
+      ABI), plus an unknown-value path for newer producers. Native tiffz findings
+      emit `(tiffz, Namespace-B)`; embedded JPEG findings emit `(jpegz,
+      Namespace-A)` with jpegz's own code, never flattened. TDD the ABI as a
+      classifier over native + nested findings INCLUDING equal numeric codes from
+      different sources, to prove the pair prevents collision. Coordinate the
+      validate-side pin so neither repo's gates go red. NB Peter 2026-07-31:
+      jpegz is absorbing JPEG-XL + JP2 (WIP); the source registry already
+      reserves jp2z/libjxlz so the seam stays valid as jpegz owns more formats.
+
+### rawz M2 defects (Einstein, 2026-08-03) — additive, behind the finding-seam work
+
+- [x] **FailingAllocator index 3 segfault in `Decoder.openWithLimits` cleanup**
+      (2026-08-04 17:45 EDT). Root cause was in `ifd.zig` `parse` (reached via
+      openWithLimits at decoder.zig:80): once `ifd` was built, `entries` had TWO
+      owners — the early `errdefer allocator.free(entries)` AND `errdefer
+      ifd.deinit()` (deinit also frees entries). Allocation failure index 3 (the
+      `scratch` alloc, first alloc after the ifd.deinit errdefer) fired both →
+      double-free of `entries` → SEGV. Fixed by giving each resource exactly one
+      owner: kept `free(entries)`, added `free(cached_values)` for the pointer
+      array, and replaced `errdefer ifd.deinit()` with one freeing only the
+      accumulated out-of-line bufs. No deinit() on a partially-built object.
+      MFIC: `std.testing.checkAllAllocationFailures` sweep as a 2-member
+      classifier — inline-only fixture (pins the reported index 3) + two
+      out-of-line values (covers the `buf` alloc/accumulation path, indices 4-5),
+      so fixing index 3 can't hide a sibling invalid-free (Einstein's follow-up).
+      RED first: SEGV at index 3; GREEN after: 211/211. `./test` (ReleaseSafe) +
+      `./build` (ReleaseFast) both green.
+- [ ] **`Ifd.arrayElementU64` returns `UnsupportedTagType` for BigTIFF `IFD8`
+      arrays.** Standard BigTIFF SubIFD offset arrays use type IFD8 (=18); the tag
+      adapter rejects them. Add a real or mechanically-built BigTIFF SubIFD
+      fixture, cover supported inline + out-of-line IFD8 as a classifier set. Fix
+      belongs in tiffz's tag adapter, not rawz. Report the minimum rawz pin bump.
 - [x] **P2 — joint labeled-good + labeled-corrupt adjudication reply**
       (2026-08-01, validate 2026-07-25). Independently re-derived both answers on
       the current tree (`8e02bc71`), not trusting validate's manifest: Q3 via my

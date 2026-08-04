@@ -382,6 +382,12 @@ pub fn parse(
     };
 
     const cached_values = allocator.alloc(?[]u8, entry_count) catch return error.OutOfMemory;
+    // Single-owner cleanup: `entries` is owned by `errdefer allocator.free(entries)` above,
+    // `cached_values` (the pointer array) by this errdefer, and the out-of-line value bufs by
+    // the errdefers below. We deliberately do NOT use `errdefer ifd.deinit()` here — deinit
+    // ALSO frees `entries`, which would double-free it on any error after `ifd` is built
+    // (rawz M2: allocation failure index 3 crashed exactly this way).
+    errdefer allocator.free(cached_values);
     for (cached_values) |*c| c.* = null;
     var ifd: Ifd = .{
         .entries = entries,
@@ -407,7 +413,14 @@ pub fn parse(
     // Per-entry cap was already enforced above; the cumulative cost
     // is bounded by the sum, which the allocator surfaces as
     // OutOfMemory if it can't service the IFD.
-    errdefer ifd.deinit();
+    //
+    // Free the out-of-line value bufs already cached (the accumulated ones) on the error
+    // path. Not `ifd.deinit()` — see the ownership note above. A buf enters cached_values
+    // only after a successful read, so the current in-flight buf is covered by its own
+    // loop-scoped errdefer below and is never freed twice.
+    errdefer for (cached_values) |maybe| {
+        if (maybe) |b| allocator.free(b);
+    };
 
     // Build a forward-order schedule of entry indices that need a
     // source read. Out-of-line entries only; sorted by value_offset.
@@ -591,6 +604,65 @@ test "ifd.parse: tag value bytes over limit rejected" {
         error.LimitExceededTagValueBytes,
         parse(std.testing.allocator, src, .little, 8, limits, .classic),
     );
+}
+
+// MFIC: allocation-failure sweep over ifd.parse — a classifier over the whole set of
+// allocation-failure indices, not a single point. std.testing.checkAllAllocationFailures
+// runs parse once per allocation index, injects failure at each, and asserts EVERY path
+// returns error.OutOfMemory with no leak and no invalid free. rawz's M2 sweep found a
+// double-free at failure index 3 (the `scratch` alloc, which lands after
+// `errdefer ifd.deinit()` is registered while the earlier `errdefer allocator.free(entries)`
+// is still live — both free `entries`). One inline-SHORT entry reaches exactly index 3 with
+// no out-of-line value allocs, so this set pins the reported crash.
+test "ifd.parse: allocation-failure sweep is leak- and double-free-clean at every index" {
+    const entry: [12]u8 = .{
+        0x00, 0x01, // tag = 256
+        0x03, 0x00, // type = 3 (SHORT)
+        0x01, 0x00, 0x00, 0x00, // count = 1
+        0x00, 0x02, 0x00, 0x00, // value = 512 inline
+    };
+    const bytes = fakeTiff(1, .{entry});
+    var handle = BufferHandle.init(&bytes);
+    const src = Source.fromBuffer(&handle);
+
+    const Run = struct {
+        fn go(allocator: Allocator, source: Source) !void {
+            var ifd = try parse(allocator, source, .little, 8, .{}, .classic);
+            ifd.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Run.go, .{src});
+}
+
+// Second classifier member: two OUT-OF-LINE values, so the sweep reaches the per-value
+// `buf` allocations (indices 4,5) and their accumulation across schedule iterations.
+// The inline-only test above stops at index 3; this proves fixing index 3 didn't hide a
+// sibling invalid-free in the out-of-line loop (Einstein's explicit follow-up). Layout:
+// header(8) + IFD@8 [count(2) + entry0(12) + entry1(12) + next(4)] + value0(8) + value1(8).
+// Both entries are LONG×2 = 8 bytes > classic inline cap (4), so both go out-of-line.
+test "ifd.parse: allocation-failure sweep covers out-of-line value buffers" {
+    const bytes = [_]u8{
+        'I', 'I', 0x2A, 0x00, // header magic
+        0x08, 0x00, 0x00, 0x00, // ifd0_offset = 8
+        0x02, 0x00, // entry_count = 2
+        // entry0: tag=0x0111, type=LONG(4), count=2, value_offset=38
+        0x11, 0x01, 0x04, 0x00, 0x02, 0x00, 0x00, 0x00, 0x26, 0x00, 0x00, 0x00,
+        // entry1: tag=0x0117, type=LONG(4), count=2, value_offset=46
+        0x17, 0x01, 0x04, 0x00, 0x02, 0x00, 0x00, 0x00, 0x2E, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, // next_offset = 0
+        0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, // value0 @38 (two LONGs)
+        0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // value1 @46 (two LONGs)
+    };
+    var handle = BufferHandle.init(&bytes);
+    const src = Source.fromBuffer(&handle);
+
+    const Run = struct {
+        fn go(allocator: Allocator, source: Source) !void {
+            var ifd = try parse(allocator, source, .little, 8, .{}, .classic);
+            ifd.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Run.go, .{src});
 }
 
 /// Build a minimal little-endian BigTIFF in memory:
