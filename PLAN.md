@@ -136,11 +136,16 @@ Safety boundaries are part of the ruling and must gate the accept:
       so fixing index 3 can't hide a sibling invalid-free (Einstein's follow-up).
       RED first: SEGV at index 3; GREEN after: 211/211. `./test` (ReleaseSafe) +
       `./build` (ReleaseFast) both green.
-- [ ] **`Ifd.arrayElementU64` returns `UnsupportedTagType` for BigTIFF `IFD8`
-      arrays.** Standard BigTIFF SubIFD offset arrays use type IFD8 (=18); the tag
-      adapter rejects them. Add a real or mechanically-built BigTIFF SubIFD
-      fixture, cover supported inline + out-of-line IFD8 as a classifier set. Fix
-      belongs in tiffz's tag adapter, not rawz. Report the minimum rawz pin bump.
+- [x] **`Ifd.arrayElementU64` returns `UnsupportedTagType` for BigTIFF `IFD8`
+      arrays** (2026-08-04 17:55 EDT). IFD8 (type 18) is a u64 offset with the same
+      on-disk shape as LONG8, but all three u64 read paths — `arrayElementU64`'s
+      raw out-of-line switch, `readArrayElementFromBytes` (cached), and
+      `readArrayInline` — listed `.long8` and fell `.ifd8` through to
+      `else => UnsupportedTagType`. Fixed by aliasing `.ifd8` onto the `.long8`
+      arm in all three. MFIC: mechanically-built BigTIFF SubIFD (tag 330) fixture,
+      classifier over {inline count=1 → readArrayInline, out-of-line count=2 →
+      cached readArrayElementFromBytes}, asserting the decoded u64 offsets. RED
+      first (UnsupportedTagType); GREEN after: 212/212. `./test` + `./build` green.
 - [x] **P2 — joint labeled-good + labeled-corrupt adjudication reply**
       (2026-08-01, validate 2026-07-25). Independently re-derived both answers on
       the current tree (`8e02bc71`), not trusting validate's manifest: Q3 via my

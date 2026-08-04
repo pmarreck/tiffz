@@ -223,7 +223,8 @@ pub const Ifd = struct {
         return switch (entry.field_type) {
             .short => @as(u64, header_mod.readU16(buf[0..2], endian)),
             .long => @as(u64, header_mod.readU32(buf[0..4], endian)),
-            .long8 => header_mod.readU64(buf[0..8], endian),
+            // IFD8 (type 18) is a u64 offset — same on-disk shape as LONG8.
+            .long8, .ifd8 => header_mod.readU64(buf[0..8], endian),
             else => error.UnsupportedTagType,
         };
     }
@@ -474,7 +475,7 @@ fn readArrayElementFromBytes(buf: []const u8, index: u32, field_type: FieldType,
     return switch (field_type) {
         .short => @as(u64, header_mod.readU16(buf[off..][0..2], endian)),
         .long => @as(u64, header_mod.readU32(buf[off..][0..4], endian)),
-        .long8 => header_mod.readU64(buf[off..][0..8], endian),
+        .long8, .ifd8 => header_mod.readU64(buf[off..][0..8], endian),
         else => error.UnsupportedTagType,
     };
 }
@@ -496,7 +497,7 @@ fn readArrayInline(entry: Entry, index: u32, endian: Endian, offset_width: Offse
             if (start + 4 > cap) return error.Malformed;
             break :blk @as(u64, header_mod.readU32(entry.raw_value_or_offset[start..][0..4], endian));
         },
-        .long8 => blk: {
+        .long8, .ifd8 => blk: {
             if (entry.count != 1 or offset_width != .big) return error.Malformed;
             break :blk header_mod.readU64(&entry.raw_value_or_offset, endian);
         },
@@ -823,4 +824,68 @@ test "ifd.parse: out-of-line value resolves through the source" {
     try std.testing.expectEqual(@as(u16, 8), header_mod.readU16(value_bytes[0..2], .little));
     try std.testing.expectEqual(@as(u16, 8), header_mod.readU16(value_bytes[2..4], .little));
     try std.testing.expectEqual(@as(u16, 8), header_mod.readU16(value_bytes[4..6], .little));
+}
+
+// MFIC: BigTIFF IFD8 (type 18) is the standard SubIFD offset-array type. rawz's M2 found
+// arrayElementU64 rejected it as UnsupportedTagType — all three u64 read paths (cached,
+// inline, raw out-of-line) listed .long8 but not .ifd8, though IFD8 is a u64 offset read
+// identically. Classifier over {inline count=1, out-of-line count=2} — the two paths a
+// parsed BigTIFF reaches: inline stays in the entry slot -> readArrayInline; out-of-line is
+// eagerly cached during parse -> readArrayElementFromBytes.
+test "ifd.arrayElementU64: BigTIFF IFD8 SubIFD offsets decode (inline + out-of-line)" {
+    // Inline: SubIFDs (330) type IFD8, count=1 — the u64 offset fits in the 8-byte slot.
+    {
+        const entry: [20]u8 = .{
+            0x4A, 0x01, // tag = 330 (SubIFDs)
+            0x12, 0x00, // type = 18 (IFD8)
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // count = 1 (u64)
+            0xCC, 0xBB, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, // offset = 0x00AABBCC inline
+        };
+        const bytes = fakeBigTiff(1, .{entry});
+        var handle = BufferHandle.init(&bytes);
+        const src = Source.fromBuffer(&handle);
+        var ifd = try parse(std.testing.allocator, src, .little, 16, .{}, .big);
+        defer ifd.deinit();
+
+        const e = ifd.get(330) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(FieldType.ifd8, e.field_type);
+        try std.testing.expectEqual(@as(u64, 1), e.count);
+        try std.testing.expectEqual(
+            @as(u64, 0x00AABBCC),
+            try ifd.arrayElementU64(330, 0, .little, src),
+        );
+    }
+
+    // Out-of-line: SubIFDs (330) type IFD8, count=2 — two u64 offsets in a value block past
+    // the IFD. count(2)×8 = 16 > BigTIFF inline cap (8), so parse caches them.
+    // Layout: header(16) + IFD@16 [count u64 + entry(20) + next u64] + value0(8) + value1(8).
+    {
+        const bytes = [_]u8{
+            'I', 'I', 0x2B, 0x00, 0x08, 0x00, 0x00, 0x00, // BigTIFF magic + offset size 8
+            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ifd0_offset = 16
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // entry_count = 1
+            // entry0 @24: tag=330, type=IFD8, count=2, value_offset=52
+            0x4A, 0x01, 0x12, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // next_offset = 0 @44
+            0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // value[0] @52 = 0x1122
+            0x44, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // value[1] @60 = 0x3344
+        };
+        var handle = BufferHandle.init(&bytes);
+        const src = Source.fromBuffer(&handle);
+        var ifd = try parse(std.testing.allocator, src, .little, 16, .{}, .big);
+        defer ifd.deinit();
+
+        const e = ifd.get(330) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(FieldType.ifd8, e.field_type);
+        try std.testing.expectEqual(@as(u64, 2), e.count);
+        try std.testing.expectEqual(
+            @as(u64, 0x1122),
+            try ifd.arrayElementU64(330, 0, .little, src),
+        );
+        try std.testing.expectEqual(
+            @as(u64, 0x3344),
+            try ifd.arrayElementU64(330, 1, .little, src),
+        );
+    }
 }
