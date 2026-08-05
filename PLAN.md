@@ -7,6 +7,27 @@ public API design.
 
 ## Next up
 
+### Parser-only production boundary (rawz/Validate unblock)
+
+- [x] Expose `dep.module("tiffz-parser")` with the Source, Limits, header,
+      IFD, tags, and IFD-chain parser surface needed by rawz, while preserving
+      the existing full `tiffz` module/API. Curiosity poke: rawz currently
+      reads `Decoder.ifd_offsets`; the compatibility surface must cover that
+      field without importing the codec-bearing decoder. Completed 2026-08-05
+      00:57 EDT.
+- [x] Add a mechanical consumer/closure gate that compiles and runs without
+      codec imports or system-library links, and rejects zlib, OpenJPEG,
+      libjpeg/libjxl, zstd, LERC, jpegz, or other codec leakage. Curiosity
+      poke: a green executable alone can miss unused build-graph edges, so the
+      gate must inspect both the parser source import closure and the produced
+      artifact. The gate independently rejected a package import, a `-lz`
+      compiler edge, a dynamic ELF, and an injected Nix store reference;
+      canonical `./test` and `./build` passed. Completed 2026-08-05 00:57 EDT.
+- [ ] Publish the exact tiffz repin and module-name instructions to rawz and
+      Validate after canonical tests, build, Nix targets, and terminal
+      Mechatron evidence pass. Curiosity poke: the full tiffz consumer remains
+      intentionally codec-bearing; only parser consumers should switch.
+
 ### POLICY (Peter, 2026-08-01): readable-but-nonconformant → accept + WARN
 
 Standing rule. If data is technically wrong per the TIFF spec but still readable,

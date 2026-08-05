@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Prove that tiffz-parser's recursive source graph stays on the approved
+# container-parser files and that its consumer artifact has no dynamic links.
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+artifact="${1:-$ROOT/zig-out/bin/tiffz-parser-consumer}"
+build_log="${2:-}"
+failures=0
+visited="|"
+visited_count=0
+queue=("src/parser.zig")
+
+fail() {
+	printf 'parser-closure: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+while [[ "${#queue[@]}" -gt 0 ]]; do
+	current="${queue[0]}"
+	queue=("${queue[@]:1}")
+	case "$visited" in
+		*"|$current|"*) continue ;;
+	esac
+	visited="${visited}${current}|"
+	visited_count=$((visited_count + 1))
+
+	case "$current" in
+		src/parser.zig|src/parser_decoder.zig|src/errors.zig|src/limits.zig|\
+		src/source.zig|src/header.zig|src/ifd.zig|src/tags.zig) ;;
+		*) fail "unapproved parser source dependency: $current" ;;
+	esac
+
+	if [[ ! -f "$ROOT/$current" ]]; then
+		fail "missing parser source dependency: $current"
+		continue
+	fi
+
+	while IFS= read -r imported; do
+		[[ -z "$imported" ]] && continue
+		case "$imported" in
+			std|builtin) continue ;;
+			*.zig)
+				base="$(cd "$(dirname "$ROOT/$current")" && pwd -P)"
+				target="$base/$imported"
+				target_dir="$(cd "$(dirname "$target")" && pwd -P)"
+				target_abs="$target_dir/$(basename "$target")"
+				case "$target_abs" in
+					"$ROOT"/*) queue+=("${target_abs#"$ROOT/"}") ;;
+					*) fail "parser import escapes the project: $current -> $imported" ;;
+				esac
+				;;
+			*) fail "package import is forbidden in parser closure: $current -> $imported" ;;
+		esac
+	done < <(awk '
+		{
+			rest = $0
+			while (match(rest, /@import\("[^"]*"\)/)) {
+				print substr(rest, RSTART + 9, RLENGTH - 11)
+				rest = substr(rest, RSTART + RLENGTH)
+			}
+		}
+	' "$ROOT/$current")
+done
+
+if [[ "$visited_count" -ne 8 ]]; then
+	fail "expected 8 parser source files, reached $visited_count ($visited)"
+fi
+
+if [[ ! -x "$artifact" ]]; then
+	fail "consumer artifact is absent or not executable: $artifact"
+else
+	if ! "$artifact"; then
+		fail "consumer artifact failed at runtime: $artifact"
+	fi
+	if ! command -v readelf >/dev/null 2>&1; then
+		fail "readelf is required for the mechanical ELF linkage gate"
+	else
+		dynamic="$(readelf -d "$artifact" 2>&1)"
+		case "$dynamic" in
+			*NEEDED*|*RUNPATH*|*RPATH*)
+				fail "consumer artifact has a dynamic dependency or search path: $dynamic"
+				;;
+		esac
+	fi
+fi
+
+if [[ -n "$build_log" ]]; then
+	if [[ ! -f "$build_log" ]]; then
+		fail "parser build log is missing: $build_log"
+	else
+		compile_command="$(sed -n '/build-exe.*tiffz-parser-consumer/p' "$build_log")"
+		if [[ -z "$compile_command" ]]; then
+			fail "parser consumer compiler invocation is absent from: $build_log"
+		else
+			case "$compile_command" in
+				*" -l"*|*" -I"*|*" -L"*|*".a "*|*".so "*)
+					fail "parser compiler invocation contains a library/include edge: $compile_command"
+					;;
+			esac
+		fi
+	fi
+fi
+
+if [[ "$failures" -gt 0 ]]; then
+	exit "$failures"
+fi
+printf 'parser-closure: 8 approved source files; compiler and static artifact have no library edges\n'

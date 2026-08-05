@@ -12,6 +12,32 @@ pub fn build(b: *std.Build) void {
         "Optimization mode (default: ReleaseFast)",
     ) orelse .ReleaseFast;
 
+    // Parser-only public module for container classifiers such as rawz. This
+    // target deliberately receives no codec imports or linked libraries.
+    const parser_module = b.addModule("tiffz-parser", .{
+        .root_source_file = b.path("src/parser.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // A real downstream executable keeps the parser boundary independently
+    // buildable and gives the Nix closure gate an artifact to inspect.
+    const parser_consumer = b.addExecutable(.{
+        .name = "tiffz-parser-consumer",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/parser_consumer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "tiffz-parser", .module = parser_module }},
+        }),
+    });
+    const install_parser_consumer = b.addInstallArtifact(parser_consumer, .{});
+    const parser_consumer_step = b.step(
+        "parser-consumer",
+        "Build the codec-free tiffz-parser consumer artifact",
+    );
+    parser_consumer_step.dependOn(&install_parser_consumer.step);
+
     // --- Zig core library (static, with C FFI) ---
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
@@ -239,8 +265,24 @@ pub fn build(b: *std.Build) void {
     const fixture_tests = b.addTest(.{ .root_module = fixture_tests_module });
     const run_fixture_tests = b.addRunArtifact(fixture_tests);
 
+    const parser_consumer_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/parser_consumer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "tiffz-parser", .module = parser_module }},
+        }),
+    });
+    const run_parser_consumer_tests = b.addRunArtifact(parser_consumer_tests);
+    const parser_test_step = b.step(
+        "parser-test",
+        "Run codec-free tiffz-parser consumer tests",
+    );
+    parser_test_step.dependOn(&run_parser_consumer_tests.step);
+
     const test_step = b.step("test", "Run unit, CLI, and fixture tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_fixture_tests.step);
+    test_step.dependOn(&run_parser_consumer_tests.step);
 }

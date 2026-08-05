@@ -169,6 +169,46 @@
       in {
         packages.default = tiffzPkg;
 
+        checks.parser-closure = pkgs.stdenv.mkDerivation {
+          pname = "tiffz-parser-closure";
+          version = "0.1.0";
+          src = self;
+
+          nativeBuildInputs = [ zig pkgs.binutils ];
+
+          # Nix itself rejects every store-path reference in the installed
+          # parser artifact. This catches codec closure leakage even when a
+          # future static link would leave no ELF NEEDED entry.
+          allowedReferences = [];
+
+          dontConfigure = true;
+
+          buildPhase = ''
+            export HOME="$TMPDIR"
+            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            if ! zig build parser-consumer --verbose \
+              -Doptimize=ReleaseSafe ${zigTargetFlag} \
+              > parser-build.log 2>&1; then
+              cat parser-build.log
+              exit 1
+            fi
+            ${pkgs.bash}/bin/bash tests/parser_closure_test \
+              zig-out/bin/tiffz-parser-consumer parser-build.log
+          '';
+
+          installPhase = ''
+            mkdir -p $out
+            cp zig-out/bin/tiffz-parser-consumer $out/
+            ${pkgs.binutils}/bin/strip $out/tiffz-parser-consumer
+            echo "parser closure passed" > $out/result
+          '';
+
+          dontFixup = true;
+        };
+
         checks.test = pkgs.stdenv.mkDerivation {
           pname = "tiffz-test";
           version = "0.1.0";

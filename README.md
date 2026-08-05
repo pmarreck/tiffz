@@ -140,6 +140,16 @@ oracles — that's the most accurate reference for the full call
 sequence including planar=separate handling, multi-IFD walks, and
 the JPEG-in-TIFF YCbCr photometric override.
 
+### Parser-only consumers
+
+RAW/container classifiers that need TIFF headers, tags, and IFD facts without
+pixel decoding should import `dep.module("tiffz-parser")`. That module has the
+same `Source`, `Limits`, `header`, `ifd`, `tags`, and IFD-chain `Decoder`
+surface used by rawz, with no codec imports or library links. The full
+`dep.module("tiffz")` API remains unchanged. See
+[`docs/parser_only_module.md`](docs/parser_only_module.md) for the dependency
+contract and its blocking closure checks.
+
 ## Validate integration
 
 tiffz is designed to be `validate`'s TIFF deep-verification engine.
@@ -172,6 +182,9 @@ Any consumer (validate / image tools / GUI) ──► C FFI ──► tiffz Zig 
   (`tiffz_version` exported); the Zig-module path
   (`b.dependency("tiffz").module("tiffz")`) is what validate
   consumes today.
+- **Parser-only Zig module** (`src/parser.zig`) — TIFF header and lazy IFD-chain
+  parsing for rawz/container classifiers, exported as `tiffz-parser` without
+  codec imports or library links.
 - **C CLI** (`cli/main.c` → `tiffz` executable) — dogfoods the
   FFI. All I/O happens here.
 
