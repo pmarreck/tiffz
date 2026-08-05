@@ -147,7 +147,8 @@ pixel decoding should import `dep.module("tiffz-parser")`. That module has the
 same `Source`, `Limits`, `header`, `ifd`, `tags`, and IFD-chain `Decoder`
 surface used by rawz, with no codec imports or library links. The full
 `dep.module("tiffz")` API remains unchanged and re-exports the same shared
-parser types, so both modules can coexist in one Zig compilation. See
+parser types, so both modules from one dependency instance can coexist in one
+Zig compilation. See
 [`docs/parser_only_module.md`](docs/parser_only_module.md) for the dependency
 contract and its blocking closure checks.
 

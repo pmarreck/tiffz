@@ -17,8 +17,8 @@ The module exports:
 
 The full `dep.module("tiffz")` module and its decode API remain unchanged.
 The full module imports `tiffz-parser` and re-exports its parser types, making
-the parser module their single Zig owner. Validate can therefore import the
-full module and a rawz dependency backed by `tiffz-parser` in one compilation.
+the parser module their single Zig owner. Both modules must come from the same
+`b.dependency("tiffz", ...)` instance in any one Zig compilation.
 
 ## Consumer wiring
 
@@ -34,9 +34,23 @@ consumer_module.addImport("tiffz", tiffz_dep.module("tiffz-parser"));
 ```
 
 Validate's full TIFF validator, JPEG adapter, and LZW adapter still require
-`dep.module("tiffz")`. A rawz classifier embedded by Validate should receive
-the parser module through rawz's build graph rather than adding a second full
-tiffz module instance.
+`dep.module("tiffz")`. For in-process Zig integration, Validate should create
+the rawz source module itself and inject the parser from its existing tiffz
+dependency. Accepting rawz's preconfigured named module would create a second
+tiffz dependency instance and can trigger Zig's duplicate-file ownership gate:
+
+```zig
+const tiffz_dep = b.dependency("tiffz", tiffz_options);
+const rawz_dep = b.dependency("rawz", rawz_options);
+const rawz_module = b.createModule(.{
+    .root_source_file = rawz_dep.path("src/lib.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+rawz_module.addImport("tiffz", tiffz_dep.module("tiffz-parser"));
+```
+
+Linking rawz's separately built C FFI is the other isolation-safe option.
 
 The dependency direction remains:
 
@@ -65,5 +79,6 @@ The consumer tests separately sweep successful multi-IFD traversal, cycle
 rejection, IFD-limit rejection, BigTIFF/IFD8 declarations, and every allocator
 failure point reached by the bounded fixtures. `./test` runs both the full
 tiffz suite and the parser-closure Nix target. `tests/dual_module_test.zig`
-also compiles the full and parser modules together and asserts that every
-shared public parser type has one identity.
+also compiles the full module plus a rawz-like parser proxy injected from the
+same dependency instance, and asserts that every shared public parser type has
+one identity.

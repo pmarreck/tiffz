@@ -1,6 +1,7 @@
 const std = @import("std");
 const tiffz = @import("tiffz");
 const parser = @import("tiffz-parser");
+const proxy = @import("parser-proxy");
 
 // Prove Validate can own the full decoder and rawz's parser dependency in one
 // Zig compilation without duplicate source ownership or type drift.
@@ -12,4 +13,6 @@ test "full and parser modules coexist with shared parser types" {
     try std.testing.expect(tiffz.ifd.Ifd == parser.ifd.Ifd);
     try std.testing.expect(tiffz.tags.image_width == parser.tags.image_width);
     try std.testing.expect(tiffz.Decoder != parser.Decoder);
+    try std.testing.expect(tiffz.Source == proxy.Source);
+    try std.testing.expect(tiffz.ifd.Ifd == proxy.Ifd);
 }

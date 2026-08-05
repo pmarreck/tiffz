@@ -31,10 +31,13 @@ public API design.
       the first fixed collision will only reveal the next one. GREEN with
       shared type-identity assertions, canonical `./test`/`./build`, and a
       zero-reference parser Nix output. Completed 2026-08-05 01:08 EDT.
-- [ ] Publish the exact tiffz repin and module-name instructions to rawz and
+- [x] Publish the exact tiffz repin and module-name instructions to rawz and
       Validate after canonical tests, build, Nix targets, and terminal
       Mechatron evidence pass. Curiosity poke: the full tiffz consumer remains
       intentionally codec-bearing; only parser consumers should switch.
+      Durable notes include the shared-instance injection rule, exact commit,
+      Zig package hash, and terminal 151-second Mechatron result. Completed
+      2026-08-05 01:18 EDT.
 
 ### POLICY (Peter, 2026-08-01): readable-but-nonconformant → accept + WARN
 

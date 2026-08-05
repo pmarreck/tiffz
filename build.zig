@@ -283,6 +283,12 @@ pub fn build(b: *std.Build) void {
     );
     parser_test_step.dependOn(&run_parser_consumer_tests.step);
 
+    const parser_proxy_module = b.createModule(.{
+        .root_source_file = b.path("tests/parser_proxy.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "tiffz", .module = parser_module }},
+    });
     const dual_module_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/dual_module_test.zig"),
@@ -291,6 +297,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "tiffz", .module = tiffz_named_module },
                 .{ .name = "tiffz-parser", .module = parser_module },
+                .{ .name = "parser-proxy", .module = parser_proxy_module },
             },
         }),
     });
