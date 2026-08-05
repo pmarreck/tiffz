@@ -51,7 +51,7 @@ pub const Decoder = struct {
     /// Offset of the next-IFD pointer for the last IFD we've parsed
     /// — 0 if we've reached the end of the chain.
     next_ifd_offset: u64,
-    /// Optional callback for INFO findings emitted during decode.
+    /// Optional callback for native and nested findings emitted during decode.
     /// See `src/findings.zig` for the per-finding payload semantics.
     finding_cb: findings_mod.Callback = null,
     finding_userdata: ?*anyopaque = null,
@@ -59,6 +59,12 @@ pub const Decoder = struct {
     /// new-style to old-style per strip on malformed streams; surface
     /// the file-level compatibility fact only once.
     lzw_old_style_fired: bool = false,
+    /// One-shot warning for bounded, nonconformant final-strip padding.
+    final_strip_padding_fired: bool = false,
+    /// One-shot warning for an exact-extent LZW stream missing its EOD code.
+    lzw_missing_eod_fired: bool = false,
+    /// One-shot warning for tile geometry whose chunks use strip tag arrays.
+    tiled_via_strip_tags_fired: bool = false,
 
     pub fn open(allocator: Allocator, source: Source) errors.Error!Decoder {
         return openWithLimits(allocator, source, .{});
@@ -95,7 +101,7 @@ pub const Decoder = struct {
         };
     }
 
-    /// Install a callback for INFO findings emitted during decode.
+    /// Install a callback for native and nested findings emitted during decode.
     /// `cb` may be null to clear. `userdata` is passed through as-is
     /// to each invocation. Thread safety: the callback fires from
     /// whatever thread calls the decode method that detected the
@@ -115,6 +121,30 @@ pub const Decoder = struct {
         self.finding_userdata = userdata;
     }
 
+    /// Forward a jpegz strict facade result without flattening JP2/JXL leaf
+    /// identity or collapsing unsupported/indeterminate into a binary result.
+    pub fn emitStrictValidationFindings(
+        self: *Decoder,
+        result: *const compressions_jpeg.jpegz.StrictValidationResult,
+    ) void {
+        for (result.findings.items) |finding| {
+            const source: findings_mod.SourceDecoder = switch (finding.source) {
+                .jp2z => .jp2z,
+                .libjxlz => .libjxlz,
+            };
+            self.emitDetailed(
+                source,
+                @intCast(finding.leaf_code),
+                if (finding.code) |code| @intCast(@intFromEnum(code)) else null,
+                findings_mod.strictFindingVerdict(finding),
+                finding.offset,
+                finding.host_offset,
+                finding.offset_is_exact,
+                finding.detail orelse &.{},
+            );
+        }
+    }
+
     /// Re-scan all materialized IFDs and emit findings via the
     /// installed callback. No-op if no callback is set. Useful when
     /// the callback is installed AFTER `open()` but the caller still
@@ -128,10 +158,46 @@ pub const Decoder = struct {
     }
 
     fn emit(self: *Decoder, finding: findings_mod.InfoFinding, payload: []const u8) void {
+        self.emitDetailed(
+            .tiffz,
+            @intCast(@intFromEnum(finding)),
+            null,
+            .valid,
+            null,
+            null,
+            false,
+            payload,
+        );
+    }
+
+    /// Emit one fully-qualified finding without flattening a nested decoder's
+    /// raw code, mapped code, verdict, or offset provenance.
+    fn emitDetailed(
+        self: *Decoder,
+        source_decoder: findings_mod.SourceDecoder,
+        finding_code: i32,
+        mapped_finding_code: ?i32,
+        verdict: findings_mod.Verdict,
+        byte_offset: ?u64,
+        host_byte_offset: ?u64,
+        offset_is_exact: bool,
+        payload: []const u8,
+    ) void {
         const cb = self.finding_cb orelse return;
+        var flags: u32 = 0;
+        if (mapped_finding_code != null) flags |= findings_mod.MetadataFlags.mapped_code_present;
+        if (byte_offset != null) flags |= findings_mod.MetadataFlags.byte_offset_present;
+        if (host_byte_offset != null) flags |= findings_mod.MetadataFlags.host_offset_present;
+        if (offset_is_exact) flags |= findings_mod.MetadataFlags.offset_is_exact;
         cb(
             self.finding_userdata,
-            @intCast(@intFromEnum(finding)),
+            @intFromEnum(source_decoder),
+            finding_code,
+            mapped_finding_code orelse 0,
+            @intFromEnum(verdict),
+            byte_offset orelse 0,
+            host_byte_offset orelse 0,
+            flags,
             if (payload.len > 0) payload.ptr else null,
             payload.len,
         );
@@ -187,8 +253,12 @@ pub const Decoder = struct {
             if (planar == tags.planar_separate) self.emit(.planar_separate, &.{});
         }
 
-        // Tiled layout — TileOffsets tag.
-        if (dir.get(tags.tile_offsets) != null) self.emit(.tiled_layout, &.{});
+        // Tiled layout is established by canonical offsets or tile geometry.
+        if (dir.get(tags.tile_offsets) != null or
+            (dir.get(tags.tile_width) != null and dir.get(tags.tile_length) != null))
+        {
+            self.emit(.tiled_layout, &.{});
+        }
 
         // ExtraSamples == 1 (associated/pre-multiplied alpha) on any sample.
         if (dir.get(tags.extra_samples)) |entry| {
@@ -374,33 +444,161 @@ pub const Decoder = struct {
         var ifd_index: usize = 0;
         while (ifd_index < self.ifdCount()) : (ifd_index += 1) {
             const dir = try self.ifd(ifd_index);
-            if (dir.get(tags.tile_offsets)) |tile_off_entry| {
-                const tile_byte_counts_entry = dir.get(tags.tile_byte_counts) orelse return error.Malformed;
-                if (tile_off_entry.count != tile_byte_counts_entry.count) return error.Malformed;
-                if (tile_off_entry.count > self.limits.max_strips_or_tiles) return error.LimitExceededStripCount;
-                var t: u32 = 0;
-                while (t < tile_off_entry.count) : (t += 1) {
-                    const written = try self.runWithGrowingDest(&dest_buf, max_dest_bytes, .tile, ifd_index, t, workspace);
-                    const ext = try self.expectedChunkBytes(dir, .tile, t, tile_off_entry.count);
-                    if (written < ext.min or written > ext.max) {
-                        return error.Malformed;
+            const layout = (try self.chunkLayout(dir)) orelse continue;
+            if (layout.tolerated_tiled_tags and !self.tiled_via_strip_tags_fired) {
+                self.tiled_via_strip_tags_fired = true;
+                self.emit(.tiled_geometry_via_strip_tags_tolerated, &.{});
+            }
+
+            var chunk_index: u32 = 0;
+            while (chunk_index < layout.count) : (chunk_index += 1) {
+                const ext = try self.expectedChunkBytes(dir, layout.kind, chunk_index, layout.count);
+                const written = self.runWithGrowingDest(
+                    &dest_buf,
+                    max_dest_bytes,
+                    layout.kind,
+                    ifd_index,
+                    chunk_index,
+                    workspace,
+                ) catch |err| {
+                    if (err == error.SourceTooShort) {
+                        if (try self.validateMissingLzwEod(
+                            dir,
+                            ifd_index,
+                            layout,
+                            chunk_index,
+                            ext,
+                            workspace,
+                        )) |compat_written| {
+                            try self.acceptDecodedExtent(ext, compat_written);
+                            continue;
+                        }
                     }
-                }
-            } else if (dir.get(tags.strip_byte_counts)) |strip_bc_entry| {
-                if (strip_bc_entry.count > self.limits.max_strips_or_tiles) return error.LimitExceededStripCount;
-                var s: u32 = 0;
-                while (s < strip_bc_entry.count) : (s += 1) {
-                    const written = try self.runWithGrowingDest(&dest_buf, max_dest_bytes, .strip, ifd_index, s, workspace);
-                    const ext = try self.expectedChunkBytes(dir, .strip, s, strip_bc_entry.count);
-                    if (written < ext.min or written > ext.max) {
-                        return error.Malformed;
-                    }
-                }
+                    return err;
+                };
+                try self.acceptDecodedExtent(ext, written);
             }
             // IFDs with no strip/tile arrays (e.g. SubIFD chains
             // carrying only metadata) are silently skipped — there's
             // nothing to decode.
         }
+    }
+
+    const ChunkLayout = struct {
+        kind: ChunkKind,
+        offsets_tag: u16,
+        counts_tag: u16,
+        count: u32,
+        tolerated_tiled_tags: bool,
+    };
+
+    /// Resolve one unambiguous chunk layout. Canonical tile arrays always win;
+    /// the compatibility route requires complete tile geometry, no canonical
+    /// tile arrays, and both complete strip arrays.
+    fn chunkLayout(self: *Decoder, dir: *const Ifd) errors.Error!?ChunkLayout {
+        const tile_offsets = dir.get(tags.tile_offsets);
+        const tile_counts = dir.get(tags.tile_byte_counts);
+        if (tile_offsets != null or tile_counts != null) {
+            const offsets = tile_offsets orelse return error.Malformed;
+            const counts = tile_counts orelse return error.Malformed;
+            if (offsets.count != counts.count) return error.Malformed;
+            if (offsets.count > self.limits.max_strips_or_tiles) return error.LimitExceededStripCount;
+            return .{
+                .kind = .tile,
+                .offsets_tag = tags.tile_offsets,
+                .counts_tag = tags.tile_byte_counts,
+                .count = @intCast(offsets.count),
+                .tolerated_tiled_tags = false,
+            };
+        }
+
+        const tile_width = dir.get(tags.tile_width);
+        const tile_length = dir.get(tags.tile_length);
+        const strip_offsets = dir.get(tags.strip_offsets);
+        const strip_counts = dir.get(tags.strip_byte_counts);
+        if (tile_width != null or tile_length != null) {
+            if (tile_width == null or tile_length == null) return error.Malformed;
+            const offsets = strip_offsets orelse return error.Malformed;
+            const counts = strip_counts orelse return error.Malformed;
+            if (offsets.count != counts.count) return error.Malformed;
+            if (offsets.count > self.limits.max_strips_or_tiles) return error.LimitExceededStripCount;
+            return .{
+                .kind = .tile,
+                .offsets_tag = tags.strip_offsets,
+                .counts_tag = tags.strip_byte_counts,
+                .count = @intCast(offsets.count),
+                .tolerated_tiled_tags = true,
+            };
+        }
+
+        if (strip_offsets != null or strip_counts != null) {
+            const offsets = strip_offsets orelse return error.Malformed;
+            const counts = strip_counts orelse return error.Malformed;
+            if (offsets.count != counts.count) return error.Malformed;
+            if (offsets.count > self.limits.max_strips_or_tiles) return error.LimitExceededStripCount;
+            return .{
+                .kind = .strip,
+                .offsets_tag = tags.strip_offsets,
+                .counts_tag = tags.strip_byte_counts,
+                .count = @intCast(offsets.count),
+                .tolerated_tiled_tags = false,
+            };
+        }
+        return null;
+    }
+
+    /// Enforce the declared decoded extent and emit the bounded-padding warning
+    /// only when a short final strip stays within one full RowsPerStrip chunk.
+    fn acceptDecodedExtent(self: *Decoder, ext: ExpectedExtent, written: usize) errors.Error!void {
+        if (written < ext.min or written > ext.max) return error.Malformed;
+        if (ext.warn_if_above_min and written > ext.min and !self.final_strip_padding_fired) {
+            self.final_strip_padding_fired = true;
+            self.emit(.final_strip_padding_tolerated, &.{});
+        }
+    }
+
+    /// Reclassify strict LZW `SourceTooShort` only when the shared core proves
+    /// a clean EOF at one exact container-approved extent.
+    fn validateMissingLzwEod(
+        self: *Decoder,
+        dir: *const Ifd,
+        ifd_index: usize,
+        layout: ChunkLayout,
+        chunk_index: u32,
+        ext: ExpectedExtent,
+        workspace: *Workspace,
+    ) errors.Error!?usize {
+        const compression = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse tags.compression_none;
+        if (compression != tags.compression_lzw) return null;
+
+        const offset = try dir.arrayElementU64(layout.offsets_tag, chunk_index, self.endian, self.source);
+        const byte_count_u64 = try dir.arrayElementU64(layout.counts_tag, chunk_index, self.endian, self.source);
+        if (byte_count_u64 > self.limits.max_compressed_strip_bytes or byte_count_u64 > std.math.maxInt(usize)) {
+            return error.LimitExceededCompressedStripBytes;
+        }
+        const byte_count: usize = @intCast(byte_count_u64);
+        const compressed = workspace.ensureScratch(byte_count) catch return error.OutOfMemory;
+        const got = self.source.readAt(compressed, offset) catch return error.Io;
+        if (got < byte_count) return error.SourceShortRead;
+
+        const src = compressed[0..byte_count];
+        const accepted = compatibleLzwExtent(lzwz.Profile.tiff6(), src, ext) catch |first_err| switch (first_err) {
+            // Preserve the decoder's existing legacy fallback boundary: only
+            // a malformed TIFF-6 code stream is retried as old-style LZW.
+            error.MalformedCode => compatibleLzwExtent(lzwz.Profile.tiffLegacy(), src, ext) catch |legacy_err| switch (legacy_err) {
+                error.IncompleteSource => return error.SourceTooShort,
+                error.MalformedCode, error.DecodedLengthMismatch, error.DestTooSmall => return error.Malformed,
+            },
+            error.IncompleteSource => return error.SourceTooShort,
+            error.DecodedLengthMismatch, error.DestTooSmall => return error.Malformed,
+        };
+        const expected = accepted orelse return null;
+        _ = try self.readPredictorMeta(ifd_index);
+        if (!self.lzw_missing_eod_fired) {
+            self.lzw_missing_eod_fired = true;
+            self.emit(.lzw_missing_eod_tolerated, &.{});
+        }
+        return expected;
     }
 
     /// Decode one strip or tile, growing `dest_buf.*` on
@@ -530,11 +728,12 @@ pub const Decoder = struct {
 
         const bits_per_row = try checkedMul(@as(usize, shape.width), bits_per_pixel);
         const bytes_per_row = bits_per_row / 8 + @intFromBool(bits_per_row % 8 != 0);
-        const expected = try checkedMul(bytes_per_row, @as(usize, shape.rows));
-        if (expected > self.limits.max_decompressed_strip_bytes) {
-            return error.LimitExceededDecompressedStripBytes;
-        }
-        return .{ .min = expected, .max = expected };
+        return boundedFinalStripExtent(
+            bytes_per_row,
+            @as(usize, shape.rows),
+            if (kind == .strip) @as(usize, shape.full_rows) else @as(usize, shape.rows),
+            self.limits.max_decompressed_strip_bytes,
+        );
     }
 
     /// Read per-sample bit depths without allocating. TIFF permits either a
@@ -661,22 +860,12 @@ pub const Decoder = struct {
         workspace: *Workspace,
     ) errors.Error!usize {
         const dir = try self.ifd(ifd_index);
+        const layout = (try self.chunkLayout(dir)) orelse return error.Malformed;
+        if (layout.kind != .strip) return error.UnsupportedTagType;
+        if (strip_index >= layout.count) return error.InvalidArgument;
 
-        // Reject tiled layout from the strip API — caller should
-        // route to decodeTile.
-        if (dir.get(tags.tile_offsets) != null) return error.UnsupportedTagType;
-
-        const offsets_entry = dir.get(tags.strip_offsets) orelse return error.Malformed;
-        const counts_entry = dir.get(tags.strip_byte_counts) orelse return error.Malformed;
-        if (strip_index >= offsets_entry.count or strip_index >= counts_entry.count) {
-            return error.InvalidArgument;
-        }
-        if (offsets_entry.count > self.limits.max_strips_or_tiles) {
-            return error.LimitExceededStripCount;
-        }
-
-        const offset = try dir.arrayElementU64(tags.strip_offsets, strip_index, self.endian, self.source);
-        const byte_count_u64 = try dir.arrayElementU64(tags.strip_byte_counts, strip_index, self.endian, self.source);
+        const offset = try dir.arrayElementU64(layout.offsets_tag, strip_index, self.endian, self.source);
+        const byte_count_u64 = try dir.arrayElementU64(layout.counts_tag, strip_index, self.endian, self.source);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes) {
             return error.LimitExceededCompressedStripBytes;
         }
@@ -710,22 +899,12 @@ pub const Decoder = struct {
         workspace: *Workspace,
     ) errors.Error!usize {
         const dir = try self.ifd(ifd_index);
+        const layout = (try self.chunkLayout(dir)) orelse return error.Malformed;
+        if (layout.kind != .tile) return error.UnsupportedTagType;
+        if (tile_index >= layout.count) return error.InvalidArgument;
 
-        // Reject strip layout from the tile API — caller should
-        // route to decodeStrip.
-        if (dir.get(tags.tile_offsets) == null) return error.UnsupportedTagType;
-
-        const offsets_entry = dir.get(tags.tile_offsets) orelse return error.Malformed;
-        const counts_entry = dir.get(tags.tile_byte_counts) orelse return error.Malformed;
-        if (tile_index >= offsets_entry.count or tile_index >= counts_entry.count) {
-            return error.InvalidArgument;
-        }
-        if (offsets_entry.count > self.limits.max_strips_or_tiles) {
-            return error.LimitExceededStripCount;
-        }
-
-        const offset = try dir.arrayElementU64(tags.tile_offsets, tile_index, self.endian, self.source);
-        const byte_count_u64 = try dir.arrayElementU64(tags.tile_byte_counts, tile_index, self.endian, self.source);
+        const offset = try dir.arrayElementU64(layout.offsets_tag, tile_index, self.endian, self.source);
+        const byte_count_u64 = try dir.arrayElementU64(layout.counts_tag, tile_index, self.endian, self.source);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes) {
             return error.LimitExceededCompressedStripBytes;
         }
@@ -966,7 +1145,30 @@ pub const Decoder = struct {
                     break :t (dir.cachedValueBytes(tags.jpeg_tables) orelse break :blk error.Malformed);
                 } else null;
 
-                const written = compressions_jpeg.decode(self.allocator, scratch, tables_slice, dest) catch |e| break :blk e;
+                var prepared = compressions_jpeg.prepareStream(self.allocator, scratch, tables_slice) catch |e| break :blk e;
+                defer prepared.deinit(self.allocator);
+
+                var validation = compressions_jpeg.jpegz.validate(self.allocator, prepared.bytes) catch break :blk error.OutOfMemory;
+                defer validation.deinit(self.allocator);
+                for (validation.findings.items) |finding| {
+                    const host_offset = if (finding.offset) |leaf_offset|
+                        prepared.hostOffset(leaf_offset, offset)
+                    else
+                        null;
+                    self.emitDetailed(
+                        .jpegz,
+                        @intCast(@intFromEnum(finding.code)),
+                        null,
+                        if (finding.severity == .fail) .corrupt else .valid,
+                        finding.offset,
+                        host_offset,
+                        host_offset != null,
+                        finding.detail orelse &.{},
+                    );
+                }
+                if (!validation.isValid()) break :blk error.JpegInTiffPayload;
+
+                const written = compressions_jpeg.decodePrepared(self.allocator, prepared.bytes, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -1020,10 +1222,54 @@ fn ceilDivU32(numerator: u32, denominator: u32) errors.Error!u32 {
 
 /// One decoded strip/tile's permitted byte extent. `min` covers every logical
 /// (in-image) sample the directory declares; `max` additionally permits
-/// spec-legal trailing padding (e.g. a final subsampled strip padded up to a
-/// full RowsPerStrip). For every non-subsampled chunk min == max, so the
-/// historical exact-equality gate is preserved bit-for-bit.
-const ExpectedExtent = struct { min: usize, max: usize };
+/// bounded trailing padding (e.g. a final strip padded up to a full
+/// RowsPerStrip). `warn_if_above_min` distinguishes tolerated nonconformance
+/// from spec-defined subsampled extents.
+const ExpectedExtent = struct {
+    min: usize,
+    max: usize,
+    warn_if_above_min: bool = false,
+};
+
+/// Bound a short final strip between its logical rows and one full declared
+/// RowsPerStrip chunk. This classifier never permits bytes beyond that maximum.
+fn boundedFinalStripExtent(
+    bytes_per_row: usize,
+    logical_rows: usize,
+    full_rows: usize,
+    max_bytes: usize,
+) errors.Error!ExpectedExtent {
+    if (logical_rows > full_rows) return error.Malformed;
+    const min = try checkedMul(bytes_per_row, logical_rows);
+    const max = try checkedMul(bytes_per_row, full_rows);
+    if (max > max_bytes) return error.LimitExceededDecompressedStripBytes;
+    return .{
+        .min = min,
+        .max = max,
+        .warn_if_above_min = logical_rows < full_rows,
+    };
+}
+
+/// Classify a missing LZW end marker over the complete bounded extent set.
+/// A clean EOF at neither exact bound returns null; entropy errors remain
+/// errors so an adapter cannot turn malformed data into a warning.
+fn compatibleLzwExtent(
+    profile: lzwz.Profile,
+    src: []const u8,
+    ext: ExpectedExtent,
+) lzwz.DecodeError!?usize {
+    const candidates = [_]usize{ ext.min, ext.max };
+    for (candidates, 0..) |expected, index| {
+        if (index == 1 and ext.max == ext.min) continue;
+        const result = lzwz.decodeExactExtentAllowMissingEnd(profile, src, expected) catch |err| switch (err) {
+            error.DecodedLengthMismatch => continue,
+            else => return err,
+        };
+        if (result.end_status != .clean_eof_without_end) return error.MalformedCode;
+        return expected;
+    }
+    return null;
+}
 
 /// Ceiling division for usize. Denominators here are subsample factors
 /// (1/2/4), always nonzero.
@@ -1272,6 +1518,26 @@ test "subsampledYCbCrExtent: vertical-only 1:2 final strip pads vertically" {
     const ext = try subsampledYCbCrExtent(100, 5, 8, 1, 2, 1, 1 << 30);
     try std.testing.expectEqual(@as(usize, 1200), ext.min);
     try std.testing.expectEqual(@as(usize, 1600), ext.max);
+}
+
+test "boundedFinalStripExtent classifies logical exact padded and beyond-max lengths" {
+    const ext = try boundedFinalStripExtent(500, 4, 16, 64 * 1024);
+    try std.testing.expectEqual(@as(usize, 2000), ext.min);
+    try std.testing.expectEqual(@as(usize, 8000), ext.max);
+    try std.testing.expect(ext.warn_if_above_min);
+
+    const members = [_]struct { written: usize, accepted: bool, warns: bool }{
+        .{ .written = 1999, .accepted = false, .warns = false },
+        .{ .written = 2000, .accepted = true, .warns = false },
+        .{ .written = 2001, .accepted = true, .warns = true },
+        .{ .written = 8000, .accepted = true, .warns = true },
+        .{ .written = 8001, .accepted = false, .warns = false },
+    };
+    for (members) |member| {
+        const accepted = member.written >= ext.min and member.written <= ext.max;
+        try std.testing.expectEqual(member.accepted, accepted);
+        try std.testing.expectEqual(member.warns, accepted and member.written > ext.min);
+    }
 }
 
 test "subsampledYCbCrExtent: 4:4 subsampling with odd small dims" {

@@ -32,7 +32,79 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const errors = @import("tiffz-parser").errors;
-const jpegz = @import("jpegz");
+pub const jpegz = @import("jpegz");
+
+/// One complete JPEG stream prepared from TIFF Tech Note 2 Mode 1 or Mode 2.
+/// Its offset mapper reports host-exact positions only for bytes originating
+/// in the TIFF chunk; cached JPEGTables bytes deliberately remain unknown.
+pub const PreparedStream = struct {
+    bytes: []const u8,
+    owned: ?[]u8,
+    tables_prefix_len: usize,
+    strip_prefix_removed: usize,
+
+    pub fn deinit(self: *PreparedStream, allocator: Allocator) void {
+        if (self.owned) |buf| allocator.free(buf);
+        self.* = undefined;
+    }
+
+    pub fn hostOffset(self: PreparedStream, stream_offset: u64, chunk_offset: u64) ?u64 {
+        if (self.owned == null) return std.math.add(u64, chunk_offset, stream_offset) catch null;
+        if (stream_offset < self.tables_prefix_len) return null;
+        const strip_relative = std.math.add(
+            u64,
+            stream_offset - self.tables_prefix_len,
+            self.strip_prefix_removed,
+        ) catch return null;
+        return std.math.add(u64, chunk_offset, strip_relative) catch null;
+    }
+};
+
+/// Materialize the single JPEG stream used by both strict validation and
+/// pixel decode, preventing validator/decoder disagreement over Mode 2 splice.
+pub fn prepareStream(
+    allocator: Allocator,
+    strip_bytes: []const u8,
+    jpeg_tables: ?[]const u8,
+) errors.Error!PreparedStream {
+    if (jpeg_tables) |tables| {
+        const tables_trimmed = stripEoi(tables);
+        const strip_trimmed = stripSoi(strip_bytes);
+        const total = std.math.add(usize, tables_trimmed.len, strip_trimmed.len) catch return error.Malformed;
+        const buf = allocator.alloc(u8, total) catch return error.OutOfMemory;
+        @memcpy(buf[0..tables_trimmed.len], tables_trimmed);
+        @memcpy(buf[tables_trimmed.len..], strip_trimmed);
+        return .{
+            .bytes = buf,
+            .owned = buf,
+            .tables_prefix_len = tables_trimmed.len,
+            .strip_prefix_removed = strip_bytes.len - strip_trimmed.len,
+        };
+    }
+    return .{
+        .bytes = strip_bytes,
+        .owned = null,
+        .tables_prefix_len = 0,
+        .strip_prefix_removed = 0,
+    };
+}
+
+/// Decode an already-prepared stream after the caller has run jpegz validation.
+pub fn decodePrepared(
+    allocator: Allocator,
+    stream: []const u8,
+    dest: []u8,
+) errors.Error!usize {
+    const img = jpegz.decode(allocator, stream) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.JpegInTiffPayload,
+    };
+    defer allocator.free(img.pixels);
+
+    if (img.pixels.len > dest.len) return error.DestTooSmall;
+    @memcpy(dest[0..img.pixels.len], img.pixels);
+    return img.pixels.len;
+}
 
 /// Decode one JPEG-in-TIFF chunk into `dest`. `strip_bytes` is the
 /// raw on-disk strip/tile data; `jpeg_tables` is the IFD's JPEGTables
@@ -47,22 +119,8 @@ pub fn decode(
 ) errors.Error!usize {
     // Splice JPEGTables (sans trailing EOI) + strip_bytes (sans leading SOI)
     // when Mode 2. Mode 1 hands strip_bytes straight through.
-    var spliced_owned: ?[]u8 = null;
-    defer if (spliced_owned) |b| allocator.free(b);
-
-    const stream: []const u8 = if (jpeg_tables) |tables| blk: {
-        // JPEGTables shape: SOI (FF D8) … markers … EOI (FF D9). Strip
-        // bytes shape: SOI (FF D8) … markers + scan … EOI (FF D9). After
-        // splicing, the result is SOI … tables-markers … SOF SOS scan … EOI.
-        const tables_trimmed = stripEoi(tables);
-        const strip_trimmed = stripSoi(strip_bytes);
-        const total = tables_trimmed.len + strip_trimmed.len;
-        const buf = allocator.alloc(u8, total) catch return error.OutOfMemory;
-        @memcpy(buf[0..tables_trimmed.len], tables_trimmed);
-        @memcpy(buf[tables_trimmed.len..], strip_trimmed);
-        spliced_owned = buf;
-        break :blk buf;
-    } else strip_bytes;
+    var prepared = try prepareStream(allocator, strip_bytes, jpeg_tables);
+    defer prepared.deinit(allocator);
 
     // jpegz returns a fully realized RGB (or grayscale) image. The
     // pixel buffer is owned by jpegz's allocator; copy into `dest` so
@@ -75,20 +133,10 @@ pub fn decode(
     // The libjpeg oracle is no longer linked (built -Dwith-libjpeg-oracle=false),
     // which also unblocks Windows cross-compile (libjpeg-turbo has no mingw static).
     // A jpegz failure here is a defect in the embedded JPEG stream, not in the
-    // TIFF structure. Surface it as JpegInTiffPayload so the caller (validate)
-    // can route it to a JPEG-payload message instead of "Invalid TIFF
-    // structure". The specific jpegz cause (missing SOI / bad SOF / huffman /
-    // truncated scan) is a separate nested-finding change gated on Einstein's
-    // Namespace-A sign-off (see findings.zig) — this is the categorization tier.
-    const img = jpegz.decode(allocator, stream) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.JpegInTiffPayload,
-    };
-    defer allocator.free(img.pixels);
-
-    if (img.pixels.len > dest.len) return error.DestTooSmall;
-    @memcpy(dest[0..img.pixels.len], img.pixels);
-    return img.pixels.len;
+    // TIFF structure. The Decoder's production path validates this prepared
+    // stream first, forwards the precise nested finding, and surfaces decode
+    // failure as JpegInTiffPayload.
+    return decodePrepared(allocator, prepared.bytes, dest);
 }
 
 /// Strip trailing EOI marker (FF D9) if present. JPEG streams always

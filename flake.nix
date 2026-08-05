@@ -73,7 +73,7 @@
         #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-KXuGSCoqoXOq+CX71kQp3xMY9rPNkj32hIQXtkW7GxY=";
+        zigDepsHash = "sha256-WkPPI7FqDGKNB8bZeWLW7tiOxVhp7ugUVNo9YS8WBYc=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";
@@ -204,6 +204,47 @@
             cp zig-out/bin/tiffz-parser-consumer $out/
             ${pkgs.binutils}/bin/strip $out/tiffz-parser-consumer
             echo "parser closure passed" > $out/result
+          '';
+
+          dontFixup = true;
+        };
+
+        checks.jpeg-validation-closure = pkgs.stdenv.mkDerivation {
+          pname = "tiffz-jpeg-validation-closure";
+          version = "0.1.0";
+          src = self;
+
+          nativeBuildInputs = [ zig pkgs.binutils pkgs.file pkgs.gnugrep ];
+          buildInputs = [ jpegPkgs.openjpeg jpegPkgs.zlib ];
+
+          # The installed proof is fully static and must retain no Nix store
+          # reference, including any external JPEG-family decoder or oracle.
+          allowedReferences = [];
+          dontConfigure = true;
+
+          buildPhase = ''
+            export HOME="$TMPDIR"
+            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${pkgs.lib.optionalString isLinux ''
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
+            ''}
+            zig build jpeg-validation-consumer -Doptimize=ReleaseFast ${zigTargetFlag} \
+              -Dopenjpeg-include=${jpegPkgs.openjpeg.dev}/include/openjpeg-2.5 \
+              -Dopenjpeg-lib=${jpegPkgs.openjpeg.out}/lib \
+              -Dzlib-include=${jpegPkgs.zlib.dev}/include \
+              -Dzlib-lib=${jpegPkgs.zlib.out}/lib
+            ${pkgs.bash}/bin/bash tests/jpeg_validation_closure_test \
+              zig-out/bin/tiffz-jpeg-validation-proof
+          '';
+
+          installPhase = ''
+            mkdir -p $out/bin
+            cp zig-out/bin/tiffz-jpeg-validation-proof $out/bin/
+            ${pkgs.binutils}/bin/strip $out/bin/tiffz-jpeg-validation-proof
+            echo "JPEG validation closure passed" > $out/result
           '';
 
           dontFixup = true;

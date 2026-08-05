@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+artifact="${1:-$ROOT/zig-out/bin/tiffz-jpeg-validation-proof}"
+
+fail() {
+	printf 'jpeg-validation-closure: %s\n' "$1" >&2
+	exit 1
+}
+
+[[ -x "$artifact" ]] || fail "proof artifact is missing or not executable: $artifact"
+"$artifact" || fail "proof artifact did not classify malformed JPEG"
+
+description="$(file "$artifact")"
+[[ "$description" == *"statically linked"* ]] || fail "proof artifact is not fully static: $description"
+
+undefined="$(nm -u "$artifact" 2>/dev/null || true)"
+dynamic="$(readelf -d "$artifact" 2>/dev/null || true)"
+if printf '%s\n%s\n' "$undefined" "$dynamic" |
+	grep -Eqi 'opj_|openjp2|jpeg_|charls|JxlDecoder|JxlSignature|djxl'; then
+	fail "forbidden external JPEG-family decoder/oracle symbol or library"
+fi
+
+if strings "$artifact" |
+	grep -Eqi '/nix/store/[^ ]*(openjpeg|libjpeg|charls|libjxl-[0-9]|djxl)'; then
+	fail "forbidden external JPEG-family decoder/oracle store reference"
+fi
+
+printf 'jpeg-validation-closure: static production validator artifact has no external JPEG-family decoder/oracle symbols or store references\n'

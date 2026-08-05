@@ -36,7 +36,7 @@ variants and adjacent improvements).
 | CCITT 1D / T.4 (Group 3) | 3 | ✅ |
 | CCITT T.6 (Group 4) | 4 | ✅ marquee target validated against 11059×15671 fax scan |
 | LZW (TIFF 6.0 + Sun/Adobe legacy LSB-first) | 5 | ✅ |
-| JPEG-in-TIFF (TN2 Mode 1 + Mode 2) | 7 | ✅ via `jpegz.wrapperDecode`; RGB + YCbCr photometric |
+| JPEG-in-TIFF (TN2 Mode 1 + Mode 2) | 7 | ✅ strict `jpegz.validate` findings followed by cleanroom decode; RGB + YCbCr photometric |
 | Deflate / AdobeDeflate | 8 / 32946 | ✅ wraps system zlib |
 | PackBits | 32773 | ✅ |
 | ZSTD-in-TIFF (GDAL/libtiff extension) | 50000 | ✅ via `zstdz` |

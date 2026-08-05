@@ -3,10 +3,9 @@
 //! consumer) to populate per-file finding accumulators alongside the
 //! `RoutedFinding` taxonomy in `docs/tiffz_findings_mapping.md`.
 //!
-//! The shape mirrors jpegz's callback API so consumers can share a
-//! single dispatch pattern across both decoders:
-//!
-//!   void cb(void *userdata, int finding_id, const void *payload, size_t payload_len)
+//! The callback carries a typed producer, raw and optional mapped codes,
+//! four-way verdict, and presence-flagged leaf/host offsets. This keeps nested
+//! JPEG-family findings intact rather than flattening numeric namespaces.
 //!
 //! INFO findings are PASS-tier observations — files that decode
 //! successfully but have a property worth annotating. Failures are
@@ -72,10 +71,17 @@ pub const InfoFinding = enum(u32) {
     /// GDAL / libtiff extension). Payload empty. Allocated by
     /// Einstein 2026-07-19 per Namespace B convention. The
     /// Deflate/Zstd post-filter distinction (LercParameters bit 1)
-    /// is deliberately NOT surfaced as a separate finding for now —
-    /// a future `lerc_post_compression = 13` would carry that
-    /// detail if validate needs it.
+    /// is deliberately not surfaced as a separate finding.
     lerc_compression = 12,
+    /// A final strip decoded beyond its logical row extent but no farther
+    /// than one full RowsPerStrip chunk. Accept with a caller-routed warning.
+    final_strip_padding_tolerated = 13,
+    /// An LZW stream reached a clean physical EOF without EOD after producing
+    /// exactly the bounded TIFF extent. Accept with a caller-routed warning.
+    lzw_missing_eod_tolerated = 14,
+    /// Tile geometry used strip offset/count tags only. Accepted under the
+    /// bounded compatibility classifier and surfaced exactly once per file.
+    tiled_geometry_via_strip_tags_tolerated = 15,
     _,
 };
 
@@ -84,9 +90,70 @@ pub const InfoFinding = enum(u32) {
 /// `payload` is null and `payload_len` is 0 for presence-only
 /// findings; for findings with a numeric payload the byte layout is
 /// little-endian (documented above per finding).
+/// Append-only producer registry. The non-exhaustive enum preserves unknown
+/// future values rather than collapsing them into a known decoder.
+pub const SourceDecoder = enum(i32) {
+    unknown = 0,
+    tiffz = 1,
+    jpegz = 2,
+    jp2z = 3,
+    libjxlz = 4,
+    _,
+};
+
+/// Four-way validation outcome. Native informational/tolerance findings use
+/// `valid`; strict nested validators preserve all four values unchanged.
+pub const Verdict = enum(i32) {
+    valid = 0,
+    corrupt = 1,
+    unsupported = 2,
+    indeterminate = 3,
+    _,
+};
+
+/// Presence and exactness bits for the callback's scalar metadata fields.
+pub const MetadataFlags = struct {
+    pub const mapped_code_present: u32 = 1 << 0;
+    pub const byte_offset_present: u32 = 1 << 1;
+    pub const host_offset_present: u32 = 1 << 2;
+    pub const offset_is_exact: u32 = 1 << 3;
+};
+
+/// Preserve a strict facade finding's own outcome instead of deriving one from
+/// the aggregate result. Unknown mapped JP2 codes and future JXL leaf codes
+/// fail closed as indeterminate.
+pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
+    const jpegz = @import("jpegz");
+    return switch (finding.source) {
+        .jp2z => if (finding.code == null)
+            .indeterminate
+        else if (finding.code.? == jpegz.FindingCode.jp2_unsupported_marker_ignored)
+            .unsupported
+        else if (finding.severity == .fail)
+            .corrupt
+        else
+            .valid,
+        .libjxlz => switch (finding.leaf_code) {
+            1, 2, 3 => .corrupt,
+            4 => .unsupported,
+            5, 6, 7, 8 => .indeterminate,
+            else => .indeterminate,
+        },
+    };
+}
+
+/// C-callable finding callback. `(source_decoder, finding_code)` is the stable
+/// identity; mapped codes and offsets are explicitly presence-flagged so zero
+/// remains a legitimate value. Unknown source/verdict integers round-trip.
 pub const Callback = ?*const fn (
     userdata: ?*anyopaque,
-    finding: i32,
+    source_decoder: i32,
+    finding_code: i32,
+    mapped_finding_code: i32,
+    verdict: i32,
+    byte_offset: u64,
+    host_byte_offset: u64,
+    metadata_flags: u32,
     payload: ?[*]const u8,
     payload_len: usize,
 ) callconv(.c) void;

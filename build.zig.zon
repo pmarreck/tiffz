@@ -8,8 +8,8 @@
         // re-exports this exact module so downstream consumers do not create
         // a second Zig module instance for the same source.
         .lzwz = .{
-            .url = "git+https://github.com/pmarreck/lzwz#ab21d65c2e6d08f6a6ce2f2c3067f99de689cee7",
-            .hash = "lzwz-0.2.0-gkUIt73PAABk11qWDTYUT3CB-7K1bFkGmoW0l_eTEbWw",
+            .url = "git+https://github.com/pmarreck/lzwz#5dba5c449219f00f665efe31e69934364e048de5",
+            .hash = "lzwz-0.2.0-gkUIt4biAACtZMXFjMW2Y6RFeQcWuZ5noSxeT5mlVX4v",
         },
         // jpegz — Peter's spec-complete pure-Zig JPEG family decoder
         // (cleanroom replacement target; Phase 1 currently wraps
@@ -17,8 +17,8 @@
         // Compression=7 (JPEG-in-TIFF) at M9.5 and lossless JPEG for
         // DNG raw at M8.
         .jpegz = .{
-            .url = "git+https://github.com/pmarreck/jpegz#cc844e274a057e1bb1fb278ab27cab8da15582b3",
-            .hash = "jpegz-0.1.0-staw4EmMCwAp0oMOhErnWNUnGmKUUyHnu2SpiF6KdEbY",
+            .url = "git+https://github.com/pmarreck/jpegz#fb72045459be7dc2c73337e321096ed3e1eedb0f",
+            .hash = "jpegz-0.1.0-staw4GolEAAaoWBvTnt49a1c8VVDEYoCqXemHVfDBBpp",
         },
         // zstdz — Peter's fork of facebook/zstd packaged as a Zig
         // build with the C library vendored. Provides the codec for

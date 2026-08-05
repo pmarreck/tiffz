@@ -572,7 +572,13 @@ const FindingRecorder = struct {
     allocator: std.mem.Allocator,
 
     const Record = struct {
-        finding: tiffz.findings.InfoFinding,
+        source: tiffz.findings.SourceDecoder,
+        finding_code: i32,
+        mapped_finding_code: ?i32,
+        verdict: tiffz.findings.Verdict,
+        byte_offset: ?u64,
+        host_byte_offset: ?u64,
+        offset_is_exact: bool,
         payload_u32: ?u32, // decoded from a 4-byte little-endian payload, else null
     };
 
@@ -586,32 +592,162 @@ const FindingRecorder = struct {
 
     fn callback(
         userdata: ?*anyopaque,
+        source_decoder: i32,
         finding_id: i32,
+        mapped_finding_id: i32,
+        verdict: i32,
+        byte_offset: u64,
+        host_byte_offset: u64,
+        metadata_flags: u32,
         payload: ?[*]const u8,
         payload_len: usize,
     ) callconv(.c) void {
         const self: *FindingRecorder = @ptrCast(@alignCast(userdata.?));
-        const finding: tiffz.findings.InfoFinding = @enumFromInt(@as(u32, @intCast(finding_id)));
         const payload_u32: ?u32 = if (payload_len >= 4 and payload != null) blk: {
             const slice = payload.?[0..4];
             break :blk std.mem.readInt(u32, slice, .little);
         } else null;
         self.findings.append(self.allocator, .{
-            .finding = finding,
+            .source = @enumFromInt(source_decoder),
+            .finding_code = finding_id,
+            .mapped_finding_code = if ((metadata_flags & tiffz.findings.MetadataFlags.mapped_code_present) != 0)
+                mapped_finding_id
+            else
+                null,
+            .verdict = @enumFromInt(verdict),
+            .byte_offset = if ((metadata_flags & tiffz.findings.MetadataFlags.byte_offset_present) != 0)
+                byte_offset
+            else
+                null,
+            .host_byte_offset = if ((metadata_flags & tiffz.findings.MetadataFlags.host_offset_present) != 0)
+                host_byte_offset
+            else
+                null,
+            .offset_is_exact = (metadata_flags & tiffz.findings.MetadataFlags.offset_is_exact) != 0,
             .payload_u32 = payload_u32,
         }) catch unreachable;
     }
 
     fn has(self: *const FindingRecorder, finding: tiffz.findings.InfoFinding) bool {
-        for (self.findings.items) |r| if (r.finding == finding) return true;
+        for (self.findings.items) |r| {
+            if (r.source == .tiffz and r.finding_code == @intFromEnum(finding)) return true;
+        }
         return false;
     }
 
+    fn count(self: *const FindingRecorder, finding: tiffz.findings.InfoFinding) usize {
+        var total: usize = 0;
+        for (self.findings.items) |r| {
+            if (r.source == .tiffz and r.finding_code == @intFromEnum(finding)) total += 1;
+        }
+        return total;
+    }
+
     fn payloadFor(self: *const FindingRecorder, finding: tiffz.findings.InfoFinding) ?u32 {
-        for (self.findings.items) |r| if (r.finding == finding) return r.payload_u32;
+        for (self.findings.items) |r| {
+            if (r.source == .tiffz and r.finding_code == @intFromEnum(finding)) return r.payload_u32;
+        }
         return null;
     }
 };
+
+test "finding ABI identity is source plus code and preserves unknown sources" {
+    var recorder = FindingRecorder.init(std.testing.allocator);
+    defer recorder.deinit();
+    FindingRecorder.callback(
+        @ptrCast(&recorder),
+        @intFromEnum(tiffz.findings.SourceDecoder.tiffz),
+        1,
+        0,
+        @intFromEnum(tiffz.findings.Verdict.valid),
+        0,
+        0,
+        0,
+        null,
+        0,
+    );
+    FindingRecorder.callback(
+        @ptrCast(&recorder),
+        @intFromEnum(tiffz.findings.SourceDecoder.jpegz),
+        1,
+        0,
+        @intFromEnum(tiffz.findings.Verdict.corrupt),
+        7,
+        107,
+        tiffz.findings.MetadataFlags.byte_offset_present |
+            tiffz.findings.MetadataFlags.host_offset_present |
+            tiffz.findings.MetadataFlags.offset_is_exact,
+        null,
+        0,
+    );
+    FindingRecorder.callback(
+        @ptrCast(&recorder),
+        99,
+        1,
+        0,
+        @intFromEnum(tiffz.findings.Verdict.indeterminate),
+        0,
+        0,
+        0,
+        null,
+        0,
+    );
+
+    try std.testing.expectEqual(@as(usize, 3), recorder.findings.items.len);
+    try std.testing.expect(recorder.findings.items[0].source != recorder.findings.items[1].source);
+    try std.testing.expectEqual(recorder.findings.items[0].finding_code, recorder.findings.items[1].finding_code);
+    try std.testing.expectEqual(@as(i32, 99), @intFromEnum(recorder.findings.items[2].source));
+    try std.testing.expectEqual(@as(?u64, 107), recorder.findings.items[1].host_byte_offset);
+    try std.testing.expect(recorder.findings.items[1].offset_is_exact);
+}
+
+test "strict JPEG-family forwarding preserves mapped code offsets and four-way outcomes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/jpeg/ycbcr_jpeg.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+
+    var strict = tiffz.jpegz.StrictValidationResult{
+        .verdict = .unsupported,
+        .format = .jpeg2000,
+    };
+    defer strict.deinit(allocator);
+    try strict.findings.append(allocator, .{
+        .source = .jp2z,
+        .leaf_code = 177,
+        .code = .jp2_unsupported_marker_ignored,
+        .severity = .warn,
+        .offset = 12,
+        .host_offset = 212,
+        .offset_is_exact = true,
+    });
+    try strict.findings.append(allocator, .{
+        .source = .libjxlz,
+        .leaf_code = 99,
+        .code = null,
+        .severity = .warn,
+        .offset = 7,
+        .host_offset = null,
+        .offset_is_exact = false,
+    });
+
+    dec.emitStrictValidationFindings(&strict);
+    try std.testing.expectEqual(@as(usize, 2), recorder.findings.items.len);
+    try std.testing.expectEqual(tiffz.findings.SourceDecoder.jp2z, recorder.findings.items[0].source);
+    try std.testing.expectEqual(tiffz.findings.Verdict.unsupported, recorder.findings.items[0].verdict);
+    try std.testing.expect(recorder.findings.items[0].mapped_finding_code != null);
+    try std.testing.expectEqual(@as(?u64, 212), recorder.findings.items[0].host_byte_offset);
+    try std.testing.expect(recorder.findings.items[0].offset_is_exact);
+    try std.testing.expectEqual(tiffz.findings.SourceDecoder.libjxlz, recorder.findings.items[1].source);
+    try std.testing.expectEqual(tiffz.findings.Verdict.indeterminate, recorder.findings.items[1].verdict);
+    try std.testing.expect(recorder.findings.items[1].mapped_finding_code == null);
+}
 
 test "findings: bali.btf fires bigtiff_format finding" {
     const allocator = std.testing.allocator;
@@ -1452,31 +1588,177 @@ fn expectFixtureValidates(fixture_path: []const u8) !void {
     try dec.validateAllStripsAndTiles(&workspace);
 }
 
-test "audit 1.0 [reg]: cramps-tile.tif currently REJECTED as Malformed (extent-gate) — labeled-good, uncompressed tiled 800x607 MinIsWhite" {
-    try characterizeCurrentReject(
+/// Accept one compatibility fixture and prove its assigned finding fires once,
+/// preventing a broad silent relaxation from satisfying the positive test.
+fn expectFixtureValidatesWithFinding(
+    fixture_path: []const u8,
+    finding: tiffz.findings.InfoFinding,
+) !void {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, fixture_path);
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    var workspace = tiffz.Workspace.init(allocator);
+    defer workspace.deinit();
+
+    try dec.validateAllStripsAndTiles(&workspace);
+    try std.testing.expectEqual(@as(usize, 1), recorder.count(finding));
+}
+
+/// Replace exactly one classic-TIFF IFD0 tag while preserving its value. Test
+/// mutations use this to classify layout presence/absence without fabricating
+/// unrelated decoder state.
+fn replaceClassicIfd0Tag(bytes: []u8, old_tag: u16, new_tag: u16) !void {
+    if (bytes.len < 8) return error.Malformed;
+    const endian: std.builtin.Endian = if (std.mem.eql(u8, bytes[0..2], "II"))
+        .little
+    else if (std.mem.eql(u8, bytes[0..2], "MM"))
+        .big
+    else
+        return error.Malformed;
+    const ifd_offset: usize = switch (endian) {
+        .little => std.mem.readInt(u32, bytes[4..8], .little),
+        .big => std.mem.readInt(u32, bytes[4..8], .big),
+    };
+    if (ifd_offset > bytes.len - 2) return error.Malformed;
+    const count: usize = switch (endian) {
+        .little => std.mem.readInt(u16, bytes[ifd_offset..][0..2], .little),
+        .big => std.mem.readInt(u16, bytes[ifd_offset..][0..2], .big),
+    };
+    var replacements: usize = 0;
+    for (0..count) |index| {
+        const tag_offset = ifd_offset + 2 + index * 12;
+        if (tag_offset > bytes.len - 12) return error.Malformed;
+        const tag = switch (endian) {
+            .little => std.mem.readInt(u16, bytes[tag_offset..][0..2], .little),
+            .big => std.mem.readInt(u16, bytes[tag_offset..][0..2], .big),
+        };
+        if (tag != old_tag) continue;
+        switch (endian) {
+            .little => std.mem.writeInt(u16, bytes[tag_offset..][0..2], new_tag, .little),
+            .big => std.mem.writeInt(u16, bytes[tag_offset..][0..2], new_tag, .big),
+        }
+        replacements += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), replacements);
+}
+
+test "audit 1.0 [fixed]: cramps-tile.tif accepts tiled geometry via strip tags and emits finding 15 once" {
+    try expectFixtureValidatesWithFinding(
         "tests/fixtures/labeled_good/cramps-tile.tif",
-        error.Malformed,
+        .tiled_geometry_via_strip_tags_tolerated,
     );
 }
 
-test "audit 1.0 [reg]: deflate-last-strip.tiff currently REJECTED as Malformed (extent-gate) — 500x500 Deflate, RowsPerStrip=16 (last strip = 4 rows)" {
-    try characterizeCurrentReject(
-        "tests/fixtures/labeled_good/deflate-last-strip.tiff",
-        error.Malformed,
+test "audit 1.0 [fixed]: bounded final-strip padding is accepted and emits finding 13 exactly once" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/labeled_good/deflate-last-strip.tiff");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    var workspace = tiffz.Workspace.init(allocator);
+    defer workspace.deinit();
+
+    try dec.validateAllStripsAndTiles(&workspace);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        recorder.count(.final_strip_padding_tolerated),
     );
 }
 
-test "audit 1.0 [reg]: lzw-single-strip.tiff currently REJECTED as SourceTooShort (required-EOD gate) — bilevel 7795x3122 LZW historical no-EOD variant" {
-    try characterizeCurrentReject(
-        "tests/fixtures/labeled_good/lzw-single-strip.tiff",
-        error.SourceTooShort,
+test "audit 1.0 [fixed]: exact-extent clean-EOF LZW is accepted and emits finding 14 exactly once" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/labeled_good/lzw-single-strip.tiff");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    var workspace = tiffz.Workspace.init(allocator);
+    defer workspace.deinit();
+
+    try dec.validateAllStripsAndTiles(&workspace);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        recorder.count(.lzw_missing_eod_tolerated),
     );
 }
 
-test "audit 1.0 [reg]: quad-tile.tif currently REJECTED as Malformed (extent-gate) — 512x384 LZW RGB tiled 3ch chunky" {
-    try characterizeCurrentReject(
+test "audit 1.0 [fixed]: quad-tile.tif accepts tiled geometry via strip tags and emits finding 15 once" {
+    try expectFixtureValidatesWithFinding(
         "tests/fixtures/labeled_good/quad-tile.tif",
-        error.Malformed,
+        .tiled_geometry_via_strip_tags_tolerated,
+    );
+}
+
+test "warning 15 classifier rejects incomplete fallback arrays and partial canonical precedence" {
+    const allocator = std.testing.allocator;
+    const pristine = try loadFile(allocator, "tests/fixtures/labeled_good/cramps-tile.tif");
+    defer allocator.free(pristine);
+
+    // Remove StripByteCounts while keeping TileWidth/TileLength + StripOffsets.
+    // The compatibility shape is incomplete and must remain a hard failure.
+    const incomplete = try allocator.dupe(u8, pristine);
+    defer allocator.free(incomplete);
+    try replaceClassicIfd0Tag(incomplete, tiffz.tags.strip_byte_counts, 65000);
+    {
+        var handle = tiffz.source.BufferHandle.init(incomplete);
+        const source = tiffz.Source.fromBuffer(&handle);
+        var dec = try tiffz.Decoder.open(allocator, source);
+        defer dec.deinit();
+        var workspace = tiffz.Workspace.init(allocator);
+        defer workspace.deinit();
+        try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&workspace));
+    }
+
+    // Introduce only canonical TileOffsets. Canonical tile tags take
+    // precedence, so tiffz rejects the missing TileByteCounts rather than
+    // reconciling them with the complete strip arrays.
+    const ambiguous = try allocator.dupe(u8, pristine);
+    defer allocator.free(ambiguous);
+    try replaceClassicIfd0Tag(ambiguous, 32996, tiffz.tags.tile_offsets);
+    {
+        var handle = tiffz.source.BufferHandle.init(ambiguous);
+        const source = tiffz.Source.fromBuffer(&handle);
+        var dec = try tiffz.Decoder.open(allocator, source);
+        defer dec.deinit();
+        var workspace = tiffz.Workspace.init(allocator);
+        defer workspace.deinit();
+        try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&workspace));
+    }
+}
+
+test "warning 15 classifier does not fire for canonical tile arrays" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/photometric/ycbcr_tiled_uncompressed_sub2x2.tif");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    var workspace = tiffz.Workspace.init(allocator);
+    defer workspace.deinit();
+    try dec.validateAllStripsAndTiles(&workspace);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        recorder.count(.tiled_geometry_via_strip_tags_tolerated),
     );
 }
 
@@ -1579,9 +1861,30 @@ test "JPEG-in-TIFF: corrupt strip surfaces error.JpegInTiffPayload through the p
     const src = tiffz.Source.fromBuffer(&handle);
     var dec = try tiffz.Decoder.open(allocator, src);
     defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
     var ws = tiffz.Workspace.init(allocator);
     defer ws.deinit();
     try std.testing.expectError(error.JpegInTiffPayload, dec.validateAllStripsAndTiles(&ws));
+
+    var saw_exact_nested_cause = false;
+    for (recorder.findings.items) |finding| {
+        if (finding.source != .jpegz or finding.verdict != .corrupt) continue;
+        try std.testing.expect(finding.byte_offset != null);
+        try std.testing.expect(finding.host_byte_offset != null);
+        try std.testing.expect(finding.offset_is_exact);
+        // This fixture is Tech Note 2 Mode 2: the leaf offset is in the
+        // spliced JPEGTables+strip stream, while the host offset maps back to
+        // the first corrupted strip byte after its SOI.
+        try std.testing.expectEqual(
+            strip_off + 2,
+            @as(usize, @intCast(finding.host_byte_offset.?)),
+        );
+        try std.testing.expect(finding.byte_offset.? != finding.host_byte_offset.?);
+        saw_exact_nested_cause = true;
+    }
+    try std.testing.expect(saw_exact_nested_cause);
 }
 
 
@@ -1617,5 +1920,3 @@ test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
 
     try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&workspace));
 }
-
-

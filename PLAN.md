@@ -7,6 +7,17 @@ public API design.
 
 ## Next up
 
+### Mecha Validate v1 strict JPEG-family finding seam (2026-08-05 overnight)
+
+- [x] TDD approved warning codes 13/14/15 with their exact bounded acceptance rules and independently classified fixture evidence. RED and GREEN observed for each; completed 2026-08-05 01:59 EDT.
+- [x] Extend the pre-1.0 callback ABI to typed `(source_decoder, finding_code)` identity with append-only sources tiffz=1, jpegz=2, jp2z=3, libjxlz=4 and an unknown-value path. Equal-code/different-source and unknown-source classifier green; completed 2026-08-05 02:07 EDT.
+- [x] Pin exact `jpegz@fb72045459be7dc2c73337e321096ed3e1eedb0f` and bridge only its strict validation findings into tiffz without a rawz dependency or a second jpegz module instance. The shared LZW compatibility core is pinned at `5dba5c449219f00f665efe31e69934364e048de5`; completed 2026-08-05 02:12 EDT.
+- [x] Preserve nested raw code, source, TIFF-host offset, offset exactness, and valid/corrupt/unsupported/indeterminate semantics; unsupported and indeterminate do not become valid or corrupt. Mode-2 offset mapping and synthetic JP2/JXL forwarding classifier green; completed 2026-08-05 02:12 EDT.
+- [x] Prove the selected production validation closure excludes external JPEG-family decoders/oracles while preserving the completed codec-free `tiffz-parser` boundary. Static musl proof checks runtime result, symbols, dynamic section, and embedded store references; Nix `allowedReferences=[]` passed 2026-08-05 02:16 EDT.
+- [ ] Run canonical `./test`, `./build`, exact Nix manifest gates, commit/push green, obtain terminal exact-SHA Mechatron evidence, and publish immutable Validate/rawz/global notes.
+
+Curiosity pokes: callback source/code equality must distinguish numeric collisions; the strip tolerances must not widen unrelated corrupt inputs; canonical tile tags must retain precedence; and tiffz must not import rawz or duplicate the jpegz module instance downstream.
+
 ### Parser-only production boundary (rawz/Validate unblock)
 
 - [x] Expose `dep.module("tiffz-parser")` with the Source, Limits, header,

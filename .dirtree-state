@@ -7,8 +7,10 @@ annotate=[
 	build.zig = Build graph for full tiffz and codec-free tiffz-parser modules, C/Zig artifacts, tests, and shared dependency instances.
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
 	docs/parser_only_module.md = Consumer wiring and mechanically enforced production-closure contract for tiffz-parser.
+	src/compressions/jpeg.zig = TIFF TN2 JPEG stream preparation, exact host-offset mapping, strict validation, and cleanroom decode
 	src/compressions/lerc.zig = LERC-in-TIFF (Compression=34887) codec adapter: strict LercParameters parse (codec_version 2..6, add_compression 0/1/2), chains Deflate/Zstd post-filter, then calls lercz C ABI via lerc_getBlobInfo + lerc_decode.
 	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz; validates each chunk's decoded extent (ExpectedExtent min..max) — exact for non-subsampled, TIFF 6.0 §21 YCbCr chroma-subsampling range (final strip may pad to full RowsPerStrip) for chunky subsampled YCbCr.
+	src/findings.zig = Typed source/code callback ABI with four-way verdicts, mapped codes, and offset provenance
 	src/geotiff.zig = GeoTIFF metadata parser: strict parseFromIfd → Metadata with pixel_scale, tiepoints, transformation, key directory + double/ascii params. Reads DOUBLE payloads via cachedValueBytes since Ifd.arrayElementU64 is SHORT/LONG/LONG8 only.
 	src/lib.zig = Full public tiffz API; re-exports parser-owned core types and exact jpegz/lzwz module identities downstream.
 	src/parser.zig = Codec-free public Zig module exporting TIFF source/header/IFD/tag parsing as tiffz-parser.
@@ -21,6 +23,8 @@ annotate=[
 	tests/fixtures/lerc = GDAL-produced LERC-in-TIFF fixtures: gray16_lerc (bare), gray16_lerc_deflate (post-filter=1), gray16_lerc_zstd (post-filter=2), rgb16_lerc (chunky RGB).
 	tests/fixtures/lerc_oracle = ImageMagick RGBA oracles for tests/fixtures/lerc/.
 	tests/fixtures/photometric/ycbcr_tiled_uncompressed_sub2x2.tif = Real libtiff 4.7.1 tiled chunky YCbCr 2:2 uncompressed fixture (16x16, one 384-byte tile); product-path coverage for the .tile subsampling extent branch.
+	tests/jpeg_validation_closure_test = Static artifact gate excluding external JPEG-family decoder and oracle symbols/store references
+	tests/jpeg_validation_consumer.zig = Production-shaped consumer proving tiffz reaches jpegz structural validation without pixel decode
 	tests/parser_closure_test = Blocking recursive import, compiler-edge, runtime, and ELF linkage gate for tiffz-parser.
 	tests/parser_consumer.zig = Downstream tiffz-parser contract tests: classic/BigTIFF, lazy chains, cycles, limits, and allocation failures.
 	tests/parser_proxy.zig = Rawz-like test module proving Validate can inject one tiffz dependency instance into a parser consumer.

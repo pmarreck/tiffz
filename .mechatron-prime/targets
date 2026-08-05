@@ -2,3 +2,4 @@
 packages.x86_64-linux.default
 checks.x86_64-linux.test
 checks.x86_64-linux.parser-closure
+checks.x86_64-linux.jpeg-validation-closure

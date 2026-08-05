@@ -56,23 +56,27 @@ dec.scanFindings();
 _ = try dec.ifd(1);
 ```
 
-The C ABI mirror (will land in `include/tiffz.h` when validate or
-another C consumer needs it; tiffz's `setFindingCallback` already
-uses the C calling convention so the bridge is one wrapper function):
+The callback record ABI is declared in `include/tiffz.h`; the public C Decoder
+setter remains future API, while the current callable setter is Zig-only.
+Finding identity is the
+pair `(source_decoder, finding_code)`; equal integers from different sources
+do not collide. Optional mapped codes and offsets are presence-flagged so zero
+remains a valid value. JP2/JXL nested findings preserve `valid`, `corrupt`,
+`unsupported`, and `indeterminate` rather than forcing a binary answer:
 
 ```c
-typedef void (*tiffz_finding_cb)(
+typedef void (*tiffz_finding_callback_t)(
     void *userdata,
-    int finding_id,            // InfoFinding enum value (see below)
-    const void *payload,       // null for presence-only findings
+    int32_t source_decoder,
+    int32_t finding_code,
+    int32_t mapped_finding_code,
+    int32_t verdict,
+    uint64_t byte_offset,
+    uint64_t host_byte_offset,
+    uint32_t metadata_flags,
+    const uint8_t *payload,
     size_t payload_len
 );
-void tiffz_set_finding_callback(
-    tiffz_decoder *dec,
-    tiffz_finding_cb cb,
-    void *userdata
-);
-void tiffz_scan_findings(tiffz_decoder *dec);
 ```
 
 ### Per-finding firing policy
@@ -91,6 +95,9 @@ void tiffz_scan_findings(tiffz_decoder *dec);
 | `tiled_layout` (10) | none | per IFD with a TileOffsets tag |
 | `planar_separate` (11) | none | per IFD with PlanarConfiguration=2 |
 | `lerc_compression` (12) | none | per IFD with Compression=34887 |
+| `final_strip_padding_tolerated` (13) | none | once when a final strip exceeds its logical extent but stays within one full RowsPerStrip chunk |
+| `lzw_missing_eod_tolerated` (14) | none | once when valid LZW transitions reach physical EOF at an exact container bound without EOD |
+| `tiled_geometry_via_strip_tags_tolerated` (15) | none | once when complete tile geometry uses complete strip arrays and both canonical tile arrays are absent |
 
 Numeric finding codes are **stable** — they never change once
 assigned. New findings append at the end. The Zig enum
@@ -142,20 +149,19 @@ forward-compat unknowns.
 | `tiled_layout`                    | info             | `info_message = "tiled layout (TileWidth×TileLength)"`                 |
 | `planar_separate`                 | info             | `info_message = "separate planar configuration"`                       |
 | `lerc_compression`                | info             | `info_message = "LERC-in-TIFF (Compression=34887)"`                    |
+| `final_strip_padding_tolerated`   | warn             | `warning_message = "final TIFF strip padded to RowsPerStrip"`          |
+| `lzw_missing_eod_tolerated`       | warn             | `warning_message = "TIFF LZW stream omitted EOD at exact extent"`      |
+| `tiled_geometry_via_strip_tags_tolerated` | warn      | `warning_message = "TIFF tile geometry uses strip offset/count tags"`  |
 
 Notes on taxonomy:
 
 - **`info_message`** is for "this file is valid; here's a noteworthy
   property" (PASS-tier observation). Maps to `okWithDepthAndInfo` in
   validate.
-- **`warning_message`** is reserved for tool-tolerated deviations
-  that validate may want to flag. For tiffz v1 there are no WARN-tier
-  findings — anything that successfully decodes is currently treated
-  as either OK or OK-with-INFO. If validate wants to flag the
-  `old_style_lzw_codes` case as WARN (because the file is technically
-  malformed and only readable thanks to libtiff's heuristic), that's
-  a validate-side promotion, identical to jpegz's
-  `trailing_data_after_eoi` precedent.
+- **`warning_message`** carries the three bounded, libtiff-compatible
+  deviations above. Each has a negative classifier: beyond-full-strip bytes,
+  short/overlong/invalid LZW, and incomplete or ambiguous tile arrays remain
+  terminal failures.
 - **`malformation` bits** are not yet defined for TIFF in
   `MalformationType`. Candidate cases for future addition (each one
   requires a documented repair workflow):
@@ -176,6 +182,7 @@ exactly:
 
 ```zig
 const std = @import("std");
+const tiffz = @import("tiffz");
 const format_validation = @import("format_validation.zig");
 const ValidationErrorCode = format_validation.ValidationErrorCode;
 const MalformationType = format_validation.MalformationType;
@@ -272,6 +279,9 @@ pub const TiffzInfoFinding = enum(u32) {
     tiled_layout = 10,
     planar_separate = 11,
     lerc_compression = 12,
+    final_strip_padding_tolerated = 13,
+    lzw_missing_eod_tolerated = 14,
+    tiled_geometry_via_strip_tags_tolerated = 15,
     _, // forward-compat: new tiffz versions may introduce codes
 };
 
@@ -298,6 +308,9 @@ pub fn routeInfoFinding(finding: TiffzInfoFinding, payload_u32: ?u32) RoutedFind
         .tiled_layout          => .{ .info = "tiled layout" },
         .planar_separate       => .{ .info = "separate planar configuration" },
         .lerc_compression      => .{ .info = "LERC-in-TIFF (Compression=34887)" },
+        .final_strip_padding_tolerated => .{ .warning = "final TIFF strip padded to RowsPerStrip" },
+        .lzw_missing_eod_tolerated => .{ .warning = "TIFF LZW stream omitted EOD at exact extent" },
+        .tiled_geometry_via_strip_tags_tolerated => .{ .warning = "TIFF tile geometry uses strip offset/count tags" },
         _                      => .{ .other = "unknown tiffz finding code" },
     };
 }
@@ -323,11 +336,25 @@ pub const FindingAccumulator = struct {
 
     pub fn callback(
         userdata: ?*anyopaque,
+        source_decoder: i32,
         finding_id: i32,
+        mapped_finding_id: i32,
+        verdict: i32,
+        byte_offset: u64,
+        host_byte_offset: u64,
+        metadata_flags: u32,
         payload: ?[*]const u8,
         payload_len: usize,
     ) callconv(.c) void {
         const self: *FindingAccumulator = @ptrCast(@alignCast(userdata.?));
+        // Compact native-only example. The production Validate shim must keep
+        // nested source/code/verdict/offset metadata in its own accumulator.
+        if (source_decoder != @intFromEnum(tiffz.findings.SourceDecoder.tiffz)) return;
+        _ = mapped_finding_id;
+        _ = verdict;
+        _ = byte_offset;
+        _ = host_byte_offset;
+        _ = metadata_flags;
         const code: TiffzInfoFinding = @enumFromInt(@as(u32, @intCast(finding_id)));
         const payload_u32: ?u32 = if (payload_len >= 4 and payload != null) blk: {
             const slice = payload.?[0..4];

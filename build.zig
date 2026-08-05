@@ -198,6 +198,35 @@ pub fn build(b: *std.Build) void {
     tiffz_named_module.addImport("zstd", zstdz_mod);
     tiffz_named_module.addImport("lercz", lercz_mod);
 
+    // Production-shaped proof rooted at the same jpegz.validate call used by
+    // Decoder's JPEG-in-TIFF path. The Nix closure gate inspects this concrete
+    // artifact for external JPEG-family decoder/oracle leakage.
+    const jpeg_validation_consumer = b.addExecutable(.{
+        .name = "tiffz-jpeg-validation-proof",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/jpeg_validation_consumer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "tiffz", .module = tiffz_named_module }},
+        }),
+    });
+    const install_jpeg_validation_consumer = b.addInstallArtifact(jpeg_validation_consumer, .{});
+    const jpeg_validation_consumer_step = b.step(
+        "jpeg-validation-consumer",
+        "Build the production JPEG validation closure proof artifact",
+    );
+    jpeg_validation_consumer_step.dependOn(&install_jpeg_validation_consumer.step);
+
+    const jpeg_validation_consumer_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/jpeg_validation_consumer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "tiffz", .module = tiffz_named_module }},
+        }),
+    });
+    const run_jpeg_validation_consumer_tests = b.addRunArtifact(jpeg_validation_consumer_tests);
+
     // --- C CLI executable (dogfoods the C FFI per project convention) ---
     const cli = b.addExecutable(.{
         .name = "tiffz",
@@ -314,4 +343,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_fixture_tests.step);
     test_step.dependOn(&run_parser_consumer_tests.step);
     test_step.dependOn(&run_dual_module_tests.step);
+    test_step.dependOn(&run_jpeg_validation_consumer_tests.step);
 }

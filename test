@@ -30,13 +30,16 @@ run_subtest() {
 
 # Suite 1: Zig unit tests + CLI integration tests via
 # `nix build .#checks.<system>.test`. Canonical "tests pass" gate
-# that Garnix CI also runs on every push.
+# that Mechatron Prime CI also runs on every push.
 SYSTEM="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
 run_subtest "zig build test (sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.test" --print-out-paths --no-link
 
 run_subtest "parser-only import and artifact closure (sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.parser-closure" --print-out-paths --no-link
+
+run_subtest "JPEG validation artifact closure (sandboxed via nix)" \
+    nix build ".#checks.${SYSTEM}.jpeg-validation-closure" --print-out-paths --no-link
 
 # Suite 2: any future bash-driven CLI tests would slot in here.
 # Currently the CLI surface is small enough that the Zig-driven cli_test.zig
