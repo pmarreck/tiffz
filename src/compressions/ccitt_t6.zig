@@ -46,7 +46,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const errors = @import("../errors.zig");
+const errors = @import("tiffz-parser").errors;
 const t4 = @import("ccitt_t4.zig");
 
 pub const FillOrder = t4.FillOrder;

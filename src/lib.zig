@@ -5,7 +5,9 @@
 //! C FFI → C CLI dogfooding the FFI. See README.md and
 //! `docs/superpowers/specs/2026-05-04-tiffz-api-design.md`.
 
-pub const errors = @import("errors.zig");
+const parser = @import("tiffz-parser");
+
+pub const errors = parser.errors;
 // Re-export the one shared LZW module. Validate's PDF/GIF adapters consume
 // this instance through tiffz so Zig 0.16 never sees two modules with the
 // same lzwz source root.
@@ -17,12 +19,12 @@ pub const lzwz = @import("lzwz");
 // ("file exists in modules 'jpegz' and 'jpegz0'") and the nix sandbox SEGVs on.
 // Single source of truth = no dual-pin drift. See validate #32.
 pub const jpegz = @import("jpegz");
-pub const limits = @import("limits.zig");
-pub const source = @import("source.zig");
+pub const limits = parser.limits;
+pub const source = parser.source;
 pub const workspace = @import("workspace.zig");
-pub const header = @import("header.zig");
-pub const ifd = @import("ifd.zig");
-pub const tags = @import("tags.zig");
+pub const header = parser.header;
+pub const ifd = parser.ifd;
+pub const tags = parser.tags;
 pub const photometrics = @import("photometrics.zig");
 pub const predictors = @import("predictors.zig");
 pub const dng = @import("dng.zig");

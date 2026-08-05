@@ -19,9 +19,10 @@
 
 const std = @import("std");
 
-const errors = @import("errors.zig");
-const tags = @import("tags.zig");
-const header_mod = @import("header.zig");
+const parser = @import("tiffz-parser");
+const errors = parser.errors;
+const tags = parser.tags;
+const header_mod = parser.header;
 const Endian = header_mod.Endian;
 
 pub const PixelFormat = struct {

@@ -23,6 +23,14 @@ public API design.
       artifact. The gate independently rejected a package import, a `-lz`
       compiler edge, a dynamic ELF, and an injected Nix store reference;
       canonical `./test` and `./build` passed. Completed 2026-08-05 00:57 EDT.
+- [x] Make the full `tiffz` module consume the parser module as the sole owner
+      of shared parser files, and permanently test full+parser coexistence in
+      one Zig compilation. RED at 2026-08-05 01:02 EDT: Zig rejected
+      `src/errors.zig` as owned by both modules. Curiosity poke: every full-side
+      relative import of a parser-owned file must move to the named module, or
+      the first fixed collision will only reveal the next one. GREEN with
+      shared type-identity assertions, canonical `./test`/`./build`, and a
+      zero-reference parser Nix output. Completed 2026-08-05 01:08 EDT.
 - [ ] Publish the exact tiffz repin and module-name instructions to rawz and
       Validate after canonical tests, build, Nix targets, and terminal
       Mechatron evidence pass. Curiosity poke: the full tiffz consumer remains

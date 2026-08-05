@@ -25,7 +25,7 @@
 
 const std = @import("std");
 
-const errors = @import("../errors.zig");
+const errors = @import("tiffz-parser").errors;
 
 pub const FillOrder = enum { msb_first, lsb_first };
 

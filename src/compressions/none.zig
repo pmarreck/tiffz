@@ -4,8 +4,9 @@
 
 const std = @import("std");
 
-const errors = @import("../errors.zig");
-const Source = @import("../source.zig").Source;
+const parser = @import("tiffz-parser");
+const errors = parser.errors;
+const Source = parser.Source;
 
 /// Read `byte_count` bytes from `source` at `offset` into `dest`.
 /// Returns the number of bytes written. dest.len must be ≥ byte_count.
@@ -22,7 +23,7 @@ pub fn decode(
 }
 
 test "none.decode: round-trips a slice of the source" {
-    const BufferHandle = @import("../source.zig").BufferHandle;
+    const BufferHandle = parser.source.BufferHandle;
 
     const data = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x42, 0x13, 0x37 };
     var handle = BufferHandle.init(&data);
@@ -35,7 +36,7 @@ test "none.decode: round-trips a slice of the source" {
 }
 
 test "none.decode: rejects undersized dest" {
-    const BufferHandle = @import("../source.zig").BufferHandle;
+    const BufferHandle = parser.source.BufferHandle;
     const data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
     var handle = BufferHandle.init(&data);
     const src = Source.fromBuffer(&handle);
@@ -45,7 +46,7 @@ test "none.decode: rejects undersized dest" {
 }
 
 test "none.decode: short read at EOF surfaces SourceShortRead" {
-    const BufferHandle = @import("../source.zig").BufferHandle;
+    const BufferHandle = parser.source.BufferHandle;
     const data = [_]u8{ 0x01, 0x02 };
     var handle = BufferHandle.init(&data);
     const src = Source.fromBuffer(&handle);

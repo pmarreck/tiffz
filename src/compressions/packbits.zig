@@ -20,7 +20,7 @@
 
 const std = @import("std");
 
-const errors = @import("../errors.zig");
+const errors = @import("tiffz-parser").errors;
 
 /// Decode `src` (compressed PackBits bytes) into `dest`. Returns the
 /// number of bytes written. Returns DestTooSmall if the stream

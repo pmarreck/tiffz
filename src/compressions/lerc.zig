@@ -15,7 +15,7 @@
 const std = @import("std");
 const lerc = @import("lercz");
 
-const errors = @import("../errors.zig");
+const errors = @import("tiffz-parser").errors;
 const deflate = @import("deflate.zig");
 const zstd = @import("zstd.zig");
 

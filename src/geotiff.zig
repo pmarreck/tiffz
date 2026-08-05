@@ -25,10 +25,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const errors = @import("errors.zig");
-const tags = @import("tags.zig");
-const ifd_mod = @import("ifd.zig");
-const header_mod = @import("header.zig");
+const parser = @import("tiffz-parser");
+const errors = parser.errors;
+const tags = parser.tags;
+const ifd_mod = parser.ifd;
+const header_mod = parser.header;
 
 const Ifd = ifd_mod.Ifd;
 const Endian = header_mod.Endian;
@@ -246,4 +247,3 @@ fn readAscii(dir: Ifd, tag: u16, source: anytype, allocator: Allocator) errors.E
 	}
 	return buf;
 }
-

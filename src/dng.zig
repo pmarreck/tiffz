@@ -14,8 +14,9 @@
 
 const std = @import("std");
 
-const errors = @import("errors.zig");
-const header_mod = @import("header.zig");
+const parser = @import("tiffz-parser");
+const errors = parser.errors;
+const header_mod = parser.header;
 const Endian = header_mod.Endian;
 
 /// Color-filter-array mosaic pattern from CFARepeatPatternDim (33421)

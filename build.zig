@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    lib_module.addImport("tiffz-parser", parser_module);
 
     // lzwz is shared with Validate's PDF and GIF adapters. Keep one module
     // instance rooted in tiffz and re-export it from src/lib.zig; a downstream
@@ -188,6 +189,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    tiffz_named_module.addImport("tiffz-parser", parser_module);
     if (opt_zlib_inc.len > 0) tiffz_named_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) tiffz_named_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     tiffz_named_module.linkSystemLibrary("z", .{});
@@ -229,6 +231,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    unit_tests_module.addImport("tiffz-parser", parser_module);
     if (opt_zlib_inc.len > 0) unit_tests_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) unit_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     unit_tests_module.linkSystemLibrary("z", .{});
@@ -280,9 +283,28 @@ pub fn build(b: *std.Build) void {
     );
     parser_test_step.dependOn(&run_parser_consumer_tests.step);
 
+    const dual_module_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/dual_module_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tiffz", .module = tiffz_named_module },
+                .{ .name = "tiffz-parser", .module = parser_module },
+            },
+        }),
+    });
+    const run_dual_module_tests = b.addRunArtifact(dual_module_tests);
+    const dual_module_test_step = b.step(
+        "dual-module-test",
+        "Run the full-plus-parser Zig module ownership gate",
+    );
+    dual_module_test_step.dependOn(&run_dual_module_tests.step);
+
     const test_step = b.step("test", "Run unit, CLI, and fixture tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_fixture_tests.step);
     test_step.dependOn(&run_parser_consumer_tests.step);
+    test_step.dependOn(&run_dual_module_tests.step);
 }

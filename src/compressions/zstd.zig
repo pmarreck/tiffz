@@ -10,7 +10,7 @@
 const std = @import("std");
 const zstd = @import("zstd");
 
-const errors = @import("../errors.zig");
+const errors = @import("tiffz-parser").errors;
 
 /// Decode one ZSTD strip/tile into `dest`. `src` is the on-disk
 /// compressed byte stream; `dest` must be at least the expected

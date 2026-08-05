@@ -31,7 +31,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const errors = @import("../errors.zig");
+const errors = @import("tiffz-parser").errors;
 const jpegz = @import("jpegz");
 
 /// Decode one JPEG-in-TIFF chunk into `dest`. `strip_bytes` is the

@@ -4,16 +4,17 @@ depth=3
 
 annotate=[
 	CODE_REVIEW.md = 1.0 audit surface (Einstein 2026-07-23 dispatch): measured state, reproducers, root cause, per-fixture attribution, smallest next release slice. Audit-only, no fixes.
-	build.zig = Build graph for tiffz C/Zig artifacts and one re-exported lzwz module instance.
+	build.zig = Build graph for full tiffz and codec-free tiffz-parser modules, C/Zig artifacts, tests, and shared dependency instances.
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
 	docs/parser_only_module.md = Consumer wiring and mechanically enforced production-closure contract for tiffz-parser.
 	src/compressions/lerc.zig = LERC-in-TIFF (Compression=34887) codec adapter: strict LercParameters parse (codec_version 2..6, add_compression 0/1/2), chains Deflate/Zstd post-filter, then calls lercz C ABI via lerc_getBlobInfo + lerc_decode.
 	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz; validates each chunk's decoded extent (ExpectedExtent min..max) — exact for non-subsampled, TIFF 6.0 §21 YCbCr chroma-subsampling range (final strip may pad to full RowsPerStrip) for chunky subsampled YCbCr.
 	src/geotiff.zig = GeoTIFF metadata parser: strict parseFromIfd → Metadata with pixel_scale, tiepoints, transformation, key directory + double/ascii params. Reads DOUBLE payloads via cachedValueBytes since Ifd.arrayElementU64 is SHORT/LONG/LONG8 only.
-	src/lib.zig = Public tiffz API and re-exports for exact jpegz/lzwz module identity downstream.
+	src/lib.zig = Full public tiffz API; re-exports parser-owned core types and exact jpegz/lzwz module identities downstream.
 	src/parser.zig = Codec-free public Zig module exporting TIFF source/header/IFD/tag parsing as tiffz-parser.
 	src/parser_decoder.zig = Codec-free lazy TIFF IFD-chain decoder compatible with the rawz parser surface.
 	src/tags.zig = Named TIFF tag constants (incl. ycbcr_subsampling=530) + compression/photometric/planar code enums.
+	tests/dual_module_test.zig = Blocking Zig 0.16 single-ownership gate proving full tiffz and tiffz-parser coexist with identical shared parser types.
 	tests/fixture_test.zig = Independent TIFF fixture and inline-byte regressions, including strict LZW terminator and decoded-extent coverage.
 	tests/fixtures/geotiff = GeoTIFF fixtures: gray16_geotiff.tif is 16x16 EPSG:4326 grayscale with WGS 84 GeoKeyDirectory (7 keys, 2 doubles, ASCII citation).
 	tests/fixtures/labeled_good = Byte-verbatim copies of validate's labeled-good corpus at ~/Code/validate_gui/ground_truth_examples/tiff/. Distinct dir to sidestep name-collision drift with tests/fixtures/tiled/.

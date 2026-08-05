@@ -11,15 +11,16 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const errors = @import("errors.zig");
-const Limits = @import("limits.zig").Limits;
-const Source = @import("source.zig").Source;
+const parser = @import("tiffz-parser");
+const errors = parser.errors;
+const Limits = parser.Limits;
+const Source = parser.Source;
 const Workspace = @import("workspace.zig").Workspace;
-const header_mod = @import("header.zig");
+const header_mod = parser.header;
 const Endian = header_mod.Endian;
-const ifd_mod = @import("ifd.zig");
+const ifd_mod = parser.ifd;
 const Ifd = ifd_mod.Ifd;
-const tags = @import("tags.zig");
+const tags = parser.tags;
 const compressions_none = @import("compressions/none.zig");
 const compressions_packbits = @import("compressions/packbits.zig");
 const lzwz = @import("lzwz");
@@ -1151,7 +1152,7 @@ fn readTwoU32(dir: Ifd, tag: u16, endian: Endian, source: Source) errors.Error![
 /// Read element [index] from a SHORT/LONG/LONG8 array tag, widened to u64.
 // ---- tests ----
 
-const BufferHandle = @import("source.zig").BufferHandle;
+const BufferHandle = parser.source.BufferHandle;
 
 /// Build a minimal LE classic TIFF with one IFD containing the
 /// listed entries plus an inline strip. Returns the full byte stream.

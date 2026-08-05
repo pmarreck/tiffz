@@ -18,7 +18,7 @@
 
 const std = @import("std");
 
-const errors = @import("../errors.zig");
+const errors = @import("tiffz-parser").errors;
 
 const c = @cImport({
     @cInclude("zlib.h");

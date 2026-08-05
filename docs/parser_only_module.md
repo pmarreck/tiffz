@@ -16,6 +16,9 @@ The module exports:
   `source`, `ifds`, and `ifd_offsets`
 
 The full `dep.module("tiffz")` module and its decode API remain unchanged.
+The full module imports `tiffz-parser` and re-exports its parser types, making
+the parser module their single Zig owner. Validate can therefore import the
+full module and a rawz dependency backed by `tiffz-parser` in one compilation.
 
 ## Consumer wiring
 
@@ -61,4 +64,6 @@ package import. The Nix `checks.<system>.parser-closure` target then:
 The consumer tests separately sweep successful multi-IFD traversal, cycle
 rejection, IFD-limit rejection, BigTIFF/IFD8 declarations, and every allocator
 failure point reached by the bounded fixtures. `./test` runs both the full
-tiffz suite and the parser-closure Nix target.
+tiffz suite and the parser-closure Nix target. `tests/dual_module_test.zig`
+also compiles the full and parser modules together and asserts that every
+shared public parser type has one identity.
