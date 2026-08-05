@@ -60,6 +60,42 @@ Safety boundaries are part of the ruling and must gate the accept:
 - TDD the WARN emission and the callback ABI as a classifier; coordinate the
   validate-side pin so neither repo's canonical gates go red between commits.
 
+### SEAM PLAN — Peter chose "do the whole seam (A+B)" 2026-08-04; NOT started (late)
+
+Peter's steer: implement the full finding-seam + accept+WARN, Phase A then Phase B.
+Deferred starting because it's a multi-hour ABI-breaking cross-repo push and it was
+after 10pm — better begun fresh. Everything needed to launch is captured here.
+
+Code 15 APPROVED by Einstein 2026-08-04 (`inbox/processed/2026-08-04-from-Einstein-warning-code-15-approved.md`).
+Final Namespace-B WARN codes (append-only after `12 lerc_compression`):
+- `13 final_strip_padding_tolerated` — bounded `[logical_min, full_chunk_max]`; bytes past max still FAIL.
+- `14 lzw_missing_eod_tolerated` — accept ONLY if decode hit physical EOF cleanly AND produced the exact bounded extent; short/overlong/invalid still FAIL.
+- `15 tiled_geometry_via_strip_tags_tolerated` — Einstein's bounds: activate the
+  fallback ONLY when tiled geometry is present (TileWidth/TileLength), canonical
+  `TileOffsets(324)`/`TileByteCounts(325)` are ABSENT, and BOTH strip-tag arrays
+  (273/279) are present. Canonical tile tags keep precedence — do NOT reconcile
+  ambiguous simultaneous tile+strip arrays. Emit 15 exactly once per accepted
+  deviation. Reject malformed/incomplete arrays. Needs a real decode-path change
+  (detect tiling via TileWidth; read tile offsets/counts from the strip tags),
+  not just a gate relaxation.
+
+Ordered steps for next session:
+1. Fix the stale `lerc_post_compression = 13` comment in findings.zig:73-78 (13 is now taken).
+2. Phase A, TDD each: code 13 (deflate-last-strip accept+WARN), code 14 (lzw-single-strip
+   accept+WARN), code 15 (cramps/quad tiled-via-strip-tags decode fix + WARN). Flip the
+   four labeled_good characterization tests from `characterizeCurrentReject` to
+   `expectFixtureValidates` as each lands. Keep 13/14/15 independently classifiable over
+   the fixture set (deflate, lzw, cramps, quad + must-pass conformant members).
+3. Phase B: Option-B typed-source callback ABI change (source registry `tiffz=1,jpegz=2,
+   jp2z=3,libjxlz=4`, `i32`/`int32_t` named constants, unknown-value path) for nested
+   jpegz findings (P1 Tier 2). Coordinate the validate-side pin so neither repo goes red.
+4. Report to Einstein when the seam lands: tiffz SHA, exact test counts, Mechatron result,
+   validate-side pin/API change.
+
+Session 2026-08-04 shipped (all pushed, Mechatron `b3b8871a` = success): rawz M2
+double-free (`2a431856`), rawz M2 BigTIFF IFD8 (`b3b8871a`), cramps/quad characterization
+(`bfb2ca53`). Einstein reported (`inbox/.../2026-08-04-from-tiffz-rawz-m2-fixed...`).
+
 
 - [x] **Fix planar=separate u32 underflow in strip row math** (2026-07-31,
       Einstein note 2026-07-29). ReleaseSafe test builds (`flake.nix` now passes
