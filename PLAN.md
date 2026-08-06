@@ -7,6 +7,48 @@ public API design.
 
 ## Next up
 
+### >>> TOMORROW'S SCOPE (scoped 2026-08-05 23:00 EDT, for Peter's oversight) <<<
+
+State: the whole seam A+B was executed overnight (Einstein-authorized, superseding
+the pause) in `8fe6524e` on top of parser-module refactors, tip `5f97831d`; Mechatron
+PASS on all four manifest targets. VERIFIED tonight (read-only): codes 13/14/15 exist
+in findings.zig (75-84); stale `lerc_post_compression=13` comment gone; jpegz pinned to
+the requested `fb72045459be`; all four labeled_good fixtures FLIPPED from reject to
+accept+WARN (deflate→13, lzw→14, cramps/quad→15 once each, fixture_test.zig ~1653-1710)
+plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
+
+- [ ] **P0 — code-13 u32 payload (validate is wiring `8fe6524` NOW).** `decoder.zig:556`
+      emits `self.emit(.final_strip_padding_tolerated, &.{})` — PRESENCE-ONLY, empty
+      payload. validate confirmed Option A and asked for a `u32` LE excess-byte payload
+      `(written − logical)` so they can render "final strip padded by N bytes". TDD:
+      extend the finding-13 test (fixture_test ~1660) to assert a 4-byte LE payload ==
+      excess; compute + emit it at decoder.zig:556; keep "fires once". Then durable-reply
+      to validate. DONE = code 13 carries LE u32 excess; test asserts exact value;
+      validate notified. (Heads-up note sent tonight so they don't wire against empty.)
+- [ ] **P1 — coverage inventory matrix (Einstein dispatch outcome 2, NOT delivered).**
+      No `docs/*coverage*` exists. Produce a strict/partial/unsupported/blocked matrix
+      across standard, BigTIFF, tiled/striped, multi-page, professional, DNG,
+      embedded-JPEG, compression, metadata, vendor-extension. DONE = committed matrix doc.
+- [ ] **P1 — corpus + mutation classification + fuzz (Einstein outcome 5, NOT delivered).**
+      No `./fuzz`, no `tests/fuzz/`, no fuzz Mechatron target. Build a known-good/known-bad
+      corpus classifier + deterministic sniper/boltgun/shotgun mutations (shotgun needs a
+      paired specificity corpus per MFIC), wire `./fuzz`, run oracle vs libtiff/ImageMagick
+      (dev/test oracles only). DONE = `./fuzz` green + classified corpus + shotgun score
+      with specificity corpus + optional Mechatron fuzz target.
+- [ ] **P2 — independent verification (MFIC segregation of duties).** The overnight session
+      self-reported PASS; a different session should confirm. Fresh `./test` + `./build`;
+      spot-check code-15 bounds (canonical tile precedence; reject partial/ambiguous/
+      count-mismatched arrays); confirm the negative classifier bites. DONE = green on my
+      run + bounds spot-checked.
+- [ ] **P2 — acyclic rawz/tiffz/jpegz boundary (Einstein outcome 4).** Confirmed acyclic:
+      `tiffz-parser` module exported for rawz; tiffz imports NO rawz. Verify no regression
+      + a boundary test exists (parser-final claims a rawz-proxy injection test). DONE =
+      boundary test confirmed; recommend coordinator if any cycle risk resurfaces.
+
+Cross-repo context (NOT tiffz work): validate is integrating `8fe6524` in their v1
+cutover now (their blockers: JXL non-claimable, production closure still has OpenJPEG/
+libjpeg-turbo/LibRaw — all validate-side). rawz repin done (`c57166db` parser module).
+
 ### Mecha Validate v1 strict JPEG-family finding seam (2026-08-05 overnight)
 
 - [x] TDD approved warning codes 13/14/15 with their exact bounded acceptance rules and independently classified fixture evidence. RED and GREEN observed for each; completed 2026-08-05 01:59 EDT.
