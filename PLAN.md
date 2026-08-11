@@ -46,12 +46,25 @@ plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
       column (code / fixture / provisional) — honest about which cells are fixture-backed
       vs inferred. Provisional cells flagged for fixture promotion: predictor-3 float,
       CIELab/ICCLab, CMYK, transparency-mask, 32-bit float, EXIF-IFD descent.
-- [ ] **P1 — corpus + mutation classification + fuzz (Einstein outcome 5, NOT delivered).**
-      No `./fuzz`, no `tests/fuzz/`, no fuzz Mechatron target. Build a known-good/known-bad
-      corpus classifier + deterministic sniper/boltgun/shotgun mutations (shotgun needs a
-      paired specificity corpus per MFIC), wire `./fuzz`, run oracle vs libtiff/ImageMagick
-      (dev/test oracles only). DONE = `./fuzz` green + classified corpus + shotgun score
-      with specificity corpus + optional Mechatron fuzz target.
+- [~] **P1 — corpus + mutation classification + fuzz (Einstein outcome 5).** IN PROGRESS.
+      Increment 1 SHIPPED (2026-08-11): `tests/fuzz/fuzz.zig` — deterministic (fixed-seed,
+      hermetic) mutation fuzzer with three MFIC properties: (1) robustness/non-crash sweep
+      over 18 committed seed fixtures × 200 seeded mutations (sniper/shotgun/boltgun,
+      biased toward the structural region), built ReleaseSafe so any UB on mutated input
+      is a real bug; (2) specificity corpus — every known-good seed must validate unmutated
+      under REAL default limits (the paired guard so a reject-everything validator can't
+      score 100%); (3) the mutators are themselves tested for non-vacuity. Wired `./fuzz`
+      (native), `zig build fuzz`, `checks.fuzz` (Nix, ReleaseSafe), and the Mechatron
+      target `checks.x86_64-linux.fuzz`. Robustness uses bounded 256 MB limits to cap CI
+      RSS (was ~1 GB). `./fuzz` + `./test` green.
+      **The fuzzer immediately found a real bug**: a mutated embedded-JPEG strip makes
+      `jpegz.validate` PANIC (index-OOB in jpegz `decodeBlockCoefficients`, baseline.zig:850)
+      instead of erroring — a jpegz robustness bug tiffz inherits (a panic can't be caught).
+      Reported to jpegz (inbox note). The JPEG fixture is a TRACKED exclusion from the
+      robustness sweep (kept in specificity); re-include on the fixed jpegz pin.
+      Remaining: increment 2 = targeted must-detect sensitivity score (sniper at
+      magic/version/IFD-offset/count → must reject); increment 3 = native libtiff/ImageMagick
+      oracle differential in `./fuzz`.
 - [x] **P2 — independent verification (MFIC segregation of duties)** (2026-08-11). Fresh
       baseline `./test` of HEAD `f7d03e4e` → exit 0 (overnight seam independently confirmed
       green on my machine). Spot-checked code-15 bounds in `chunkLayout` (decoder.zig:498):

@@ -310,6 +310,56 @@
           '';
         };
 
+        # Deterministic mutation fuzzer (Einstein outcome 5). Same ReleaseSafe
+        # UB floor as `checks.test`; a panic on any mutated input is a real bug.
+        # Hermetic: mutates committed fixtures with a fixed seed, no external
+        # tools (the libtiff/ImageMagick oracle diff lives in `./fuzz`, native).
+        checks.fuzz = pkgs.stdenv.mkDerivation {
+          pname = "tiffz-fuzz";
+          version = "0.1.0";
+          src = self;
+
+          nativeBuildInputs = [ zig ]
+            ++ pkgs.lib.optionals isDarwin [
+              pkgs.darwin.cctools
+              pkgs.apple-sdk
+            ];
+
+          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib ];
+
+          dontConfigure = true;
+
+          buildPhase = ''
+            export HOME="$TMPDIR"
+            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${pkgs.lib.optionalString isDarwin ''
+              export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+            ''}
+            ${pkgs.lib.optionalString isLinux ''
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
+            ''}
+            export TERM=dumb
+            timeout 600 zig build fuzz -Doptimize=ReleaseSafe ${zigTargetFlag} \
+              -Dlibjpeg-include=${jpegPkgs.libjpeg.dev}/include \
+              -Dlibjpeg-lib=${jpegPkgs.libjpeg.out}/lib \
+              -Dopenjpeg-include=${jpegPkgs.openjpeg.dev}/include/openjpeg-2.5 \
+              -Dopenjpeg-lib=${jpegPkgs.openjpeg.out}/lib \
+              -Dzlib-include=${jpegPkgs.zlib.dev}/include \
+              -Dzlib-lib=${jpegPkgs.zlib.out}/lib \
+              2>&1 || {
+              echo "Fuzz failed or timed out after 10 minutes"
+              exit 1
+            }
+          '';
+
+          installPhase = ''
+            mkdir -p $out
+            echo "fuzz passed" > $out/result
+          '';
+        };
         # devShell — provides Zig + the full TIFF fixture-generation toolchain
         # per SPEC.md Appendix A.
         devShells.default = pkgs.mkShell {

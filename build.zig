@@ -297,6 +297,25 @@ pub fn build(b: *std.Build) void {
     const fixture_tests = b.addTest(.{ .root_module = fixture_tests_module });
     const run_fixture_tests = b.addRunArtifact(fixture_tests);
 
+    // --- Deterministic mutation fuzzer (Einstein outcome 5). Separate `fuzz`
+    // step, NOT part of `test`, per project convention (`./test` = unit +
+    // integration; `./fuzz` = fuzzing). Mutates committed fixtures with a fixed
+    // seed so it is hermetic and reproducible; the libtiff/ImageMagick oracle
+    // diff lives in the `./fuzz` script (native), not in this Zig harness. ---
+    const fuzz_module = b.createModule(.{
+        .root_source_file = b.path("tests/fuzz/fuzz.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    fuzz_module.addImport("tiffz", lib_module);
+    if (opt_zlib_inc.len > 0) fuzz_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
+    if (opt_zlib_lib_path.len > 0) fuzz_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
+    fuzz_module.linkSystemLibrary("z", .{});
+    const fuzz_tests = b.addTest(.{ .root_module = fuzz_module });
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const fuzz_step = b.step("fuzz", "Run the deterministic mutation fuzzer");
+    fuzz_step.dependOn(&run_fuzz_tests.step);
     const parser_consumer_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/parser_consumer.zig"),

@@ -7,6 +7,8 @@ annotate=[
 	build.zig = Build graph for full tiffz and codec-free tiffz-parser modules, C/Zig artifacts, tests, and shared dependency instances.
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
 	docs/parser_only_module.md = Consumer wiring and mechanically enforced production-closure contract for tiffz-parser.
+	docs/tiffz_coverage_matrix.md = Coverage matrix: strict/partial/unsupported/blocked inventory across compression, structure, predictor, photometric, metadata, DNG, embedded-JPEG (Einstein outcome 2)
+	fuzz = Top-level fuzz runner: hermetic ReleaseSafe mutation fuzzer via checks.fuzz + (native) oracle diff
 	src/compressions/jpeg.zig = TIFF TN2 JPEG stream preparation, exact host-offset mapping, strict validation, and cleanroom decode
 	src/compressions/lerc.zig = LERC-in-TIFF (Compression=34887) codec adapter: strict LercParameters parse (codec_version 2..6, add_compression 0/1/2), chains Deflate/Zstd post-filter, then calls lercz C ABI via lerc_getBlobInfo + lerc_decode.
 	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz; validates each chunk's decoded extent (ExpectedExtent min..max) — exact for non-subsampled, TIFF 6.0 §21 YCbCr chroma-subsampling range (final strip may pad to full RowsPerStrip) for chunky subsampled YCbCr.
@@ -23,6 +25,7 @@ annotate=[
 	tests/fixtures/lerc = GDAL-produced LERC-in-TIFF fixtures: gray16_lerc (bare), gray16_lerc_deflate (post-filter=1), gray16_lerc_zstd (post-filter=2), rgb16_lerc (chunky RGB).
 	tests/fixtures/lerc_oracle = ImageMagick RGBA oracles for tests/fixtures/lerc/.
 	tests/fixtures/photometric/ycbcr_tiled_uncompressed_sub2x2.tif = Real libtiff 4.7.1 tiled chunky YCbCr 2:2 uncompressed fixture (16x16, one 384-byte tile); product-path coverage for the .tile subsampling extent branch.
+	tests/fuzz/fuzz.zig = Deterministic hermetic mutation fuzzer: non-crash robustness sweep + specificity corpus + tested mutators (Einstein outcome 5)
 	tests/jpeg_validation_closure_test = Static artifact gate excluding external JPEG-family decoder and oracle symbols/store references
 	tests/jpeg_validation_consumer.zig = Production-shaped consumer proving tiffz reaches jpegz structural validation without pixel decode
 	tests/parser_closure_test = Blocking recursive import, compiler-edge, runtime, and ELF linkage gate for tiffz-parser.
