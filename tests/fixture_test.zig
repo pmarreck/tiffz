@@ -1675,6 +1675,14 @@ test "audit 1.0 [fixed]: bounded final-strip padding is accepted and emits findi
         @as(usize, 1),
         recorder.count(.final_strip_padding_tolerated),
     );
+    // validate renders "final strip padded by N bytes": N = written − logical.
+    // deflate-last-strip.tiff: 500×500 8-bit 1-sample = 500 B/row; last strip
+    // (idx 31) holds 4 real rows (logical 2000) padded to RowsPerStrip=16 (8000),
+    // so the excess is 8000 − 2000 = 6000, carried as a 4-byte LE u32.
+    try std.testing.expectEqual(
+        @as(?u32, 6000),
+        recorder.payloadFor(.final_strip_padding_tolerated),
+    );
 }
 
 test "audit 1.0 [fixed]: exact-extent clean-EOF LZW is accepted and emits finding 14 exactly once" {

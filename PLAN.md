@@ -17,14 +17,23 @@ the requested `fb72045459be`; all four labeled_good fixtures FLIPPED from reject
 accept+WARN (deflate→13, lzw→14, cramps/quad→15 once each, fixture_test.zig ~1653-1710)
 plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
 
-- [ ] **P0 — code-13 u32 payload (validate is wiring `8fe6524` NOW).** `decoder.zig:556`
-      emits `self.emit(.final_strip_padding_tolerated, &.{})` — PRESENCE-ONLY, empty
-      payload. validate confirmed Option A and asked for a `u32` LE excess-byte payload
-      `(written − logical)` so they can render "final strip padded by N bytes". TDD:
-      extend the finding-13 test (fixture_test ~1660) to assert a 4-byte LE payload ==
-      excess; compute + emit it at decoder.zig:556; keep "fires once". Then durable-reply
-      to validate. DONE = code 13 carries LE u32 excess; test asserts exact value;
-      validate notified. (Heads-up note sent tonight so they don't wire against empty.)
+- [x] **P0 — code-13 u32 payload** (2026-08-11). `acceptDecodedExtent` (decoder.zig:552)
+      now emits `emitU32(.final_strip_padding_tolerated, written − ext.min)` — the LE u32
+      excess bytes validate wanted for "final strip padded by N bytes" — replacing the
+      empty `emit(...&.{})`, still firing once. Excess saturates into u32 defensively.
+      TDD: extended the finding-13 test to assert `payloadFor(...) == 6000` for
+      deflate-last-strip (derived from geometry: 500 B/row × (16−4) padding rows = 6000,
+      not from the impl). RED (found null) → GREEN. `./test` (all three sandbox checks) +
+      `./build` green; native 186/186. Durable-reply to validate pending after commit.
+- [ ] **P0 — jpegz pin bump `fb72045` → `98824e7b` (jpegz note 2026-08-10).** Gives
+      `jpegz.validateAny(allocator, bytes)` (whole-family sniff+route; unrecognized →
+      `.indeterminate` + `unrecognized_container`, never fabricated). Load-bearing:
+      validate consumes `tiffz.jpegz` and can't reach validateAny until we bump. We
+      import the Zig MODULE (build.zig:155), NOT the static `.a`, so jpegz's ET_REL
+      link-bug does NOT affect us. Steps: build.zig.zon jpegz url→98824e7b, hash→
+      `jpegz-0.1.0-staw4AVNEQDEdTwIVRvXEpJiqpseMxrLBpsojItxSeeB`; regen flake.nix
+      `zigDepsHash` (fakeHash→nix build→read→set); `./test`+`./build`. DONE = pinned,
+      green, validate notified.
 - [ ] **P1 — coverage inventory matrix (Einstein dispatch outcome 2, NOT delivered).**
       No `docs/*coverage*` exists. Produce a strict/partial/unsupported/blocked matrix
       across standard, BigTIFF, tiled/striped, multi-page, professional, DNG,
@@ -35,11 +44,14 @@ plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
       paired specificity corpus per MFIC), wire `./fuzz`, run oracle vs libtiff/ImageMagick
       (dev/test oracles only). DONE = `./fuzz` green + classified corpus + shotgun score
       with specificity corpus + optional Mechatron fuzz target.
-- [ ] **P2 — independent verification (MFIC segregation of duties).** The overnight session
-      self-reported PASS; a different session should confirm. Fresh `./test` + `./build`;
-      spot-check code-15 bounds (canonical tile precedence; reject partial/ambiguous/
-      count-mismatched arrays); confirm the negative classifier bites. DONE = green on my
-      run + bounds spot-checked.
+- [x] **P2 — independent verification (MFIC segregation of duties)** (2026-08-11). Fresh
+      baseline `./test` of HEAD `f7d03e4e` → exit 0 (overnight seam independently confirmed
+      green on my machine). Spot-checked code-15 bounds in `chunkLayout` (decoder.zig:498):
+      canonical tile arrays handled FIRST (precedence, `tolerated=false`); the compat route
+      fires only with both TileWidth+TileLength, canonical tile arrays absent, and both
+      strip arrays complete + count-matched; every incomplete/ambiguous shape hits
+      `orelse return error.Malformed`. Matches Einstein's ruling; negative classifier
+      present. Sound.
 - [ ] **P2 — acyclic rawz/tiffz/jpegz boundary (Einstein outcome 4).** Confirmed acyclic:
       `tiffz-parser` module exported for rawz; tiffz imports NO rawz. Verify no regression
       + a boundary test exists (parser-final claims a rawz-proxy injection test). DONE =

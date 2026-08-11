@@ -553,7 +553,11 @@ pub const Decoder = struct {
         if (written < ext.min or written > ext.max) return error.Malformed;
         if (ext.warn_if_above_min and written > ext.min and !self.final_strip_padding_fired) {
             self.final_strip_padding_fired = true;
-            self.emit(.final_strip_padding_tolerated, &.{});
+            // Payload: excess bytes (written − logical) as LE u32, so callers can render
+            // "final strip padded by N bytes". `written > ext.min` is guaranteed above;
+            // saturate the (bounded) difference into u32 defensively.
+            const excess: u32 = std.math.cast(u32, written - ext.min) orelse std.math.maxInt(u32);
+            self.emitU32(.final_strip_padding_tolerated, excess);
         }
     }
 
