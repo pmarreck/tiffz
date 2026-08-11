@@ -239,3 +239,82 @@ test "fuzz robustness: seeded mutations never crash the validator" {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Sensitivity — structurally-fatal corruptions MUST be detected (rejected).
+// The paired half of specificity: 100% detection means nothing alone (a
+// reject-everything validator scores 100%), but paired with a specificity
+// corpus that a reject-everything validator FAILS, it is a real number. Each
+// corruption below destroys a field the TIFF spec REQUIRES; a "may-ignore" byte
+// (padding, a don't-care tag) is deliberately NOT in this set.
+// ─────────────────────────────────────────────────────────────────────
+
+const CriticalMutation = struct {
+    name: []const u8,
+    apply: *const fn (bytes: []u8) void,
+};
+
+/// Byte-order marker (offset 0) → 'X': only 'II'/'MM' are legal, so the header
+/// parse must reject before anything else.
+fn corruptByteOrderMarker(bytes: []u8) void {
+    if (bytes.len > 0) bytes[0] = 'X';
+}
+
+/// Version magic (offset 2-3) → 0: must be 42 (classic) or 43 (BigTIFF).
+fn corruptVersionMagic(bytes: []u8) void {
+    if (bytes.len > 3) {
+        bytes[2] = 0x00;
+        bytes[3] = 0x00;
+    }
+}
+
+/// First-IFD offset → 0xFF… (far past EOF for any fixture), so the IFD read
+/// short-reads. Endianness- and BigTIFF-aware: the offset is a u32 at [4..8]
+/// for classic, a u64 at [8..16] for BigTIFF (version 43).
+fn corruptFirstIfdOffsetPastEof(bytes: []u8) void {
+    if (bytes.len < 8) return;
+    const little = bytes[0] == 'I';
+    const version: u16 = if (little)
+        @as(u16, bytes[2]) | (@as(u16, bytes[3]) << 8)
+    else
+        @as(u16, bytes[3]) | (@as(u16, bytes[2]) << 8);
+    if (version == 0x2B) {
+        if (bytes.len < 16) return;
+        @memset(bytes[8..16], 0xFF);
+    } else {
+        @memset(bytes[4..8], 0xFF);
+    }
+}
+
+const critical_mutations = [_]CriticalMutation{
+    .{ .name = "byte-order marker", .apply = corruptByteOrderMarker },
+    .{ .name = "version magic", .apply = corruptVersionMagic },
+    .{ .name = "first-IFD offset past EOF", .apply = corruptFirstIfdOffsetPastEof },
+};
+
+test "fuzz sensitivity: structurally-fatal corruptions are all detected" {
+    const allocator = std.testing.allocator;
+    var total: usize = 0;
+    var detected: usize = 0;
+    // Whole corpus, INCLUDING the JPEG fixture: these corruptions reject at
+    // header / IFD parse (open), long before any strip decode reaches jpegz, so
+    // the jpegz robustness bug is not in play here.
+    for (seed_corpus) |path| {
+        const original = try loadFile(allocator, path);
+        defer allocator.free(original);
+        for (critical_mutations) |m| {
+            const buf = try allocator.dupe(u8, original);
+            defer allocator.free(buf);
+            m.apply(buf);
+            total += 1;
+            // Default limits (production behavior). A fatal structural
+            // corruption MUST be rejected.
+            if (tiffzValidates(allocator, buf, tiffz.Limits.default)) {
+                std.debug.print("sensitivity MISS: {s} still validated after '{s}'\n", .{ path, m.name });
+            } else {
+                detected += 1;
+            }
+        }
+    }
+    try std.testing.expectEqual(total, detected);
+}

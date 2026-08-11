@@ -62,9 +62,19 @@ plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
       instead of erroring — a jpegz robustness bug tiffz inherits (a panic can't be caught).
       Reported to jpegz (inbox note). The JPEG fixture is a TRACKED exclusion from the
       robustness sweep (kept in specificity); re-include on the fixed jpegz pin.
-      Remaining: increment 2 = targeted must-detect sensitivity score (sniper at
-      magic/version/IFD-offset/count → must reject); increment 3 = native libtiff/ImageMagick
-      oracle differential in `./fuzz`.
+      Increment 2 SHIPPED (2026-08-11): a must-detect SENSITIVITY classifier — three
+      structurally-fatal corruptions (byte-order marker, version magic, first-IFD offset
+      past EOF; endianness- and BigTIFF-aware) applied across the whole corpus (incl. JPEG,
+      which rejects at open before any strip decode), asserting 100% detection. Paired with
+      the specificity corpus this is a real detection number (a reject-everything validator
+      fails specificity). `./fuzz` (Nix, ReleaseSafe) green, 6/6 harness tests.
+      Increment 3 (oracle) — REFRAMED: the "oracle vs libtiff/ImageMagick" requirement is
+      already met by `assertOracleMatch` (fixture_test.zig:334), which differentials tiffz's
+      decoded RGBA against ImageMagick/tiff2rgba reference over 28 `_oracle` fixtures. The
+      fuzz adds the mutation dimension that was missing. The only unbuilt piece is a RUNTIME
+      mutation-verdict diff (tiffz vs libtiff accept/reject on mutated files), which needs a
+      new validate executable (CLI is an M2 scaffold) and is inherently noisy on corrupt
+      inputs — deferred pending Peter's call on whether it's worth it.
 - [x] **P2 — independent verification (MFIC segregation of duties)** (2026-08-11). Fresh
       baseline `./test` of HEAD `f7d03e4e` → exit 0 (overnight seam independently confirmed
       green on my machine). Spot-checked code-15 bounds in `chunkLayout` (decoder.zig:498):
