@@ -736,9 +736,34 @@ test "strict JPEG-family forwarding preserves mapped code offsets and four-way o
         .host_offset = null,
         .offset_is_exact = false,
     });
+    // jpegz's own T.81/T.87 leg (validateAny, added 2026-08-06). Classify the
+    // whole jpegz verdict range: .fail → corrupt; a recovered deviation
+    // (.warn/.info) → valid; the validator-meta code → indeterminate. Mirrors
+    // jpegz.strictFromReport + validateAny's unknown/unavailable branches.
+    try strict.findings.append(allocator, .{
+        .source = .jpegz,
+        .leaf_code = 3,
+        .code = null,
+        .severity = .fail,
+        .offset = 5,
+        .host_offset = 300,
+        .offset_is_exact = true,
+    });
+    try strict.findings.append(allocator, .{
+        .source = .jpegz,
+        .leaf_code = 1,
+        .code = null,
+        .severity = .warn,
+    });
+    try strict.findings.append(allocator, .{
+        .source = .jpegz,
+        .leaf_code = @intFromEnum(tiffz.jpegz.FindingCode.unrecognized_container),
+        .code = .unrecognized_container,
+        .severity = .warn,
+    });
 
     dec.emitStrictValidationFindings(&strict);
-    try std.testing.expectEqual(@as(usize, 2), recorder.findings.items.len);
+    try std.testing.expectEqual(@as(usize, 5), recorder.findings.items.len);
     try std.testing.expectEqual(tiffz.findings.SourceDecoder.jp2z, recorder.findings.items[0].source);
     try std.testing.expectEqual(tiffz.findings.Verdict.unsupported, recorder.findings.items[0].verdict);
     try std.testing.expect(recorder.findings.items[0].mapped_finding_code != null);
@@ -747,6 +772,13 @@ test "strict JPEG-family forwarding preserves mapped code offsets and four-way o
     try std.testing.expectEqual(tiffz.findings.SourceDecoder.libjxlz, recorder.findings.items[1].source);
     try std.testing.expectEqual(tiffz.findings.Verdict.indeterminate, recorder.findings.items[1].verdict);
     try std.testing.expect(recorder.findings.items[1].mapped_finding_code == null);
+    // jpegz source identity + verdict split.
+    try std.testing.expectEqual(tiffz.findings.SourceDecoder.jpegz, recorder.findings.items[2].source);
+    try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, recorder.findings.items[2].verdict);
+    try std.testing.expectEqual(tiffz.findings.SourceDecoder.jpegz, recorder.findings.items[3].source);
+    try std.testing.expectEqual(tiffz.findings.Verdict.valid, recorder.findings.items[3].verdict);
+    try std.testing.expectEqual(tiffz.findings.SourceDecoder.jpegz, recorder.findings.items[4].source);
+    try std.testing.expectEqual(tiffz.findings.Verdict.indeterminate, recorder.findings.items[4].verdict);
 }
 
 test "findings: bali.btf fires bigtiff_format finding" {

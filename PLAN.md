@@ -25,15 +25,20 @@ plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
       deflate-last-strip (derived from geometry: 500 B/row × (16−4) padding rows = 6000,
       not from the impl). RED (found null) → GREEN. `./test` (all three sandbox checks) +
       `./build` green; native 186/186. Durable-reply to validate pending after commit.
-- [ ] **P0 — jpegz pin bump `fb72045` → `98824e7b` (jpegz note 2026-08-10).** Gives
-      `jpegz.validateAny(allocator, bytes)` (whole-family sniff+route; unrecognized →
-      `.indeterminate` + `unrecognized_container`, never fabricated). Load-bearing:
-      validate consumes `tiffz.jpegz` and can't reach validateAny until we bump. We
-      import the Zig MODULE (build.zig:155), NOT the static `.a`, so jpegz's ET_REL
-      link-bug does NOT affect us. Steps: build.zig.zon jpegz url→98824e7b, hash→
-      `jpegz-0.1.0-staw4AVNEQDEdTwIVRvXEpJiqpseMxrLBpsojItxSeeB`; regen flake.nix
-      `zigDepsHash` (fakeHash→nix build→read→set); `./test`+`./build`. DONE = pinned,
-      green, validate notified.
+- [x] **P0 — jpegz pin bump `fb72045` → `98824e7b`** (2026-08-11). build.zig.zon pinned;
+      flake.nix `zigDepsHash` regenerated → `sha256-FOaYVuJfJSySdKIYnhUiso7c+WHxC4gEJQ5QaXZM9Jg=`.
+      The bump surfaced a real integration fix: jpegz's new `validateAny` appended a
+      `.jpegz` leaf to `facade_validation.ValidatorSource`, and tiffz's two forwarding
+      switches (decoder.zig:131 `emitStrictValidationFindings`, findings.zig:127
+      `strictFindingVerdict`) were non-exhaustive → compile error. Mapped `.jpegz →
+      SourceDecoder.jpegz` and mirrored jpegz's own verdict semantics from
+      `jpegz.strictFromReport`: `.fail`→corrupt, recovered deviation (`.warn`/`.info`)→
+      valid, meta-codes (`unrecognized_container`, `jxl_validator_unavailable`)→
+      indeterminate. Extended the strict-facade forwarding test into a jp2z/libjxlz/jpegz
+      classifier covering the full verdict range. We import the Zig MODULE (build.zig:155),
+      not the static `.a`, so jpegz's ET_REL link-bug does not affect us. `./test` (incl.
+      JPEG-validation-closure) + `./build` green; native 186/186. Ack owed to jpegz +
+      validate (validate can now reach validateAny through `tiffz.jpegz`).
 - [ ] **P1 — coverage inventory matrix (Einstein dispatch outcome 2, NOT delivered).**
       No `docs/*coverage*` exists. Produce a strict/partial/unsupported/blocked matrix
       across standard, BigTIFF, tiled/striped, multi-page, professional, DNG,

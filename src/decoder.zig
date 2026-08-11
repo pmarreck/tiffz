@@ -129,6 +129,7 @@ pub const Decoder = struct {
     ) void {
         for (result.findings.items) |finding| {
             const source: findings_mod.SourceDecoder = switch (finding.source) {
+                .jpegz => .jpegz,
                 .jp2z => .jp2z,
                 .libjxlz => .libjxlz,
             };

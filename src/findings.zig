@@ -139,6 +139,16 @@ pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
             5, 6, 7, 8 => .indeterminate,
             else => .indeterminate,
         },
+        // jpegz's own cleanroom T.81/T.87 leg (validateAny, added 2026-08-06),
+        // plus its validateAny meta-findings. Mirror jpegz.strictFromReport: a
+        // deviation the decoder recovers from (.warn/.info) is not corruption,
+        // only .fail is; the two validator-meta codes are indeterminate.
+        .jpegz => if (finding.severity == .fail)
+            .corrupt
+        else if (finding.code) |c| switch (c) {
+            .unrecognized_container, .jxl_validator_unavailable => .indeterminate,
+            else => .valid,
+        } else .valid,
     };
 }
 
