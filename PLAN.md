@@ -39,10 +39,13 @@ plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
       not the static `.a`, so jpegz's ET_REL link-bug does not affect us. `./test` (incl.
       JPEG-validation-closure) + `./build` green; native 186/186. Ack owed to jpegz +
       validate (validate can now reach validateAny through `tiffz.jpegz`).
-- [ ] **P1 — coverage inventory matrix (Einstein dispatch outcome 2, NOT delivered).**
-      No `docs/*coverage*` exists. Produce a strict/partial/unsupported/blocked matrix
-      across standard, BigTIFF, tiled/striped, multi-page, professional, DNG,
-      embedded-JPEG, compression, metadata, vendor-extension. DONE = committed matrix doc.
+- [x] **P1 — coverage inventory matrix (Einstein dispatch outcome 2)** (2026-08-11).
+      `docs/tiffz_coverage_matrix.md`: strict/partial/unsupported/blocked across
+      compression, container/structure, predictor, photometric, bit-depth, metadata,
+      embedded-JPEG, DNG, vendor-extension. Code-derived first pass with a **Verified**
+      column (code / fixture / provisional) — honest about which cells are fixture-backed
+      vs inferred. Provisional cells flagged for fixture promotion: predictor-3 float,
+      CIELab/ICCLab, CMYK, transparency-mask, 32-bit float, EXIF-IFD descent.
 - [ ] **P1 — corpus + mutation classification + fuzz (Einstein outcome 5, NOT delivered).**
       No `./fuzz`, no `tests/fuzz/`, no fuzz Mechatron target. Build a known-good/known-bad
       corpus classifier + deterministic sniper/boltgun/shotgun mutations (shotgun needs a
