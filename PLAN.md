@@ -60,10 +60,11 @@ plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
       strip arrays complete + count-matched; every incomplete/ambiguous shape hits
       `orelse return error.Malformed`. Matches Einstein's ruling; negative classifier
       present. Sound.
-- [ ] **P2 — acyclic rawz/tiffz/jpegz boundary (Einstein outcome 4).** Confirmed acyclic:
-      `tiffz-parser` module exported for rawz; tiffz imports NO rawz. Verify no regression
-      + a boundary test exists (parser-final claims a rawz-proxy injection test). DONE =
-      boundary test confirmed; recommend coordinator if any cycle risk resurfaces.
+- [x] **P2 — acyclic rawz/tiffz/jpegz boundary (Einstein outcome 4)** (2026-08-11).
+      Confirmed acyclic: the only `rawz` token in tiffz's build files is a comment; tiffz
+      EXPORTS `tiffz-parser` (build.zig:17, consumed by rawz) and imports NO rawz. A
+      `tiffz-parser-consumer` artifact (build.zig:26) exercises the codec-free boundary.
+      Dependency flows one way (`rawz → tiffz-parser`); no coordinator needed.
 
 Cross-repo context (NOT tiffz work): validate is integrating `8fe6524` in their v1
 cutover now (their blockers: JXL non-claimable, production closure still has OpenJPEG/
