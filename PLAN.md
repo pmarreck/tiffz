@@ -46,7 +46,10 @@ plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
       column (code / fixture / provisional) — honest about which cells are fixture-backed
       vs inferred. Provisional cells flagged for fixture promotion: predictor-3 float,
       CIELab/ICCLab, CMYK, transparency-mask, 32-bit float, EXIF-IFD descent.
-- [~] **P1 — corpus + mutation classification + fuzz (Einstein outcome 5).** IN PROGRESS.
+- [x] **P1 — corpus + mutation classification + fuzz (Einstein outcome 5)** — DONE
+      (Peter's call 2026-08-12: outcome 5 delivered by increments 1+2 + the existing
+      `assertOracleMatch` oracle differential; the runtime mutation-verdict diff is skipped
+      as noisy/low-ROI). Mechatron `c695f8ba` = success (548s, incl. the fuzz target).
       Increment 1 SHIPPED (2026-08-11): `tests/fuzz/fuzz.zig` — deterministic (fixed-seed,
       hermetic) mutation fuzzer with three MFIC properties: (1) robustness/non-crash sweep
       over 18 committed seed fixtures × 200 seeded mutations (sniper/shotgun/boltgun,
@@ -92,6 +95,23 @@ plus a code-15 negative classifier. So the seam BEHAVIOR is done. What remains:
 Cross-repo context (NOT tiffz work): validate is integrating `8fe6524` in their v1
 cutover now (their blockers: JXL non-claimable, production closure still has OpenJPEG/
 libjpeg-turbo/LibRaw — all validate-side). rawz repin done (`c57166db` parser module).
+
+### WATCH FOR (incoming coordination, no action until it lands)
+
+- **jpegz re-pin (JP2 fix).** validate (note 2026-08-11, their commit `600382938`,
+  which pinned tiffz `99deeb89` and went green) escalated a jpegz JP2 classification
+  bug to jpegz: `jp2_uses_9x7_wavelet` → verdict `corrupt` on a clean lossy JP2 (the
+  standard CDF 9/7 irreversible wavelet; should be `unsupported`/could-not-check, never
+  corrupt). Repro: `validate ground_truth_examples/jpeg2k/balloon_eciRGB_icc.jp2`. When
+  jpegz ships the fix, they'll send tiffz a pin-bump request; bump, then validate re-pins
+  through us. (Same shape as the `98824e7b` bump.)
+- **`-Dwith-jp2-decode=false` forwarding.** validate asked jpegz for a build gate on
+  their openjpeg linkage (v1 closure requirement). Once jpegz exposes it, tiffz forwards
+  the option through our build.zig (like the other jpegz build options at build.zig:96);
+  coordinate with validate then.
+- **jpegz JPEG-decoder crash re-enable.** Once the jpegz pin carries the fix for the
+  `decodeBlockCoefficients` OOB (reported 2026-08-11), remove the `rgb-jpeg.tif` exclusion
+  from `robustness_excluded` in `tests/fuzz/fuzz.zig` and confirm the sweep stays green.
 
 ### Mecha Validate v1 strict JPEG-family finding seam (2026-08-05 overnight)
 
