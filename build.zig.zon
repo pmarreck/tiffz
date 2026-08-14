@@ -8,8 +8,8 @@
         // re-exports this exact module so downstream consumers do not create
         // a second Zig module instance for the same source.
         .lzwz = .{
-            .url = "git+https://github.com/pmarreck/lzwz#5dba5c449219f00f665efe31e69934364e048de5",
-            .hash = "lzwz-0.2.0-gkUIt4biAACtZMXFjMW2Y6RFeQcWuZ5noSxeT5mlVX4v",
+            .url = "git+https://github.com/pmarreck/lzwz#c8f1c9a4649275bead718c4d326ba3917781e021",
+            .hash = "lzwz-0.3.0-gkUIt0LjAAB5nnuMK3MlylDOJeeEuz673JVL5l_24Kur",
         },
         // jpegz — Peter's spec-complete pure-Zig JPEG family decoder
         // (cleanroom replacement target; Phase 1 currently wraps
