@@ -83,12 +83,13 @@ const seed_corpus = [_][]const u8{
 /// specificity corpus). Each entry is a live, tracked TODO: remove it once the
 /// underlying dependency crash is fixed. The `./fuzz` script echoes this set so
 /// the dropped coverage is visible, never silent.
-const robustness_excluded = [_][]const u8{
-    // jpegz `decodeBlockCoefficients` (baseline.zig:850) index-OOB on corrupt
-    // JPEG entropy data, reached via tiffz Compression=7 → jpegz.validate.
-    // Reported to jpegz 2026-08-11.
-    "tests/fixtures/jpeg/rgb-jpeg.tif",
-};
+///
+/// Currently EMPTY. `tests/fixtures/jpeg/rgb-jpeg.tif` lived here 2026-08-11
+/// → 2026-08-14 while jpegz's `decodeBlockCoefficients` OOB (reported from
+/// this sweep's first run) panicked on corrupt entropy data; jpegz `d1eedca`
+/// fixed it (scan-header Td/Ta selector validation) plus two siblings we
+/// never hit, and the sweep is whole-corpus again as of the `919571d` pin.
+const robustness_excluded = [_][]const u8{};
 
 fn excludedFromRobustness(path: []const u8) bool {
     for (robustness_excluded) |ex| {
@@ -202,15 +203,8 @@ test "fuzz robustness: seeded mutations never crash the validator" {
 
     const iterations_per_seed = 200;
     for (seed_corpus) |path| {
-        // Robustness exclusion (tracked TODO, not a silent skip): mutating a
-        // real embedded-JPEG strip drives tiffz's Compression=7 path into
-        // `jpegz.validate`, which currently PANICS (index-OOB in jpegz
-        // decodeBlockCoefficients, baseline.zig:850) on corrupt entropy data
-        // instead of returning an error. That is a jpegz robustness bug, not
-        // tiffz's — and a panic can't be caught, so the sweep can't test past
-        // it. Reported to jpegz 2026-08-11 (inbox note). Re-include this fixture
-        // once the jpegz pin carries the fix. It STAYS in the specificity corpus
-        // above: the pristine JPEG validates fine.
+        // Tracked exclusions only (see `robustness_excluded`) — never a silent
+        // skip; the `./fuzz` script echoes any entries on every run.
         if (excludedFromRobustness(path)) continue;
 
         const original = try loadFile(allocator, path);

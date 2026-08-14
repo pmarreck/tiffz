@@ -34,13 +34,10 @@ run_subtest() {
 
 # MFIC: bounded coverage must never be silent. Surface exactly what the
 # robustness sweep deliberately does NOT mutate, and why, on every run.
-printf 'Robustness-sweep exclusions (these fixtures REMAIN in the specificity corpus):\n'
-printf '  - tests/fixtures/jpeg/rgb-jpeg.tif\n'
-printf '      Mutating a real embedded-JPEG strip drives tiffz Compression=7 into\n'
-printf '      jpegz.validate, which PANICS (index-OOB in jpegz decodeBlockCoefficients,\n'
-printf '      baseline.zig:850) on corrupt entropy data. A panic cannot be caught, so\n'
-printf '      the sweep cannot test past it. Reported to jpegz 2026-08-11; re-include\n'
-printf '      once the jpegz pin carries the fix.\n'
+# (Keep this echo in lockstep with `robustness_excluded` in tests/fuzz/fuzz.zig.)
+printf 'Robustness-sweep exclusions: none — whole corpus mutated.\n'
+printf '  (rgb-jpeg.tif was excluded 2026-08-11 → 2026-08-14 for a jpegz decode panic;\n'
+printf '   fixed in jpegz d1eedca, re-included at the 919571d pin.)\n'
 
 SYSTEM="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
 run_subtest "deterministic mutation fuzzer (ReleaseSafe, sandboxed via nix)" \

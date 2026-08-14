@@ -118,6 +118,16 @@ pub fn build(b: *std.Build) void {
         "libjpeg-lib",
         "Path to libjpeg-turbo library directory",
     ) orelse "";
+    // Forwarded verbatim to jpegz (added there in a8b79da for validate's
+    // production-closure requirement). Off drops OpenJPEG from the build —
+    // jpegz.jpeg2000.decode returns error.NotImplemented, strict JP2
+    // validation (jp2z) is unaffected. tiffz itself never decodes JP2 pixels
+    // (JPEG2000-in-TIFF is unsupported), so the default stays jpegz's own.
+    const opt_with_jp2_decode = b.option(
+        bool,
+        "with-jp2-decode",
+        "Compile + link OpenJPEG for jpegz's jpeg2000.decode (forwarded to jpegz; false keeps strict JP2 validation, drops opj_ symbols)",
+    ) orelse true;
 
     const jpegz_dep = blk: {
         // Build the dependency args struct dynamically — Zig's b.dependency
@@ -130,6 +140,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .@"with-charls" = false,
                 .@"with-libjpeg-oracle" = false,
+                .@"with-jp2-decode" = opt_with_jp2_decode,
                 .@"openjpeg-include" = opt_openjpeg_inc,
                 .@"openjpeg-lib" = opt_openjpeg_lib,
                 .@"libjpeg-include" = opt_libjpeg_inc,
@@ -142,6 +153,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .@"with-charls" = false,
                 .@"with-libjpeg-oracle" = false,
+                .@"with-jp2-decode" = opt_with_jp2_decode,
                 .@"openjpeg-include" = opt_openjpeg_inc,
             });
         }
@@ -150,6 +162,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .@"with-charls" = false,
             .@"with-libjpeg-oracle" = false,
+            .@"with-jp2-decode" = opt_with_jp2_decode,
         });
     };
     const jpegz_mod = jpegz_dep.module("jpegz");
