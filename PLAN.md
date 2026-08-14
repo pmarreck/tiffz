@@ -96,22 +96,23 @@ Cross-repo context (NOT tiffz work): validate is integrating `8fe6524` in their 
 cutover now (their blockers: JXL non-claimable, production closure still has OpenJPEG/
 libjpeg-turbo/LibRaw — all validate-side). rawz repin done (`c57166db` parser module).
 
-### WATCH FOR (incoming coordination, no action until it lands)
+### WATCH FOR — ALL THREE RESOLVED 2026-08-14 (`f0cbb2d9` + `388dee45`)
 
-- **jpegz re-pin (JP2 fix).** validate (note 2026-08-11, their commit `600382938`,
-  which pinned tiffz `99deeb89` and went green) escalated a jpegz JP2 classification
-  bug to jpegz: `jp2_uses_9x7_wavelet` → verdict `corrupt` on a clean lossy JP2 (the
-  standard CDF 9/7 irreversible wavelet; should be `unsupported`/could-not-check, never
-  corrupt). Repro: `validate ground_truth_examples/jpeg2k/balloon_eciRGB_icc.jp2`. When
-  jpegz ships the fix, they'll send tiffz a pin-bump request; bump, then validate re-pins
-  through us. (Same shape as the `98824e7b` bump.)
-- **`-Dwith-jp2-decode=false` forwarding.** validate asked jpegz for a build gate on
-  their openjpeg linkage (v1 closure requirement). Once jpegz exposes it, tiffz forwards
-  the option through our build.zig (like the other jpegz build options at build.zig:96);
-  coordinate with validate then.
-- **jpegz JPEG-decoder crash re-enable.** Once the jpegz pin carries the fix for the
-  `decodeBlockCoefficients` OOB (reported 2026-08-11), remove the `rgb-jpeg.tif` exclusion
-  from `robustness_excluded` in `tests/fuzz/fuzz.zig` and confirm the sweep stays green.
+- [x] **jpegz re-pin (JP2 fix)** — bumped jpegz `98824e7b` → `919571d` (`f0cbb2d9`),
+      which re-pins jp2z `1b29e0c` (the `entropy_under_read` false-positive fix behind
+      the `jp2_uses_9x7_wavelet`-on-clean-lossy-JP2 reject). Also bumped lzwz 0.2.0 →
+      0.3.0 `c8f1c9a` (`388dee45`, provenance/release bump, src unchanged, warning-14
+      contract re-verified). validate notified with the pin to consume.
+- [x] **`-Dwith-jp2-decode` forwarding** — jpegz shipped it in `a8b79da` (⊂ `919571d`);
+      tiffz now declares the option and forwards it verbatim in all three jpegz
+      dependency branches (default true = jpegz's own; false drops opj_ symbols for
+      validation-only consumers). validate sets it through their tiffz dependency.
+- [x] **JPEG fuzz re-enable** — jpegz `d1eedca` (⊂ `919571d`) fixed the
+      `decodeBlockCoefficients` OOB this repo's fuzzer reported (root cause per jpegz:
+      SOS Td/Ta table selectors, 4 bits → 0..15, indexing `[4]` arrays — scan header,
+      not the entropy stream; plus two sibling crashes we never hit).
+      `robustness_excluded` is EMPTY again; the same fixed-seed mutation stream that
+      panicked the old pin passes 6/6 whole-corpus.
 
 ### Mecha Validate v1 strict JPEG-family finding seam (2026-08-05 overnight)
 
