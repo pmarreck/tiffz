@@ -15,6 +15,25 @@ Only two tiffz items are on the critical path. Both notes' full text preserved b
 in their PLAN items; inbox notes trashed per ephemeral rule after acks were sent
 2026-08-26 late night (validate got a CR2 status + lercz ETA; Einstein got an ack).
 
+- [ ] **0. zstdz static-artifact export — validate's final repin blocker**
+      (2026-08-27 13:12 EDT, urgent). validate integrated `964bcc89`; its
+      external C consumer now resolves LERC but reports exactly seven unresolved
+      Zstandard symbols (`ZSTD_decompress`, `ZSTD_isError`, `ZSTD_createDCtx`,
+      `ZSTD_freeDCtx`, `ZSTD_DStreamInSize`, `ZSTD_DStreamOutSize`, and
+      `ZSTD_decompressStream`) from Compression=50000. First extend the existing
+      genuinely external `tests/lerc_consumer_pkg/` contract to resolve and call
+      the zstdz C ABI through tiffz's exported artifact, and observe RED at the
+      artifact boundary. Then install the EXISTING zstdz artifact from the same
+      dependency instance used by the module graph, under its actual stable public
+      name. No system zstd, second pin, or duplicate dependency instance.
+      Acceptance: the consumer links only tiffz-exported artifacts and rejects
+      garbage through both LERC and Zstandard calls; `./test` and `./build` pass;
+      docs/dirtree are current; commit and push; terminal exact-SHA Mechatron pass;
+      reply to validate with the SHA, Zig package hash, artifact name, and focused
+      consumer command. Curiosity poke: artifact-name resolution alone can pass
+      while the seven ABI symbols remain unreachable, so the test must call the
+      Zstandard functions at runtime.
+
 - [x] **1. lercz artifact export** (2026-08-27 11:40 EDT). RED: a genuinely external
       consumer package `tests/lerc_consumer_pkg/` (tiffz as a path dep) panicked
       "unable to find artifact 'lerc'" — exactly validate's failure shape. GREEN: one

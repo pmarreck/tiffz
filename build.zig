@@ -177,6 +177,9 @@ pub fn build(b: *std.Build) void {
     });
     const zstdz_mod = zstdz_dep.module("zstd");
     lib_module.addImport("zstd", zstdz_mod);
+    // Re-export zstdz's existing static library for external archive consumers.
+    // Contract-tested beside LERC in tests/lerc_consumer_pkg.
+    b.installArtifact(zstdz_dep.artifact("zstd"));
 
     // lercz — pmarreck's Zig-wrap fork of Esri/lerc (Apache-2.0),
     // C++ sources built by lercz itself. Provides the codec for

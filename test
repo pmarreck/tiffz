@@ -41,7 +41,7 @@ run_subtest "parser-only import and artifact closure (sandboxed via nix)" \
 run_subtest "JPEG validation artifact closure (sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.jpeg-validation-closure" --print-out-paths --no-link
 
-run_subtest "lerc artifact export contract (external consumer pkg, sandboxed via nix)" \
+run_subtest "native codec artifact export contract (external consumer pkg, sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.lerc-artifact-export" --print-out-paths --no-link
 
 # Suite 2: any future bash-driven CLI tests would slot in here.
