@@ -580,6 +580,8 @@ const FindingRecorder = struct {
         host_byte_offset: ?u64,
         offset_is_exact: bool,
         payload_u32: ?u32, // decoded from a 4-byte little-endian payload, else null
+        payload_u32_2: ?u32, // second LE u32 (bytes 4..8) for 8-byte payloads, else null
+        payload_len: usize,
     };
 
     fn init(allocator: std.mem.Allocator) FindingRecorder {
@@ -607,6 +609,10 @@ const FindingRecorder = struct {
             const slice = payload.?[0..4];
             break :blk std.mem.readInt(u32, slice, .little);
         } else null;
+        const payload_u32_2: ?u32 = if (payload_len >= 8 and payload != null) blk: {
+            const slice = payload.?[4..8];
+            break :blk std.mem.readInt(u32, slice, .little);
+        } else null;
         self.findings.append(self.allocator, .{
             .source = @enumFromInt(source_decoder),
             .finding_code = finding_id,
@@ -625,6 +631,8 @@ const FindingRecorder = struct {
                 null,
             .offset_is_exact = (metadata_flags & tiffz.findings.MetadataFlags.offset_is_exact) != 0,
             .payload_u32 = payload_u32,
+            .payload_u32_2 = payload_u32_2,
+            .payload_len = payload_len,
         }) catch unreachable;
     }
 
@@ -1806,6 +1814,56 @@ test "audit 1.0 [fixed]: ycbcr-cat.tif ACCEPTED via subsampling-aware extent gat
     try expectFixtureValidates("tests/fixtures/labeled_good/ycbcr-cat.tif");
 }
 
+// validate 2026-08-15: labeled-good Canon EOS 40D sRAW2 CR2 (byte-identical
+// vendor of their ground_truth fixture; exiftool -validate says OK, libraw
+// accepted it for years) is rejected error.Malformed by the open/IFD walk.
+// CR2 is in tiffz's stated structural scope; a clean file must not be
+// Malformed. This is the must-accept control: it asserts the acceptance we
+// owe, and FAILS until the walk tolerates (or named-unsupports) whatever
+// Canon-specific structure it is tripping on.
+test "CR2 must-accept: canon_eos_40d_sraw2.cr2 validates with two code-16 skips (partial coverage)" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/cr2/canon_eos_40d_sraw2.cr2");
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const source = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, source);
+    defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    var workspace = tiffz.Workspace.init(allocator);
+    defer workspace.deinit();
+
+    // The walk must ACCEPT (per Peter's 2026-08-27 partial-coverage ruling)…
+    try dec.validateAllStripsAndTiles(&workspace);
+
+    // …and honestly name the two uncovered portions: IFD0 (full-size JPEG
+    // preview) and IFD3 (Canon sRAW vendor raw), both Compression=6
+    // (old-style JPEG, deliberately never supported). IFD1 has no strip
+    // arrays (JPEGInterchangeFormat only, silently skipped as always);
+    // IFD2 is uncompressed RGB and must decode + gate normally — proven by
+    // the walk not erroring AND exactly two (not three) skips firing.
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        recorder.count(.unsupported_compression_skipped),
+    );
+    // Payload contract (Einstein 2026-08-27 approval): EXACTLY 8 bytes —
+    // u32 LE IFD index, then u32 LE compression code. Skips fire in IFD order;
+    // both of this file's skipped IFDs are Compression=6 (old-style JPEG).
+    var seen: usize = 0;
+    const expected_ifds = [2]u32{ 0, 3 };
+    for (recorder.findings.items) |f| {
+        if (f.source == .tiffz and f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.unsupported_compression_skipped)) {
+            try std.testing.expectEqual(@as(usize, 8), f.payload_len);
+            try std.testing.expectEqual(@as(?u32, expected_ifds[seen]), f.payload_u32);
+            try std.testing.expectEqual(@as(?u32, 6), f.payload_u32_2);
+            seen += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), seen);
+}
+
 test "YCbCr tiled chunky subsampled 2:2 (uncompressed 16x16, one tile) validates via .tile extent branch" {
     // Real libtiff-authored fixture (LIBTIFF 4.7.1): PHOTOMETRIC_YCBCR,
     // YCBCRSUBSAMPLING 2,2, COMPRESSION_NONE, PLANARCONFIG_CONTIG, one 16x16 tile.
@@ -1907,6 +1965,13 @@ test "JPEG-in-TIFF: corrupt strip surfaces error.JpegInTiffPayload through the p
     var ws = tiffz.Workspace.init(allocator);
     defer ws.deinit();
     try std.testing.expectError(error.JpegInTiffPayload, dec.validateAllStripsAndTiles(&ws));
+    // Code-16 boundary (Einstein 2026-08-27): a SUPPORTED codec's decode
+    // failure keeps its native error and must never be reclassified as an
+    // unsupported-compression coverage skip.
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        recorder.count(.unsupported_compression_skipped),
+    );
 
     var saw_exact_nested_cause = false;
     for (recorder.findings.items) |finding| {

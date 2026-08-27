@@ -446,6 +446,23 @@ pub const Decoder = struct {
         while (ifd_index < self.ifdCount()) : (ifd_index += 1) {
             const dir = try self.ifd(ifd_index);
             const layout = (try self.chunkLayout(dir)) orelse continue;
+            // Partial-coverage skip (Peter's 2026-08-27 ruling; finding code 16,
+            // Einstein-approved): an otherwise well-formed IFD whose compression
+            // tiffz deliberately never supports is not Malformed and must not
+            // fail the walk — skip its chunks and name the uncovered portion.
+            // Applies ONLY to never-supported codes (`compressionSupported` is
+            // the same list the codec dispatch enforces); a supported codec's
+            // decode failure keeps its native error and never becomes code 16.
+            {
+                const comp = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse tags.compression_none;
+                if (!compressionSupported(comp)) {
+                    var payload: [8]u8 = undefined;
+                    std.mem.writeInt(u32, payload[0..4], @intCast(ifd_index), .little);
+                    std.mem.writeInt(u32, payload[4..8], comp, .little);
+                    self.emit(.unsupported_compression_skipped, &payload);
+                    continue;
+                }
+            }
             if (layout.tolerated_tiled_tags and !self.tiled_via_strip_tags_fired) {
                 self.tiled_via_strip_tags_fired = true;
                 self.emit(.tiled_geometry_via_strip_tags_tolerated, &.{});
@@ -926,6 +943,33 @@ pub const Decoder = struct {
         }, dest, workspace);
     }
 
+    /// Single source of truth for which Compression codes tiffz decodes.
+    /// Drives BOTH the `decodeBytes` dispatch guard below AND the walk's
+    /// code-16 partial-coverage skip (`unsupported_compression_skipped`), so
+    /// the two can never classify a code differently. Old-style JPEG (6) is
+    /// deliberately absent forever (SPEC §3; Peter re-affirmed 2026-08-27).
+    pub const supported_compressions = [_]u16{
+        tags.compression_none,
+        tags.compression_ccitt_t4,
+        tags.compression_ccitt_t6,
+        tags.compression_lzw,
+        tags.compression_jpeg,
+        tags.compression_deflate,
+        tags.compression_deflate_adobe,
+        tags.compression_packbits,
+        tags.compression_zstd,
+        tags.compression_lerc,
+    };
+
+    /// True iff `decodeBytes` has a real codec for this Compression code.
+    /// Doc-search terms: unsupported compression, OJPEG, coverage skip.
+    pub fn compressionSupported(comp: u16) bool {
+        inline for (supported_compressions) |c| {
+            if (comp == c) return true;
+        }
+        return false;
+    }
+
     /// Shared codec dispatch. Reads Compression from dir, then
     /// dispatches to the matching codec. The ChunkExtent carries the
     /// per-chunk row/width (only used by CCITT).
@@ -943,6 +987,15 @@ pub const Decoder = struct {
         if (byte_count > self.limits.max_compressed_strip_bytes) {
             return error.LimitExceededCompressedStripBytes;
         }
+
+        // Predicate/dispatch agreement guard: if `supported_compressions`
+        // claims support the switch below MUST have an arm, and vice versa.
+        // A code missing from the list never reaches its arm (loud
+        // UnsupportedCompression from a codec's own fixture test); a listed
+        // code with no arm falls to the `else` (same loud error). Either
+        // drift direction fails a committed test rather than silently
+        // widening the walk's code-16 skip.
+        if (!compressionSupported(comp)) return error.UnsupportedCompression;
 
         return switch (comp) {
             tags.compression_none => blk: {
@@ -1464,6 +1517,32 @@ test "decodeStrip: uncompressed RGB single strip" {
     const n = try dec.decodeStrip(0, 0, &dest, &ws);
     try std.testing.expectEqual(@as(usize, 12), n);
     try std.testing.expectEqualSlices(u8, &strip, dest[0..12]);
+}
+
+// MFIC: the supported-compression predicate as a classifier over a SET of
+// codes, not a presence check — every code the decodeBytes dispatch owns must
+// classify supported; the deliberately-never-supported and unknown codes must
+// classify unsupported. Oracles are hand-derived from the dispatch switch, so
+// adding a codec to one side without the other fails here.
+test "compressionSupported: classifier over supported / never-supported / unknown codes" {
+    const supported = [_]u16{ 1, 3, 4, 5, 7, 8, 32946, 32773, 50000, 34887 };
+    for (supported) |c| {
+        try std.testing.expect(Decoder.compressionSupported(c));
+    }
+    const unsupported = [_]u16{
+        0, // not a legal Compression value
+        2, // CCITT RLE (modified Huffman) — never implemented
+        6, // old-style JPEG (OJPEG) — deliberately never supported, SPEC §3
+        9, 10, // T.85 / T.43 reserved
+        32809, // Thunderscan
+        34712, // JPEG2000-in-TIFF
+        34925, // LZMA2
+        50002, // WEBP
+        0xFFFF,
+    };
+    for (unsupported) |c| {
+        try std.testing.expect(!Decoder.compressionSupported(c));
+    }
 }
 
 test "decodeStrip: compression=6 (OJPEG, never supported) rejected as Unsupported" {

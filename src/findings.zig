@@ -82,6 +82,13 @@ pub const InfoFinding = enum(u32) {
     /// Tile geometry used strip offset/count tags only. Accepted under the
     /// bounded compatibility classifier and surfaced exactly once per file.
     tiled_geometry_via_strip_tags_tolerated = 15,
+    /// An otherwise well-formed IFD uses a compression tiffz deliberately
+    /// never supports (e.g. old-style JPEG, Compression=6); the walk skipped
+    /// its chunks and continued — the file may still validate OK with this
+    /// portion honestly uncovered (Peter's partial-coverage ruling,
+    /// 2026-08-27). Emitted once PER SKIPPED IFD. Payload: 8 bytes,
+    /// u32 LE IFD index then u32 LE compression code.
+    unsupported_compression_skipped = 16,
     _,
 };
 

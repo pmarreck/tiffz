@@ -37,8 +37,26 @@ in their PLAN items; inbox notes trashed per ephemeral rule after acks were sent
       pin, no second module instance. Acceptance: `./test` + Nix checks clean; docs/
       PLAN/dirtree current; commit+push; reply to Einstein + validate with exact SHA,
       Zig package hash, artifact name, and the focused consumer command.
-- [ ] **2. CR2 policy ruling + fix-or-partial call (needs PETER, then possibly
-      Einstein for a new WARN code).** Root cause of the sRAW2 false-Malformed is
+- [x] **2. CR2 sRAW2 false-Malformed FIXED via partial-coverage skip** (2026-08-27
+      ~11:45 EDT). Peter ruled live: OJPEG decode coverage abandoned entirely (legacy
+      TIFF-6.0 §22 scheme AND Canon's relabeled flavor); "propagate the named
+      unsupported portion of the file as partial coverage." Einstein approved
+      Namespace-B `unsupported_compression_skipped = 16` (8-byte payload: u32 LE IFD
+      index + u32 LE compression; once per skipped IFD). Implementation: comptime
+      `supported_compressions` list is the single source of truth driving BOTH the
+      `decodeBytes` dispatch guard and the walk's skip, so they cannot drift; the walk
+      skips never-supported-compression IFDs with the finding and continues; direct
+      `decodeStrip` callers still get the hard `UnsupportedCompression`. The SPP/BPS
+      strictness (original Malformed site) is now unreachable for this file and stays
+      UNIMPLEMENTED (no failing fixture; latent-strictness watch: a SUPPORTED-
+      compression file with BitsPerSample.count>1 and SamplesPerPixel absent would
+      still false-reject — fix on first real sighting). MFIC per Einstein's list:
+      predicate classifier over supported/never-supported/unknown code sets; CR2
+      must-accept asserts payload length 8, both LE halves (IFD 0+3, comp 6), exactly
+      2 emissions, walk continuation (IFD2 decodes); corrupt-comp-7 test asserts zero
+      code-16 (supported failures keep native errors). RED (Malformed) → GREEN
+      188/188. Fixture vendored byte-identical (5.8MB must-accept control). Original
+      context follows: Root cause of the sRAW2 false-Malformed is
       PINNED (2026-08-19 instrumentation, still in the dirty tree):
       `expectedChunkBytes` on **IFD0 chunk 0** — the CR2's embedded JPEG preview IFD,
       NOT Canon's vendor IFD3. IFD0 (per tiffdump) has `BitsPerSample` count=3
