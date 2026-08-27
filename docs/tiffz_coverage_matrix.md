@@ -24,7 +24,7 @@ provisional). Cells marked provisional are the honest edge of this inventory.
 | CCITT Group 3 (T.4) | 3 | strict | code | `compressions/ccitt_t4.zig` |
 | CCITT Group 4 (T.6) | 4 | strict | code | `compressions/ccitt_t6.zig` |
 | LZW | 5 | strict | fixture | via `lzwz`; missing-EOD accepted with **WARN 14** (libtiff-tolerated) |
-| OJPEG (old-style JPEG) | 6 | **blocked** | code | SPEC §3: deprecated, never supported |
+| OJPEG (old-style JPEG) | 6 | **blocked** | fixture | SPEC §3, re-affirmed by Peter 2026-08-27: never decoded. The walk SKIPS such IFDs with finding 16 (`unsupported_compression_skipped`, partial coverage) instead of failing the file — CR2 previews/vendor raw validate structurally with the uncovered portions named |
 | JPEG-in-TIFF | 7 | strict | fixture | via `jpegz`; `error.JpegInTiffPayload` categorization; typed nested findings |
 | Deflate / ZIP | 8 | strict | fixture | `compressions/deflate.zig`; final-strip padding accepted with **WARN 13** |
 | Adobe Deflate | 32946 | strict | fixture | same path as Deflate |
@@ -46,6 +46,7 @@ provisional). Cells marked provisional are the honest edge of this inventory.
 | SubIFD offset arrays (tag 330, incl. BigTIFF IFD8) | partial | fixture | offset arrays decode; automatic SubIFD-chain descent not claimed |
 | PlanarConfiguration chunky (1) | strict | fixture | |
 | PlanarConfiguration separate (2) | strict | fixture | per-plane strip-index math (u32-underflow-safe) |
+| CR2 (Canon raw, TIFF-based) | partial | fixture | structural walk validates (`canon_eos_40d_sraw2.cr2` must-accept control); Compression=6 preview + vendor-raw IFDs skipped with **finding 16** (partial coverage); ARW/NEF pass the plain walk |
 
 ## Predictor (tag 317)
 
@@ -121,7 +122,8 @@ provisional). Cells marked provisional are the honest edge of this inventory.
 Strict, exercised-by-fixture core: classic + BigTIFF; striped + tiled; multi-IFD;
 planar chunky + separate; None/LZW/JPEG/Deflate/PackBits/Zstd/LERC/CCITT codecs;
 RGB/BlackIsZero/WhiteIsZero/YCbCr(+subsampling) photometrics; the three
-libtiff-tolerated deviations (WARN 13/14/15).
+libtiff-tolerated deviations (WARN 13/14/15) plus partial-coverage skips for
+never-supported compressions (finding 16, CR2 must-accept control).
 
 Provisional cells needing a committed fixture to promote from code-inferred:
 predictor-3 float, CIELab/ICCLab, CMYK, transparency-mask, 32-bit float, and a
