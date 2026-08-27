@@ -12,7 +12,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
 failures=0
 
@@ -44,9 +44,9 @@ run_subtest "JPEG validation artifact closure (sandboxed via nix)" \
 run_subtest "native codec artifact export contract (external consumer pkg, sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.lerc-artifact-export" --print-out-paths --no-link
 
-# Suite 2: any future bash-driven CLI tests would slot in here.
-# Currently the CLI surface is small enough that the Zig-driven cli_test.zig
-# (in suite 1) covers it. Add `./tests/cli/*.sh` when the surface grows.
+# Suite 2: Bash-driven build and CLI contracts.
+run_subtest "sibling dependency freshness gate" \
+    tests/cli/dependency_freshness_test
 
 if [[ "$failures" -gt 0 ]]; then
     printf '\n%d test suite(s) failed.\n' "$failures" >&2

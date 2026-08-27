@@ -3,6 +3,7 @@ ver=1.2
 depth=3
 
 annotate=[
+	.dependency-heads = Remote branch overrides for sibling freshness checks; unlisted dependencies use symbolic HEAD
 	CODE_REVIEW.md = 1.0 audit surface (Einstein 2026-07-23 dispatch): measured state, reproducers, root cause, per-fixture attribution, smallest next release slice. Audit-only, no fixes.
 	build.zig = Build graph for full tiffz and codec-free tiffz-parser modules, C/Zig artifacts, tests, and shared dependency instances.
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
@@ -18,6 +19,7 @@ annotate=[
 	src/parser.zig = Codec-free public Zig module exporting TIFF source/header/IFD/tag parsing as tiffz-parser.
 	src/parser_decoder.zig = Codec-free lazy TIFF IFD-chain decoder compatible with the rawz parser surface.
 	src/tags.zig = Named TIFF tag constants (incl. ycbcr_subsampling=530) + compression/photometric/planar code enums.
+	tests/cli/dependency_freshness_test = Deterministic fake-adapter classifier for dependency freshness policy and ./build blocking behavior
 	tests/dual_module_test.zig = Blocking Zig 0.16 single-ownership gate proving full tiffz and tiffz-parser coexist with identical shared parser types.
 	tests/fixture_test.zig = Independent TIFF fixture and inline-byte regressions, including strict LZW terminator and decoded-extent coverage.
 	tests/fixtures/cr2 = Canon CR2 must-accept controls (byte-identical vendors of validate labeled-good corpus); sRAW2 exercises finding-16 partial-coverage skips
@@ -33,4 +35,5 @@ annotate=[
 	tests/parser_closure_test = Blocking recursive import, compiler-edge, runtime, and ELF linkage gate for tiffz-parser.
 	tests/parser_consumer.zig = Downstream tiffz-parser contract tests: classic/BigTIFF, lazy chains, cycles, limits, and allocation failures.
 	tests/parser_proxy.zig = Rawz-like test module proving Validate can inject one tiffz dependency instance into a parser consumer.
+	tools/check_dependency_freshness = Blocking sibling-pin freshness checker with remote/local ordering, branch overrides, and loud ALLOW_STALE escape
 ]

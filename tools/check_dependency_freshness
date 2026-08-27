@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+
+# Fail when a pmarreck sibling dependency pin differs from the selected HEAD.
+# Upstream Git HEAD is authoritative by default; PREFER_LOCAL_FIRST reverses
+# the source order. ALLOW_STALE keeps diagnostics loud but permits the build.
+
+set -u
+
+usage() {
+	cat <<'EOF'
+Usage: check_dependency_freshness --manifest PATH --repo-root PATH [--branch-map PATH]
+
+Checks pmarreck sibling dependencies pinned in a Zig build.zig.zon file.
+Branch-map lines contain: DEPENDENCY BRANCH. Unlisted dependencies use HEAD.
+EOF
+}
+
+truthy() {
+	local value
+	value="$(printf '%s' "${1-}" | tr '[:upper:]' '[:lower:]')"
+	case "$value" in
+		1|yes|true|on|y) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+full_commit() {
+	[[ "${1-}" =~ ^[0-9a-fA-F]{40}$ ]]
+}
+
+manifest=''
+repo_root=''
+branch_map=''
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--manifest)
+			[ "$#" -ge 2 ] || { usage >&2; exit 2; }
+			manifest="$2"
+			shift 2
+			;;
+		--repo-root)
+			[ "$#" -ge 2 ] || { usage >&2; exit 2; }
+			repo_root="$2"
+			shift 2
+			;;
+		--branch-map)
+			[ "$#" -ge 2 ] || { usage >&2; exit 2; }
+			branch_map="$2"
+			shift 2
+			;;
+		-h|--help)
+			usage
+			exit 0
+			;;
+		*)
+			printf 'unknown argument: %s\n' "$1" >&2
+			usage >&2
+			exit 2
+			;;
+	esac
+done
+
+if [ -z "$manifest" ] || [ -z "$repo_root" ]; then
+	usage >&2
+	exit 2
+fi
+if [ ! -r "$manifest" ]; then
+	printf 'dependency freshness: manifest is not readable: %s\n' "$manifest" >&2
+	exit 2
+fi
+if [ -n "$branch_map" ] && [ ! -r "$branch_map" ]; then
+	printf 'dependency freshness: branch map is not readable: %s\n' "$branch_map" >&2
+	exit 2
+fi
+
+allow_stale=0
+prefer_local=0
+truthy "${ALLOW_STALE-}" && allow_stale=1
+truthy "${PREFER_LOCAL_FIRST-}" && prefer_local=1
+sibling_parent="$(dirname "$repo_root")"
+issues=0
+
+dependency_records() {
+	awk '
+		/^[[:space:]]*\.[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*\.\{/ {
+			name = $0
+			sub(/^[[:space:]]*\./, "", name)
+			sub(/[[:space:]]*=.*$/, "", name)
+		}
+		/\.url[[:space:]]*=[[:space:]]*"[^"]+"/ {
+			url = $0
+			sub(/^.*\.url[[:space:]]*=[[:space:]]*"/, "", url)
+			sub(/".*$/, "", url)
+			if (url !~ /github\.com\/pmarreck\//) next
+
+			remote = url
+			sub(/^git\+/, "", remote)
+			pin = ""
+			if (index(remote, "#") > 0) {
+				pin = remote
+				sub(/^.*#/, "", pin)
+				sub(/#.*/, "", remote)
+			} else if (index(remote, "/archive/") > 0) {
+				pin = remote
+				sub(/^.*\/archive\//, "", pin)
+				sub(/\.(tar\.gz|zip)$/, "", pin)
+				sub(/\/archive\/.*$/, "", remote)
+			}
+
+			repo = remote
+			sub(/\/$/, "", repo)
+			sub(/\.git$/, "", repo)
+			sub(/^.*\//, "", repo)
+			printf "%s\t%s\t%s\t%s\n", name, repo, remote, pin
+		}
+	' "$manifest"
+}
+
+records="$(dependency_records)"
+known_names=$'\n'
+while IFS=$'\t' read -r known_name _; do
+	[ -n "$known_name" ] || continue
+	known_names+="$known_name"$'\n'
+done <<< "$records"
+
+if [ -n "$branch_map" ]; then
+	seen_names=$'\n'
+	map_line_number=0
+	while IFS= read -r map_line || [ -n "$map_line" ]; do
+		map_line_number=$((map_line_number + 1))
+		map_line="${map_line%%#*}"
+		map_name=''
+		map_branch=''
+		map_extra=''
+		read -r map_name map_branch map_extra <<< "$map_line"
+		[ -n "$map_name" ] || continue
+		if [ -z "$map_branch" ] || [ -n "$map_extra" ] ||
+			! [[ "$map_name" =~ ^[A-Za-z0-9_-]+$ ]] ||
+			! [[ "$map_branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]
+		then
+			printf 'dependency freshness: invalid branch-map line %d in %s\n' \
+				"$map_line_number" "$branch_map" >&2
+			exit 2
+		fi
+		case "$seen_names" in
+			*$'\n'"$map_name"$'\n'*)
+				printf 'dependency freshness: duplicate branch-map entry for %s\n' "$map_name" >&2
+				exit 2
+			;;
+		esac
+		case "$known_names" in
+			*$'\n'"$map_name"$'\n'*) ;;
+			*)
+				printf 'dependency freshness: branch-map entry %s does not name a sibling dependency\n' \
+					"$map_name" >&2
+				exit 2
+			;;
+		esac
+		seen_names+="$map_name"$'\n'
+	done < "$branch_map"
+fi
+
+branch_for_dependency() {
+	local dependency="$1"
+	[ -n "$branch_map" ] || return 0
+	awk -v dependency="$dependency" '$1 == dependency { print $2; exit }' "$branch_map"
+}
+
+remote_head=''
+local_head=''
+remote_missing_ref=0
+
+read_remote_head() {
+	local remote="$1" ref="$2" output timeout_command='' status
+	remote_missing_ref=0
+	if command -v gtimeout >/dev/null 2>&1; then
+		timeout_command=gtimeout
+	elif command -v timeout >/dev/null 2>&1; then
+		timeout_command=timeout
+	fi
+
+	if [ -n "$timeout_command" ]; then
+		output="$(GIT_TERMINAL_PROMPT=0 "$timeout_command" 10 \
+			git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=5 \
+			ls-remote --exit-code "$remote" "$ref" 2>/dev/null)"
+		status=$?
+	else
+		output="$(GIT_TERMINAL_PROMPT=0 git \
+			-c http.lowSpeedLimit=1 -c http.lowSpeedTime=5 \
+			ls-remote --exit-code "$remote" "$ref" 2>/dev/null)"
+		status=$?
+	fi
+	if [ "$status" -ne 0 ]; then
+		[ "$status" -eq 2 ] && remote_missing_ref=1
+		return 1
+	fi
+	remote_head="${output%%[[:space:]]*}"
+	full_commit "$remote_head"
+}
+
+read_local_head() {
+	local sibling="$1" output
+	if [ ! -d "$sibling/.git" ] && [ ! -f "$sibling/.git" ]; then
+		return 1
+	fi
+	output="$(git -C "$sibling" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" || return 1
+	local_head="${output%%[[:space:]]*}"
+	full_commit "$local_head"
+}
+
+while IFS=$'\t' read -r name repo remote pin; do
+	[ -n "$name" ] || continue
+	if ! full_commit "$pin"; then
+		printf 'dependency freshness: %s pin must be a full 40-character commit, found %s\n' \
+			"$name" "${pin:-<missing>}" >&2
+		issues=$((issues + 1))
+		continue
+	fi
+
+	sibling="$sibling_parent/$repo"
+	branch="$(branch_for_dependency "$name")"
+	remote_ref=HEAD
+	remote_source="upstream $remote"
+	if [ -n "$branch" ]; then
+		remote_ref="refs/heads/$branch"
+		remote_source="upstream $remote branch $branch"
+	fi
+	head=''
+	source_name=''
+	if [ "$prefer_local" -eq 1 ]; then
+		if read_local_head "$sibling"; then
+			head="$local_head"
+			source_name="sibling $sibling"
+		elif read_remote_head "$remote" "$remote_ref"; then
+			head="$remote_head"
+			source_name="$remote_source"
+		elif [ "$remote_missing_ref" -eq 1 ]; then
+			printf 'dependency freshness: %s configured branch %s does not exist at %s\n' \
+				"$name" "${branch:-HEAD}" "$remote" >&2
+			issues=$((issues + 1))
+			continue
+		fi
+	else
+		if read_remote_head "$remote" "$remote_ref"; then
+			head="$remote_head"
+			source_name="$remote_source"
+		elif [ "$remote_missing_ref" -eq 1 ]; then
+			printf 'dependency freshness: %s configured branch %s does not exist at %s\n' \
+				"$name" "${branch:-HEAD}" "$remote" >&2
+			issues=$((issues + 1))
+			continue
+		elif read_local_head "$sibling"; then
+			head="$local_head"
+			source_name="sibling $sibling"
+		fi
+	fi
+
+	if [ -z "$head" ]; then
+		printf 'dependency freshness: unable to verify %s at %s; upstream unavailable and sibling unreadable at %s\n' \
+			"$name" "$pin" "$sibling" >&2
+		issues=$((issues + 1))
+		continue
+	fi
+
+	pin_lower="$(printf '%s' "$pin" | tr '[:upper:]' '[:lower:]')"
+	head_lower="$(printf '%s' "$head" | tr '[:upper:]' '[:lower:]')"
+	if [ "$pin_lower" != "$head_lower" ]; then
+		printf 'dependency freshness: %s is stale; pinned %s, %s HEAD %s\n' \
+			"$name" "$pin" "$source_name" "$head" >&2
+		issues=$((issues + 1))
+	fi
+done <<< "$records"
+
+if [ "$issues" -eq 0 ]; then
+	exit 0
+fi
+if [ "$allow_stale" -eq 1 ]; then
+	printf 'warning: ALLOW_STALE permits this build with %d dependency freshness issue(s)\n' "$issues" >&2
+	exit 0
+fi
+
+printf 'error: %d dependency freshness issue(s); set ALLOW_STALE=1 to override\n' "$issues" >&2
+exit 1

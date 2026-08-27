@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+
+# Deterministic contract tests for the sibling-dependency freshness gate.
+# Git and Nix are adapters supplied through PATH; no network is used.
+
+set -u
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+subject="$root/tools/check_dependency_freshness"
+capture_lib="${CAPTURE_LIB:-$HOME/dotfiles/bin/src/capture.bash}"
+failures=0
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-dependency-freshness.XXXXXX")"
+fake_bin="$sandbox/bin"
+git_log="$sandbox/git.log"
+nix_log="$sandbox/nix.log"
+
+alpha_pin=1111111111111111111111111111111111111111
+bravo_pin=2222222222222222222222222222222222222222
+other_head=3333333333333333333333333333333333333333
+
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+cleanup() {
+	case "$sandbox" in
+		"${TMPDIR:-/tmp}"/tiffz-dependency-freshness.*) rm -rf -- "$sandbox" ;;
+	esac
+}
+trap cleanup EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+assert_equal() {
+	local label="$1" expected="$2" actual="$3"
+	if [ "$actual" != "$expected" ]; then
+		fail "$label"
+		printf '  expected: %q\n' "$expected" >&2
+		printf '  actual:   %q\n' "$actual" >&2
+	fi
+}
+
+assert_contains() {
+	local label="$1" haystack="$2" needle="$3"
+	if [[ "$haystack" != *"$needle"* ]]; then
+		fail "$label"
+		printf '  missing: %q\n' "$needle" >&2
+	fi
+}
+
+assert_not_contains() {
+	local label="$1" haystack="$2" needle="$3"
+	if [[ "$haystack" == *"$needle"* ]]; then
+		fail "$label"
+		printf '  unexpected: %q\n' "$needle" >&2
+	fi
+}
+
+assert_before() {
+	local label="$1" haystack="$2" first="$3" second="$4"
+	local before_first="${haystack%%"$first"*}"
+	local before_second="${haystack%%"$second"*}"
+	if [[ "$haystack" != *"$first"* || "$haystack" != *"$second"* || ${#before_first} -ge ${#before_second} ]]; then
+		fail "$label"
+	fi
+}
+
+write_manifest() {
+	local path="$1" alpha_ref="${2:-$alpha_pin}"
+	mkdir -p "$(dirname "$path")"
+	cat > "$path" <<EOF
+.{
+	.dependencies = .{
+		.alpha = .{
+			.url = "git+https://github.com/pmarreck/alpha#$alpha_ref",
+			.hash = "alpha-1.0.0-unused",
+		},
+		.bravo = .{
+			.url = "https://github.com/pmarreck/bravo/archive/$bravo_pin.tar.gz",
+			.hash = "bravo-1.0.0-unused",
+		},
+		.external = .{
+			.url = "git+https://github.com/example/external#$other_head",
+			.hash = "external-1.0.0-unused",
+		},
+	},
+}
+EOF
+}
+
+mkdir -p "$fake_bin"
+cat > "$fake_bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -u
+
+printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
+
+repo_key() {
+	printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_'
+}
+
+if [ "${1-}" = "-C" ]; then
+	repo="$(basename "$2")"
+	key="FAKE_LOCAL_$(repo_key "$repo")"
+	value="${!key-}"
+	if [ -z "$value" ] || [ "$value" = unavailable ]; then
+		exit 2
+	fi
+	printf '%s\n' "$value"
+	exit 0
+fi
+
+while [ "${1-}" = "-c" ]; do
+	shift 2
+done
+if [ "${1-}" = ls-remote ]; then
+	shift
+	if [ "${1-}" = --exit-code ]; then
+		shift
+	fi
+	url="${1-}"
+	ref="${2-HEAD}"
+	repo="${url##*/}"
+	repo="${repo%.git}"
+	key="FAKE_REMOTE_$(repo_key "$repo")_$(repo_key "${ref##*/}")"
+	value="${!key-}"
+	if [ -z "$value" ]; then
+		key="FAKE_REMOTE_$(repo_key "$repo")"
+		value="${!key-}"
+	fi
+	if [ -z "$value" ] || [ "$value" = unavailable ]; then
+		exit 128
+	fi
+	if [ "$value" = missing ]; then
+		exit 2
+	fi
+	printf '%s\tHEAD\n' "$value"
+	exit 0
+fi
+
+exit 2
+EOF
+chmod +x "$fake_bin/git"
+
+if [ ! -r "$capture_lib" ]; then
+	fail "capture helper is readable at $capture_lib"
+	exit "$failures"
+fi
+# shellcheck source=/dev/null
+source "$capture_lib"
+
+project_root="$sandbox/code/subject"
+manifest="$project_root/build.zig.zon"
+write_manifest "$manifest"
+out=''
+err=''
+rc=0
+
+run_check() {
+	capture env \
+		PATH="$fake_bin:$PATH" \
+		FAKE_GIT_LOG="$git_log" \
+		FAKE_REMOTE_ALPHA="${FAKE_REMOTE_ALPHA-unavailable}" \
+		FAKE_REMOTE_BRAVO="${FAKE_REMOTE_BRAVO-unavailable}" \
+		FAKE_REMOTE_ALPHA_YOLO="${FAKE_REMOTE_ALPHA_YOLO-}" \
+		FAKE_REMOTE_BRAVO_YOLO="${FAKE_REMOTE_BRAVO_YOLO-}" \
+		FAKE_LOCAL_ALPHA="${FAKE_LOCAL_ALPHA-unavailable}" \
+		FAKE_LOCAL_BRAVO="${FAKE_LOCAL_BRAVO-unavailable}" \
+		ALLOW_STALE="${ALLOW_STALE-}" \
+		PREFER_LOCAL_FIRST="${PREFER_LOCAL_FIRST-}" \
+		"$subject" --manifest "$manifest" --repo-root "$project_root"
+}
+
+run_check_with_map() {
+	capture env \
+		PATH="$fake_bin:$PATH" \
+		FAKE_GIT_LOG="$git_log" \
+		FAKE_REMOTE_ALPHA="${FAKE_REMOTE_ALPHA-unavailable}" \
+		FAKE_REMOTE_BRAVO="${FAKE_REMOTE_BRAVO-unavailable}" \
+		FAKE_REMOTE_ALPHA_YOLO="${FAKE_REMOTE_ALPHA_YOLO-}" \
+		FAKE_REMOTE_BRAVO_YOLO="${FAKE_REMOTE_BRAVO_YOLO-}" \
+		FAKE_LOCAL_ALPHA="${FAKE_LOCAL_ALPHA-unavailable}" \
+		FAKE_LOCAL_BRAVO="${FAKE_LOCAL_BRAVO-unavailable}" \
+		ALLOW_STALE="${ALLOW_STALE-}" \
+		PREFER_LOCAL_FIRST="${PREFER_LOCAL_FIRST-}" \
+		"$subject" --manifest "$manifest" --repo-root "$project_root" \
+		--branch-map "$branch_map"
+}
+
+if [ ! -x "$subject" ]; then
+	fail 'dependency freshness checker exists and is executable'
+else
+	: > "$git_log"
+	FAKE_REMOTE_ALPHA="$alpha_pin" FAKE_REMOTE_BRAVO="$bravo_pin" run_check
+	assert_equal 'a matching dependency set passes' 0 "$rc"
+	assert_equal 'a matching dependency set keeps stdout clean' '' "$out"
+	assert_equal 'a matching dependency set keeps stderr clean' '' "$err"
+	git_calls="$(<"$git_log")"
+	assert_contains 'git URL dependency is checked' "$git_calls" 'pmarreck/alpha'
+	assert_contains 'archive URL dependency is checked' "$git_calls" 'pmarreck/bravo'
+	assert_not_contains 'non-sibling owner is ignored' "$git_calls" 'example/external'
+
+	: > "$git_log"
+	FAKE_REMOTE_ALPHA="$other_head" FAKE_REMOTE_BRAVO="$alpha_pin" run_check
+	assert_equal 'all stale dependencies fail as a set' 1 "$rc"
+	assert_contains 'first stale dependency is reported' "$err" 'alpha'
+	assert_contains 'second stale dependency is reported' "$err" 'bravo'
+	assert_contains 'stale report includes pinned commit' "$err" "$alpha_pin"
+	assert_contains 'stale report includes observed HEAD' "$err" "$other_head"
+	assert_contains 'stale report names upstream source' "$err" 'upstream'
+	git_calls="$(<"$git_log")"
+	assert_contains 'classification continues after first stale dependency' "$git_calls" 'pmarreck/bravo'
+
+	mkdir -p "$sandbox/code/alpha/.git" "$sandbox/code/bravo/.git"
+	: > "$git_log"
+	FAKE_REMOTE_ALPHA=unavailable FAKE_REMOTE_BRAVO="$bravo_pin" \
+		FAKE_LOCAL_ALPHA="$alpha_pin" run_check
+	assert_equal 'offline upstream falls back to a sibling checkout' 0 "$rc"
+	git_calls="$(<"$git_log")"
+	assert_before 'default order tries upstream before local' "$git_calls" 'ls-remote' '-C'
+
+	for truthy in 1 yes YES true TRUE on On y Y; do
+		: > "$git_log"
+		PREFER_LOCAL_FIRST="$truthy" \
+			FAKE_LOCAL_ALPHA="$alpha_pin" FAKE_LOCAL_BRAVO="$bravo_pin" \
+			FAKE_REMOTE_ALPHA="$other_head" FAKE_REMOTE_BRAVO="$other_head" run_check
+		assert_equal "PREFER_LOCAL_FIRST accepts $truthy" 0 "$rc"
+		git_calls="$(<"$git_log")"
+		assert_not_contains "PREFER_LOCAL_FIRST=$truthy skips upstream" "$git_calls" 'ls-remote'
+	done
+
+	for falsy in '' 0 no NO false FALSE off Off n N garbage; do
+		: > "$git_log"
+		PREFER_LOCAL_FIRST="$falsy" \
+			FAKE_LOCAL_ALPHA="$other_head" FAKE_LOCAL_BRAVO="$other_head" \
+			FAKE_REMOTE_ALPHA="$alpha_pin" FAKE_REMOTE_BRAVO="$bravo_pin" run_check
+		assert_equal "PREFER_LOCAL_FIRST rejects $falsy" 0 "$rc"
+		git_calls="$(<"$git_log")"
+		assert_not_contains "default order with $falsy does not consult matching-remote fallback" "$git_calls" '-C'
+	done
+
+	for truthy in 1 yes YES true TRUE on On y Y; do
+		ALLOW_STALE="$truthy" FAKE_REMOTE_ALPHA="$other_head" FAKE_REMOTE_BRAVO="$other_head" run_check
+		assert_equal "ALLOW_STALE accepts $truthy" 0 "$rc"
+		assert_contains "ALLOW_STALE=$truthy stays loud" "$err" 'ALLOW_STALE'
+	done
+
+	for falsy in '' 0 no NO false FALSE off Off n N garbage; do
+		ALLOW_STALE="$falsy" FAKE_REMOTE_ALPHA="$other_head" FAKE_REMOTE_BRAVO="$other_head" run_check
+		assert_equal "ALLOW_STALE rejects $falsy" 1 "$rc"
+	done
+
+	offline_root="$sandbox/isolated/subject"
+	offline_manifest="$offline_root/build.zig.zon"
+	write_manifest "$offline_manifest"
+	manifest="$offline_manifest" project_root="$offline_root"
+	FAKE_REMOTE_ALPHA=unavailable FAKE_REMOTE_BRAVO=unavailable run_check
+	assert_equal 'unverifiable dependencies fail closed' 1 "$rc"
+	assert_contains 'unverifiable report names first dependency' "$err" 'alpha'
+	assert_contains 'unverifiable report names second dependency' "$err" 'bravo'
+	assert_contains 'unverifiable report explains missing sources' "$err" 'unable to verify'
+
+	ALLOW_STALE=yes FAKE_REMOTE_ALPHA=unavailable FAKE_REMOTE_BRAVO=unavailable run_check
+	assert_equal 'ALLOW_STALE permits an offline build without siblings' 0 "$rc"
+	assert_contains 'offline override stays loud' "$err" 'ALLOW_STALE'
+
+	malformed_root="$sandbox/malformed/subject"
+	malformed_manifest="$malformed_root/build.zig.zon"
+	write_manifest "$malformed_manifest" main
+	manifest="$malformed_manifest" project_root="$malformed_root"
+	: > "$git_log"
+	FAKE_REMOTE_ALPHA="$alpha_pin" FAKE_REMOTE_BRAVO="$bravo_pin" run_check
+	assert_equal 'a non-commit pin fails before source lookup' 1 "$rc"
+	assert_contains 'malformed pin report requires a full commit' "$err" 'full 40-character commit'
+	assert_not_contains 'malformed pin does not query its remote' "$(<"$git_log")" 'pmarreck/alpha'
+
+	manifest="$sandbox/code/subject/build.zig.zon"
+	project_root="$sandbox/code/subject"
+	branch_map="$project_root/.dependency-heads"
+	printf '%s\n' 'alpha yolo' > "$branch_map"
+	: > "$git_log"
+	FAKE_REMOTE_ALPHA="$other_head" FAKE_REMOTE_ALPHA_YOLO="$alpha_pin" \
+		FAKE_REMOTE_BRAVO="$bravo_pin" run_check_with_map
+	assert_equal 'an explicit branch override selects that remote branch' 0 "$rc"
+	git_calls="$(<"$git_log")"
+	assert_contains 'mapped dependency queries its full branch ref' "$git_calls" 'refs/heads/yolo'
+	assert_contains 'unmapped dependency still queries symbolic HEAD' "$git_calls" 'pmarreck/bravo HEAD'
+
+	printf '%s\n' 'alpha yolo' > "$branch_map"
+	FAKE_REMOTE_ALPHA_YOLO=missing FAKE_REMOTE_BRAVO="$bravo_pin" \
+		FAKE_LOCAL_ALPHA="$alpha_pin" run_check_with_map
+	assert_equal 'a missing configured remote branch cannot hide behind a sibling fallback' 1 "$rc"
+	assert_contains 'missing branch diagnostic names the dependency' "$err" 'alpha'
+	assert_contains 'missing branch diagnostic names the configured branch' "$err" 'yolo'
+
+	printf '%s\n' 'unknown yolo' > "$branch_map"
+	FAKE_REMOTE_ALPHA="$alpha_pin" FAKE_REMOTE_BRAVO="$bravo_pin" run_check_with_map
+	assert_equal 'an unknown branch-map dependency is a configuration error' 2 "$rc"
+	assert_contains 'unknown branch-map diagnostic names the entry' "$err" 'unknown'
+	assert_contains 'unknown branch-map diagnostic explains the stale control entry' "$err" 'does not name a sibling dependency'
+fi
+
+out='' err='' rc=0
+capture "$root/build" --help
+assert_equal './build --help succeeds' 0 "$rc"
+assert_equal './build --help keeps stderr clean' '' "$err"
+assert_contains './build help documents ALLOW_STALE' "$out" 'ALLOW_STALE'
+assert_contains './build help documents PREFER_LOCAL_FIRST' "$out" 'PREFER_LOCAL_FIRST'
+assert_contains './build help documents the explicit branch map' "$out" '.dependency-heads'
+
+integration_root="$sandbox/build-integration"
+mkdir -p "$integration_root/tools" "$integration_root/bin"
+cp "$root/build" "$integration_root/build"
+cat > "$integration_root/tools/check_dependency_freshness" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CHECKER_LOG"
+exit "$CHECKER_RC"
+EOF
+cat > "$integration_root/bin/nix" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NIX_LOG"
+exit 0
+EOF
+chmod +x "$integration_root/build" "$integration_root/tools/check_dependency_freshness" "$integration_root/bin/nix"
+
+checker_log="$sandbox/checker.log"
+: > "$checker_log"
+: > "$nix_log"
+capture env PATH="$integration_root/bin:$PATH" CHECKER_LOG="$checker_log" CHECKER_RC=1 NIX_LOG="$nix_log" \
+	"$integration_root/build" --debug
+assert_equal './build propagates a failed freshness check' 1 "$rc"
+assert_contains './build invokes the checker with its manifest' "$(<"$checker_log")" 'build.zig.zon'
+assert_contains './build passes its explicit branch map' "$(<"$checker_log")" '.dependency-heads'
+assert_equal './build never reaches Nix after a failed check' '' "$(<"$nix_log")"
+
+: > "$checker_log"
+: > "$nix_log"
+capture env PATH="$integration_root/bin:$PATH" CHECKER_LOG="$checker_log" CHECKER_RC=0 NIX_LOG="$nix_log" \
+	"$integration_root/build" --debug
+assert_equal './build continues after a passing freshness check' 0 "$rc"
+assert_contains './build reaches Nix after a passing check' "$(<"$nix_log")" 'develop -c zig build -Doptimize=Debug'
+
+exit "$failures"

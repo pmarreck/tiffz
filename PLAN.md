@@ -7,6 +7,24 @@ public API design.
 
 ## Next up
 
+- [x] **Fleet sibling-dependency freshness gate** (2026-08-27 16:22 EDT).
+      Canonical `./build` now blocks before Nix when any pmarreck dependency pin is
+      stale or cannot be verified. Default order is upstream first, then an available
+      sibling checkout; truthy `PREFER_LOCAL_FIRST` reverses it. Truthy `ALLOW_STALE`
+      preserves every diagnostic and permits the build. Peter chose an explicit
+      `.dependency-heads` branch map for exceptions; `lercz yolo` avoids its GitHub
+      symbolic `master` HEAD, which lacks Zig packaging. Unknown map keys and missing
+      configured remote branches fail rather than hiding behind local fallback.
+      `./build --help` documents both variables, accepted case-insensitive truthy
+      values, source order, and the map. Deterministic fake Git/Nix tests classify
+      dependency sets, both URL forms, external-owner exclusion, source availability
+      and ordering, truthy/falsy values, malformed pins, stale accumulation, offline
+      override, branch-map behavior, and proof that failed checks never reach Nix.
+      The live gate found three genuine stale pins plus the lercz branch mismatch;
+      lzwz, jpegz, and zstdz are repinned to their selected HEADs, with Nix hash
+      `sha256-a7XUgcFojWJJptWv5ifyX9zGOy+i9eOdIjCQ9TZEGVI=`. `./test`, default
+      `./build`, and `PREFER_LOCAL_FIRST=true ./build` pass.
+
 ### >>> MORNING RUNBOOK (2026-08-27; freeze 17:00 EDT) — two launch-critical items <<<
 
 **Freeze context (validate note 2026-08-21, urgent):** Peter committed to a 15-person

@@ -12,20 +12,54 @@
 #   ./build              # ReleaseFast native build (default)
 #   ./build --debug      # Debug build (loudly announces itself)
 #   ./build --test       # Build the unit + CLI test binaries
+#   ./build --help       # Show modes and dependency freshness controls
 
 set -u
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
 mode="release"
 for arg in "$@"; do
     case "$arg" in
         --debug) mode="debug" ;;
         --test)  mode="test" ;;
+		-h|--help)
+			cat <<'EOF'
+Usage: ./build [--debug|--test]
+
+  (default)  ReleaseFast build through nix build .#default
+  --debug    Debug build through the Nix development shell
+  --test     Build and run Zig unit and CLI tests
+  -h, --help Show this help
+
+Sibling dependency freshness:
+  Before every build, pinned pmarreck dependencies must match the selected
+  repository HEAD. GitHub HEAD is checked first. If GitHub is unavailable,
+  an adjacent sibling checkout is used when present.
+
+  .dependency-heads     Optional DEPENDENCY BRANCH overrides for repositories
+                          whose package branch differs from symbolic HEAD.
+
+  PREFER_LOCAL_FIRST=1  Check an adjacent sibling checkout before GitHub.
+                          Accepted truthy values: 1, yes, true, on, y
+                          (case-insensitive). This trusts the sibling's current
+                          commit even when it is ahead of or behind GitHub.
+
+  ALLOW_STALE=1         Continue after stale or unverifiable dependencies.
+                          Diagnostics remain visible on stderr. Accepted truthy
+                          values: 1, yes, true, on, y (case-insensitive).
+EOF
+			exit 0
+			;;
         *) printf 'unknown arg: %s\n' "$arg" >&2; exit 2 ;;
     esac
 done
+
+"$ROOT/tools/check_dependency_freshness" \
+	--manifest "$ROOT/build.zig.zon" \
+	--repo-root "$ROOT" \
+	--branch-map "$ROOT/.dependency-heads" || exit $?
 
 case "$mode" in
     release)
