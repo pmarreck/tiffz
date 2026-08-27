@@ -250,6 +250,45 @@
           dontFixup = true;
         };
 
+        # External-consumer contract for the exported lercz artifact (Einstein
+        # 2026-08-20): a genuinely separate package (tests/lerc_consumer_pkg,
+        # tiffz as a path dependency) must resolve
+        # `b.dependency("tiffz", ...).artifact("lerc")` and link+call the LERC
+        # C ABI through it. This is exactly the downstream static-archive shape
+        # that failed for validate; it goes red if the installArtifact
+        # re-export is ever dropped.
+        checks.lerc-artifact-export = pkgs.stdenv.mkDerivation {
+          pname = "tiffz-lerc-artifact-export";
+          version = "0.1.0";
+          src = self;
+
+          nativeBuildInputs = [ zig ];
+
+          dontConfigure = true;
+
+          buildPhase = ''
+            export HOME="$TMPDIR"
+            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${pkgs.lib.optionalString isLinux ''
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
+            ''}
+            export TERM=dumb
+            cd tests/lerc_consumer_pkg
+            timeout 600 zig build run -Doptimize=ReleaseSafe ${zigTargetFlag} 2>&1 || {
+              echo "lerc artifact export contract failed"
+              exit 1
+            }
+          '';
+
+          installPhase = ''
+            mkdir -p $out
+            echo "lerc artifact export contract passed" > $out/result
+          '';
+        };
+
         checks.test = pkgs.stdenv.mkDerivation {
           pname = "tiffz-test";
           version = "0.1.0";

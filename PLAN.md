@@ -7,6 +7,63 @@ public API design.
 
 ## Next up
 
+### >>> MORNING RUNBOOK (2026-08-27; freeze 17:00 EDT) — two launch-critical items <<<
+
+**Freeze context (validate note 2026-08-21, urgent):** Peter committed to a 15-person
+Mecha Validate Founding Beta 2026-09-01; freeze recommendation 2026-08-27 17:00 EDT.
+Only two tiffz items are on the critical path. Both notes' full text preserved below
+in their PLAN items; inbox notes trashed per ephemeral rule after acks were sent
+2026-08-26 late night (validate got a CR2 status + lercz ETA; Einstein got an ack).
+
+- [x] **1. lercz artifact export** (2026-08-27 11:40 EDT). RED: a genuinely external
+      consumer package `tests/lerc_consumer_pkg/` (tiffz as a path dep) panicked
+      "unable to find artifact 'lerc'" — exactly validate's failure shape. GREEN: one
+      `b.installArtifact(lercz_dep.artifact("lerc"))` re-export in build.zig (same
+      target/optimize instance the module links; no new pins/instances). The consumer
+      declares the two C externs (`lerc_getBlobInfo`/`lerc_decode`) with no header,
+      links ONLY the exported artifact, and both calls must reject garbage at runtime
+      (link-level + call-level proof, silent on success). Wired
+      `checks.lerc-artifact-export` (Nix), a `./test` subtest, and the Mechatron
+      target. All four `./test` subtests + `./build` green. Original ask follows: validate_gui pin `c104bc0` fails
+      `nix build .#validate-server` linking `libvalidate_core.a`: undefined
+      `lerc_getBlobInfo`/`lerc_decode` reached through `src/compressions/lerc.zig` —
+      external static-archive consumers can't name tiffz's private
+      `lercz_dep.artifact("lerc")` for flattening. TDD: consumer-shaped contract test
+      FIRST that fails on the present build and proves a downstream
+      `b.dependency("tiffz", ...).artifact("lerc")` (or a better stable public name)
+      resolves + links code calling the LERC C ABI through the exported artifact (not
+      just tiffz's own exe). Then expose/install the EXISTING artifact — same
+      target/optimize instance the named module imports; NO nixpkgs LERC, no second
+      pin, no second module instance. Acceptance: `./test` + Nix checks clean; docs/
+      PLAN/dirtree current; commit+push; reply to Einstein + validate with exact SHA,
+      Zig package hash, artifact name, and the focused consumer command.
+- [ ] **2. CR2 policy ruling + fix-or-partial call (needs PETER, then possibly
+      Einstein for a new WARN code).** Root cause of the sRAW2 false-Malformed is
+      PINNED (2026-08-19 instrumentation, still in the dirty tree):
+      `expectedChunkBytes` on **IFD0 chunk 0** — the CR2's embedded JPEG preview IFD,
+      NOT Canon's vendor IFD3. IFD0 (per tiffdump) has `BitsPerSample` count=3
+      (8,8,8) but NO SamplesPerPixel tag (TIFF default 1) and NO Photometric;
+      `bitsPerPixel`'s guard `bps_entry.count != 1 and != samples` (decoder.zig:772)
+      → Malformed. exiftool/libtiff/libraw all tolerate (infer 3 samples).
+      **Fix part A** (mechanical): when SPP is absent, infer samples from
+      BitsPerSample count — libtiff-tolerated deviation → accept (+ likely WARN code
+      16, needs Einstein sign-off per the registry rule).
+      **Fix part B (the policy fork, Peter's call):** after A, the walk still hits
+      Compression=6 (OJPEG, deliberately blocked per SPEC §3) on IFD0 AND IFD3 — a
+      named unsupported error would propagate and fail the whole walk. For the
+      must-accept contract the walk needs a semantics decision: skip
+      undecodable-but-well-formed IFDs with a coverage-gap finding (validate routes
+      to WARN), vs propagate named-unsupported (validate treats as coverage WARN but
+      the walk "fails"), vs full acceptance only for known-preview IFD shapes.
+      **Freeze reality told to validate:** plan for CR2 = honest `partial` at the
+      freeze; if Peter + Einstein rule fast in the morning the fix may still land by
+      17:00 and I notify immediately. Dirty-tree state: vendored fixture
+      `tests/fixtures/cr2/` (untracked), must-accept test + CR2DBG split
+      instrumentation in fixture_test.zig, walk instrumentation in decoder.zig,
+      `.filters = &.{"CR2"}` in build.zig (REVERT filter + instrumentation before
+      any commit). Suite is deliberately red on the CR2 must-accept test (the
+      failing wedge).
+
 ### >>> TOMORROW'S SCOPE (scoped 2026-08-05 23:00 EDT, for Peter's oversight) <<<
 
 State: the whole seam A+B was executed overnight (Einstein-authorized, superseding

@@ -4,3 +4,4 @@ checks.x86_64-linux.test
 checks.x86_64-linux.parser-closure
 checks.x86_64-linux.jpeg-validation-closure
 checks.x86_64-linux.fuzz
+checks.x86_64-linux.lerc-artifact-export

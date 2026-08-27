@@ -187,6 +187,14 @@ pub fn build(b: *std.Build) void {
     });
     const lercz_mod = lercz_dep.module("lercz");
     lib_module.addImport("lercz", lercz_mod);
+    // Re-export lercz's static library under tiffz's own install set so
+    // EXTERNAL static-archive consumers can name it:
+    // `b.dependency("tiffz", ...).artifact("lerc")`. validate's installed core
+    // merges its native dep archives and needs the exact instance our module
+    // links (Einstein 2026-08-20; undefined lerc_getBlobInfo/lerc_decode in
+    // libvalidate_core.a without this). Contract test:
+    // tests/lerc_consumer_pkg (checks.lerc-artifact-export).
+    b.installArtifact(lercz_dep.artifact("lerc"));
     const lib = b.addLibrary(.{
         .name = "tiffz",
         .linkage = .static,
