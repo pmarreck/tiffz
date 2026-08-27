@@ -15,24 +15,19 @@ Only two tiffz items are on the critical path. Both notes' full text preserved b
 in their PLAN items; inbox notes trashed per ephemeral rule after acks were sent
 2026-08-26 late night (validate got a CR2 status + lercz ETA; Einstein got an ack).
 
-- [ ] **0. zstdz static-artifact export — validate's final repin blocker**
-      (2026-08-27 13:12 EDT, urgent). validate integrated `964bcc89`; its
-      external C consumer now resolves LERC but reports exactly seven unresolved
-      Zstandard symbols (`ZSTD_decompress`, `ZSTD_isError`, `ZSTD_createDCtx`,
-      `ZSTD_freeDCtx`, `ZSTD_DStreamInSize`, `ZSTD_DStreamOutSize`, and
-      `ZSTD_decompressStream`) from Compression=50000. First extend the existing
-      genuinely external `tests/lerc_consumer_pkg/` contract to resolve and call
-      the zstdz C ABI through tiffz's exported artifact, and observe RED at the
-      artifact boundary. Then install the EXISTING zstdz artifact from the same
-      dependency instance used by the module graph, under its actual stable public
-      name. No system zstd, second pin, or duplicate dependency instance.
-      Acceptance: the consumer links only tiffz-exported artifacts and rejects
-      garbage through both LERC and Zstandard calls; `./test` and `./build` pass;
-      docs/dirtree are current; commit and push; terminal exact-SHA Mechatron pass;
-      reply to validate with the SHA, Zig package hash, artifact name, and focused
-      consumer command. Curiosity poke: artifact-name resolution alone can pass
-      while the seven ABI symbols remain unreachable, so the test must call the
-      Zstandard functions at runtime.
+- [x] **0. zstdz static-artifact export** (2026-08-27 13:21 EDT).
+      validate's external C consumer exposed seven unresolved Zstandard symbols
+      after integrating `964bcc89`. RED: the extended independent package failed
+      with `unable to find artifact 'zstd'`. GREEN: tiffz now installs the existing
+      `zstdz_dep.artifact("zstd")` from the same dependency instance used by its
+      module graph. The consumer resolves only tiffz-exported `lerc` and `zstd`
+      artifacts, then calls all seven reported Zstandard functions and both LERC
+      functions at runtime. `./test`, `./build`, and formatting/diff checks pass.
+      Mechatron recorded terminal success for implementation commit `ac381e64` in
+      414 seconds. validate received the SHA, Zig package hash
+      `tiffz-0.1.0-qutJATqqzwEUrMNfzSQrfaGeDHSUxklBWRtgExdg63eN`, artifact name,
+      merge instruction, and focused consumer command. Curiosity result: the ABI
+      calls prevent an empty named artifact from satisfying the contract.
 
 - [x] **1. lercz artifact export** (2026-08-27 11:40 EDT). RED: a genuinely external
       consumer package `tests/lerc_consumer_pkg/` (tiffz as a path dep) panicked
