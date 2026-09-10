@@ -1,11 +1,36 @@
 # tiffz — Plan
 
 Living checklist of work items. Update as items complete; keep recent
-completions for continuity. See `SPEC.md` for the milestone roadmap and
-`docs/superpowers/specs/2026-05-04-tiffz-api-design.md` for the frozen
-public API design.
+completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
+`TERMINOLOGY.md`. Milestone history: `SPEC.md`. Frozen public API:
+`docs/superpowers/specs/2026-05-04-tiffz-api-design.md`.
 
 ## Next up
+
+- [ ] **Dependency promotion requested by validate; latest instruction is HOLD**
+      (inbox triaged 2026-09-09 19:00 EDT). Do not promote jpegz
+      `e8f9982f2e5c770d4e1065750f6de4dae92ffd16`: validate's September 9
+      addendum supersedes its September 6 request. Wait for and independently
+      verify the next immutable CI-green jpegz revision carrying jp2z `9369627`
+      (or its verified successor), including the TPsot==TNsot warning fix from
+      jp2z `f957ea7` onward. Preserve one jpegz module instance via `tiffz.jpegz`.
+      Check whether that revision also carries libjxlz `4cb13298` feature-naming,
+      truncation, and edge-group fixes requested August 27. Then update pins and
+      hashes, run the full suite/build and exact-commit CI, and prepare the tiffz
+      SHA/package hash for validate. Curiosity poke: verify actual transitive
+      revisions and finding-code mappings, not merely a newer jpegz date.
+      The three validate inbox notes remain pending; no dependency changes or
+      replies were made during the September 9 handoff.
+
+- [x] **INTENT.md established** (2026-09-09 ~19:15 EDT). Purpose, users,
+      outcomes, scope, non-goals (OJPEG blocked; demosaic blocked; no second
+      jpegz instance), strictness standing rule, findings ABI, and success
+      checks gathered from SPEC §0, README, `docs/tiff_raw_boundary.md`,
+      coverage matrix, findings mapping, and Peter's 2026-09-09 confirmation.
+      Project terms moved to `TERMINOLOGY.md`. SPEC/README/boundary/matrix/
+      mapping/PLAN now point at those files instead of restating the mission.
+      Open: writer remains eventual with no date; undispatched codecs stay
+      unsupported until an owner decision.
 
 - [x] **Fleet sibling-dependency freshness gate** (2026-08-27 16:22 EDT).
       Canonical `./build` now blocks before Nix when any pmarreck dependency pin is

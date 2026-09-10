@@ -8,7 +8,8 @@ improvements, ordered by likely impact on real-world workflows.
 
 This isn't a commitment to ship any of these. It's a written-down
 list so the next session (human or AI) doesn't have to rediscover
-what's missing.
+what's missing. Blocked items (OJPEG decode, demosaic) live in
+`INTENT.md` non-goals; do not revive them from this inventory.
 
 ---
 

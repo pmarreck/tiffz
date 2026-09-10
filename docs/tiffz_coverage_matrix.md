@@ -1,13 +1,9 @@
 # tiffz coverage matrix
 
 Einstein dispatch outcome 2 (2026-08-04): inventory tiffz's format coverage as
-**strict / partial / unsupported / blocked**.
-
-- **strict** — recognized and fully validated/decoded per spec.
-- **partial** — works with a documented gap, or accepted-with-WARN under a
-  libtiff-tolerated deviation.
-- **unsupported** — not dispatched; tiffz does not claim to handle it.
-- **blocked** — deliberately excluded (will not be implemented).
+**strict / partial / unsupported / blocked**. Status words are defined in
+`TERMINOLOGY.md`. Product non-goals (OJPEG decode, demosaic) are in
+`INTENT.md`. This matrix is measured capability, not intent.
 
 This first pass is **code-derived** (read of `tags.zig`, `decoder.zig`,
 `predictors.zig`, `photometrics.zig`, `dng.zig`, `geotiff.zig`, `findings.zig`,
@@ -24,7 +20,7 @@ provisional). Cells marked provisional are the honest edge of this inventory.
 | CCITT Group 3 (T.4) | 3 | strict | code | `compressions/ccitt_t4.zig` |
 | CCITT Group 4 (T.6) | 4 | strict | code | `compressions/ccitt_t6.zig` |
 | LZW | 5 | strict | fixture | via `lzwz`; missing-EOD accepted with **WARN 14** (libtiff-tolerated) |
-| OJPEG (old-style JPEG) | 6 | **blocked** | fixture | SPEC §3, re-affirmed by Peter 2026-08-27: never decoded. The walk SKIPS such IFDs with finding 16 (`unsupported_compression_skipped`, partial coverage) instead of failing the file — CR2 previews/vendor raw validate structurally with the uncovered portions named |
+| OJPEG (old-style JPEG) | 6 | **blocked** | fixture | `INTENT.md` non-goal. Peter 2026-08-27: never decoded. The walk SKIPS such IFDs with finding 16 (`unsupported_compression_skipped`, partial coverage) instead of failing the file. CR2 previews/vendor raw validate structurally with the uncovered portions named. |
 | JPEG-in-TIFF | 7 | strict | fixture | via `jpegz`; `error.JpegInTiffPayload` categorization; typed nested findings |
 | Deflate / ZIP | 8 | strict | fixture | `compressions/deflate.zig`; final-strip padding accepted with **WARN 13** |
 | Adobe Deflate | 32946 | strict | fixture | same path as Deflate |
@@ -104,7 +100,7 @@ provisional). Cells marked provisional are the honest edge of this inventory.
 |---|---|---|---|
 | CFA pattern tags | partial | code | `dng.zig` parseCfaPattern |
 | Opcode lists (structure) | partial | code | parsed; params unexecuted |
-| Demosaic / raw development | **blocked** | code | out of scope — tiffz is a validation/parse library, not a raw developer |
+| Demosaic / raw development | **blocked** | code | `INTENT.md` non-goal. tiffz is a validation/parse library, not a raw developer |
 | Predictor 3 (float) for DNG HDR | strict | — | provisional pending fixture |
 | Predictor 2, 16-bit for DNG raw | partial | code | deferred |
 

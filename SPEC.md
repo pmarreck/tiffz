@@ -1,27 +1,22 @@
 # tiffz — starting specification
 
-**Status:** greenfield. No code yet. This document is the briefing
-package for the next agent to start implementation.
+**Status:** historical starting brief (2026-05-04). Implementation has
+since shipped SPEC §9 milestones M1–M10 plus later extensions. Purpose,
+scope, and non-goals live in `INTENT.md`. Current coverage lives in
+`docs/tiffz_coverage_matrix.md`. This file keeps the original milestone
+sketch, spec-source list, and inherited-bug notes.
 
-**Read first:** `AGENTS.md` / `CLAUDE.md` (symlink to Peter's vault) for
-project-wide conventions. Then `LICENSING_NOTES.md` for the
-licensing notes (TIFF is freely implementable; libtiff and zigimg
+**Read first:** `INTENT.md`. Then `AGENTS.md` / `CLAUDE.md` (symlink to
+Peter's vault) for project-wide conventions, and `LICENSING_NOTES.md`
+for licensing notes (TIFF is freely implementable; libtiff and zigimg
 are MIT/BSD-compatible reference reads).
 
 ---
 
 ## 0. Mission
 
-Pure-Zig, spec-driven, complete TIFF reader (and eventually writer)
-that reaches **byte-complete** validation coverage of the TIFF 6.0
-specification and the major modern extensions. Pro photographers are a
-primary downstream customer; "we can't validate this variant" is not
-an acceptable steady state.
-
-This project exists because the per-bug incremental approach in
-`zigimg` (and the `pmarreck/zigimg` fork) cannot close the matrix in
-reasonable time. Tiffz is the focused, completeness-as-success-criterion
-alternative.
+Moved to `INTENT.md`. That document is the purpose contract; this
+section is no longer a second copy.
 
 ---
 
@@ -118,7 +113,7 @@ must support to subsume zigimg's TIFF surface and beyond.
 | LERC compression | Missing | Modern; ESRI |
 | ZSTD-in-TIFF | Missing | Modern |
 | JPEG2000-in-TIFF (compression=34712) | Missing | Rare |
-| OJPEG (old-style JPEG, compression=6) | Probably skip | Deprecated and ambiguous; libtiff treats as best-effort |
+| OJPEG (old-style JPEG, compression=6) | Blocked | Peter 2026-08-27; see `INTENT.md` non-goals. Deprecated and ambiguous; libtiff treats as best-effort. This row was "probably skip" in the 2026-05 zigimg-gap hypothesis. |
 | TIFF/EP | Missing | Pro photography metadata extension |
 | DNG | Missing | Adobe Digital Negative — CFA pattern tags, opcode lists |
 | GeoTIFF | Missing | GIS coordinate-system tags (separate IFD) |

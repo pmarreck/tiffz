@@ -1,5 +1,9 @@
 # The TIFF ↔ RAW boundary: what belongs in tiffz vs rawz
 
+**Product-boundary contract:** `INTENT.md` (Scope / Non-goals).
+This document is the 2026-07-31 rationale, corpus notes, and
+sequencing. Do not treat it as a second purpose statement.
+
 **Decided:** 2026-07-31 (Peter + Einstein).
 **Status:** boundary agreed; `rawz` not yet built. Written *before* more RAW
 code accretes, because it is already accreting in the wrong places.

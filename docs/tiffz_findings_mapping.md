@@ -1,5 +1,9 @@
 # Mapping table: tiffz FindingCode → validate routing
 
+Product posture (strictness, named tolerances, OJPEG) is `INTENT.md`.
+Finding-identity terms are `TERMINOLOGY.md`. This file is the routing
+table.
+
 **From:** tiffz (2026-05-16 EST)
 **Re:** M10 — validate integration. Replace validate's zigimg-based
 TIFF deep-validation path with tiffz.

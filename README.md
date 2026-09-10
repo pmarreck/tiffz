@@ -8,6 +8,9 @@ conformance with the TIFF 6.0 specification and the major modern
 extensions (BigTIFF, DNG, ZSTD-in-TIFF) with both streaming and
 whole-buffer decode modes.
 
+Purpose, scope, and non-goals: [`INTENT.md`](INTENT.md). Terms:
+[`TERMINOLOGY.md`](TERMINOLOGY.md).
+
 Sibling project to [`validate`](../validate) (the primary downstream
 consumer), [`jpegz`](../jpegz) (provides the JPEG-in-TIFF codec
 under the hood), and [`zstdz`](../zstdz) (provides the ZSTD codec).
