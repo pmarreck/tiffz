@@ -7,6 +7,21 @@ completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
 
 ## Next up
 
+- [ ] **Carry current strict JPEG XL finding semantics through tiffz.**
+      Classify libjxlz leaf codes 9 and 13 as recoverable valid findings,
+      codes 10, 11, 12, and 14 as corruption, and unknown future codes as
+      indeterminate. Prove the whole known-code set as one classifier table,
+      then advance the verified jpegz dependency and its Nix hash without
+      creating a second module instance. Curiosity poke: mapped facade codes
+      may change with the dependency pin, but the raw libjxlz code and verdict
+      must survive unchanged. Classifier increment DONE 2026-09-17 7:53 PM
+      EDT: one table now covers every known raw code 1–14 plus an unknown
+      future code. RED proved code 9 was still indeterminate; GREEN classifies
+      9/13 as valid, 10/11/12/14 as corrupt, and preserves fail-closed unknown
+      handling. The complete `./test` suite passed. Dependency promotion
+      remains open because required jpegz commits `491bebc` and `255bddf` are
+      local and unpushed; portable Zig manifests cannot fetch either object.
+
 - [x] **C CLI + C FFI for validate, then PNG dump** (2026-09-16 ~22:45 EDT).
       C ABI: `tiffz_open_from_buffer`, findings callback, `tiffz_validate`,
       `tiffz_decode_rgba`. CLI `validate` (default verb) exit 0/1/2/3;

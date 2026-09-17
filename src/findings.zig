@@ -141,9 +141,10 @@ pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
         else
             .valid,
         .libjxlz => switch (finding.leaf_code) {
-            1, 2, 3 => .corrupt,
+            1, 2, 3, 10, 11, 12, 14 => .corrupt,
             4 => .unsupported,
             5, 6, 7, 8 => .indeterminate,
+            9, 13 => .valid,
             else => .indeterminate,
         },
         // jpegz's own cleanroom T.81/T.87 leg (validateAny, added 2026-08-06),
@@ -157,6 +158,41 @@ pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
             else => .valid,
         } else .valid,
     };
+}
+
+test "strict JXL finding verdict classifies the complete known code set" {
+    const testing = @import("std").testing;
+    const Case = struct {
+        leaf_code: u32,
+        expected: Verdict,
+    };
+    const cases = [_]Case{
+        .{ .leaf_code = 1, .expected = .corrupt },
+        .{ .leaf_code = 2, .expected = .corrupt },
+        .{ .leaf_code = 3, .expected = .corrupt },
+        .{ .leaf_code = 4, .expected = .unsupported },
+        .{ .leaf_code = 5, .expected = .indeterminate },
+        .{ .leaf_code = 6, .expected = .indeterminate },
+        .{ .leaf_code = 7, .expected = .indeterminate },
+        .{ .leaf_code = 8, .expected = .indeterminate },
+        .{ .leaf_code = 9, .expected = .valid },
+        .{ .leaf_code = 10, .expected = .corrupt },
+        .{ .leaf_code = 11, .expected = .corrupt },
+        .{ .leaf_code = 12, .expected = .corrupt },
+        .{ .leaf_code = 13, .expected = .valid },
+        .{ .leaf_code = 14, .expected = .corrupt },
+        .{ .leaf_code = 999, .expected = .indeterminate },
+    };
+
+    for (cases) |case| {
+        const finding = @import("jpegz").StrictFinding{
+            .source = .libjxlz,
+            .leaf_code = case.leaf_code,
+            .code = null,
+            .severity = .warn,
+        };
+        try testing.expectEqual(case.expected, strictFindingVerdict(finding));
+    }
 }
 
 /// C-callable finding callback. `(source_decoder, finding_code)` is the stable
