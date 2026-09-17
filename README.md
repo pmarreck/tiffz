@@ -191,7 +191,9 @@ Any consumer (validate / image tools / GUI) ──► C FFI ──► tiffz Zig 
   parsing for rawz/container classifiers, exported as `tiffz-parser` without
   codec imports or library links.
 - **C CLI** (`cli/main.c` → `tiffz` executable) — dogfoods the
-  FFI. All I/O happens here.
+  FFI. `validate` walks every strip/tile (exit 0 on valid-with-WARN,
+  including finding 16). `dump` writes one IFD as 8-bit RGBA PNG.
+  All I/O happens here.
 
 ### Dependencies
 

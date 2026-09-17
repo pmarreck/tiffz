@@ -42,6 +42,7 @@ pub const compressions = struct {
 };
 pub const geotiff = @import("geotiff.zig");
 pub const decoder = @import("decoder.zig");
+pub const rgba = @import("rgba.zig");
 pub const version = @import("version.zig");
 pub const ffi = @import("ffi.zig");
 

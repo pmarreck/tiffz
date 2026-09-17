@@ -7,6 +7,13 @@ completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
 
 ## Next up
 
+- [x] **C CLI + C FFI for validate, then PNG dump** (2026-09-16 ~22:45 EDT).
+      C ABI: `tiffz_open_from_buffer`, findings callback, `tiffz_validate`,
+      `tiffz_decode_rgba`. CLI `validate` (default verb) exit 0/1/2/3;
+      `--json` to stdout; CR2 partial coverage stays 0. `dump` writes
+      8-bit RGBA PNG (`-o` or stdout). i18n deferred in RULES.md.
+      `nix build .#checks.x86_64-linux.test` green. jpegz HOLD below stays.
+
 - [ ] **Dependency promotion requested by validate; latest instruction is HOLD**
       (inbox triaged 2026-09-09 19:00 EDT). Do not promote jpegz
       `e8f9982f2e5c770d4e1065750f6de4dae92ffd16`: validate's September 9

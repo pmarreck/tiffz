@@ -6,20 +6,25 @@ annotate=[
 	.dependency-heads = Remote branch overrides for sibling freshness checks; unlisted dependencies use symbolic HEAD
 	CODE_REVIEW.md = 1.0 audit surface (Einstein 2026-07-23 dispatch): measured state, reproducers, root cause, per-fixture attribution, smallest next release slice. Audit-only, no fixes.
 	INTENT.md = Purpose, users, scope, non-goals, strictness rule, and success checks for tiffz
+	RULES.md = Standing invariants: i18n deferred, C FFI dogfooding, append-only findings
 	TERMINOLOGY.md = Project terms: coverage status, tiffz vs tiffz-parser, OJPEG vs JPEG-in-TIFF, finding namespaces
 	build.zig = Build graph for full tiffz and codec-free tiffz-parser modules, C/Zig artifacts, tests, and shared dependency instances.
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
+	cli/main.c = C CLI dogfooding FFI: validate and PNG dump
 	docs/parser_only_module.md = Consumer wiring and mechanically enforced production-closure contract for tiffz-parser.
 	docs/tiffz_coverage_matrix.md = Coverage matrix: strict/partial/unsupported/blocked inventory across compression, structure, predictor, photometric, metadata, DNG, embedded-JPEG (Einstein outcome 2)
 	fuzz = Top-level fuzz runner: hermetic ReleaseSafe mutation fuzzer via checks.fuzz + (native) oracle diff
+	include/tiffz.h = Public C API header
 	src/compressions/jpeg.zig = TIFF TN2 JPEG stream preparation, exact host-offset mapping, strict validation, and cleanroom decode
 	src/compressions/lerc.zig = LERC-in-TIFF (Compression=34887) codec adapter: strict LercParameters parse (codec_version 2..6, add_compression 0/1/2), chains Deflate/Zstd post-filter, then calls lercz C ABI via lerc_getBlobInfo + lerc_decode.
 	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz; validates each chunk's decoded extent (ExpectedExtent min..max) — exact for non-subsampled, TIFF 6.0 §21 YCbCr chroma-subsampling range (final strip may pad to full RowsPerStrip) for chunky subsampled YCbCr.
+	src/ffi.zig = C ABI: open-from-buffer, validate, findings callback, decode-rgba
 	src/findings.zig = Typed source/code callback ABI with four-way verdicts, mapped codes, and offset provenance
 	src/geotiff.zig = GeoTIFF metadata parser: strict parseFromIfd → Metadata with pixel_scale, tiepoints, transformation, key directory + double/ascii params. Reads DOUBLE payloads via cachedValueBytes since Ifd.arrayElementU64 is SHORT/LONG/LONG8 only.
 	src/lib.zig = Full public tiffz API; re-exports parser-owned core types and exact jpegz/lzwz module identities downstream.
 	src/parser.zig = Codec-free public Zig module exporting TIFF source/header/IFD/tag parsing as tiffz-parser.
 	src/parser_decoder.zig = Codec-free lazy TIFF IFD-chain decoder compatible with the rawz parser surface.
+	src/rgba.zig = Decode one IFD to packed 8-bit RGBA for CLI dump
 	src/tags.zig = Named TIFF tag constants (incl. ycbcr_subsampling=530) + compression/photometric/planar code enums.
 	tests/cli/dependency_freshness_test = Deterministic fake-adapter classifier for dependency freshness policy and ./build blocking behavior
 	tests/dual_module_test.zig = Blocking Zig 0.16 single-ownership gate proving full tiffz and tiffz-parser coexist with identical shared parser types.

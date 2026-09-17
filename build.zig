@@ -260,16 +260,22 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    const cli_cflags: []const []const u8 = if (optimize == .Debug)
+        &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic", "-DTIFFZ_DEBUG" }
+    else
+        &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic" };
     cli.root_module.addCSourceFile(.{
         .file = b.path("cli/main.c"),
-        .flags = &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic" },
+        .flags = cli_cflags,
     });
     cli.root_module.addIncludePath(b.path("include"));
     // Propagate system-library search paths so the linker can find
     // -lz, -ljpeg, -lopenjp2 referenced transitively through lib.
+    if (opt_zlib_inc.len > 0) cli.root_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     if (opt_libjpeg_lib.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_openjpeg_lib.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
+    cli.root_module.linkSystemLibrary("z", .{});
     cli.root_module.linkLibrary(lib);
     b.installArtifact(cli);
     const install_cli = b.addInstallArtifact(cli, .{});
