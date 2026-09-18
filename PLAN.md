@@ -18,9 +18,15 @@ completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
       EDT: one table now covers every known raw code 1–14 plus an unknown
       future code. RED proved code 9 was still indeterminate; GREEN classifies
       9/13 as valid, 10/11/12/14 as corrupt, and preserves fail-closed unknown
-      handling. The complete `./test` suite passed. Dependency promotion
-      remains open because required jpegz commits `491bebc` and `255bddf` are
-      local and unpushed; portable Zig manifests cannot fetch either object.
+      handling. The complete `./test` suite passed. The future pin was also
+      tested locally against exact jpegz commit
+      `255bddffc116da58c161188de743dac7ecfe6867`: package hash
+      `jpegz-0.1.0-staw4I9kEgC0Or6WlKdoBGhVEAUKQ-kzsH3qFC4dxvZH`, Nix
+      dependency hash `sha256-GqizGMAvX8yNBYgktlyneRtqOaCDRJ6xc/DVaHAlaJo=`.
+      All five `./test` components passed through a content-addressed local
+      Nix store substitute. The portable manifest remains unchanged because
+      required jpegz commits `491bebc` and `255bddf` are unpushed and therefore
+      cannot be fetched by a clean builder.
 
 - [x] **C CLI + C FFI for validate, then PNG dump** (2026-09-16 ~22:45 EDT).
       C ABI: `tiffz_open_from_buffer`, findings callback, `tiffz_validate`,
