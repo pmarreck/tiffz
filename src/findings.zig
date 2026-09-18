@@ -141,7 +141,7 @@ pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
         else
             .valid,
         .libjxlz => switch (finding.leaf_code) {
-            1, 2, 3, 10, 11, 12, 14 => .corrupt,
+            1, 2, 3, 10, 11, 12, 14, 15, 16 => .corrupt,
             4 => .unsupported,
             5, 6, 7, 8 => .indeterminate,
             9, 13 => .valid,
@@ -181,6 +181,8 @@ test "strict JXL finding verdict classifies the complete known code set" {
         .{ .leaf_code = 12, .expected = .corrupt },
         .{ .leaf_code = 13, .expected = .valid },
         .{ .leaf_code = 14, .expected = .corrupt },
+        .{ .leaf_code = 15, .expected = .corrupt },
+        .{ .leaf_code = 16, .expected = .corrupt },
         .{ .leaf_code = 999, .expected = .indeterminate },
     };
 

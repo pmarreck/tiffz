@@ -7,6 +7,15 @@ completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
 
 ## Next up
 
+- [x] Recognize libjxlz raw findings 15 (hybrid-uint configuration) and 16
+      (histogram) as corruption. Extend the complete-set classifier controls;
+      preserve unknown-code indeterminacy and the dependency-promotion hold.
+      Curiosity poke: typed leaf failures must survive even before jpegz gains
+      their mapped names. RED reproduced indeterminate; the full five-part
+      `./test` and production `./build` pass September 18, 2026, approximately
+      09:16 EDT. The build used `ALLOW_STALE=1` to honor the existing dependency
+      hold, without advancing pins.
+
 - [ ] **Carry current strict JPEG XL finding semantics through tiffz.**
       Classify libjxlz leaf codes 9 and 13 as recoverable valid findings,
       codes 10, 11, 12, and 14 as corruption, and unknown future codes as
