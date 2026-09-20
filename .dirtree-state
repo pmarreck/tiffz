@@ -15,6 +15,7 @@ annotate=[
 	docs/tiffz_coverage_matrix.md = Coverage matrix: strict/partial/unsupported/blocked inventory across compression, structure, predictor, photometric, metadata, DNG, embedded-JPEG (Einstein outcome 2)
 	fuzz = Top-level fuzz runner: hermetic ReleaseSafe mutation fuzzer via checks.fuzz + (native) oracle diff
 	include/tiffz.h = Public C API header
+	scripts/check-libjxlz-seed = Prove zigDeps cache seed matches jpegz's declared private libjxlz rev
 	src/compressions/jpeg.zig = TIFF TN2 JPEG stream preparation, exact host-offset mapping, strict validation, and cleanroom decode
 	src/compressions/lerc.zig = LERC-in-TIFF (Compression=34887) codec adapter: strict LercParameters parse (codec_version 2..6, add_compression 0/1/2), chains Deflate/Zstd post-filter, then calls lercz C ABI via lerc_getBlobInfo + lerc_decode.
 	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz; validates each chunk's decoded extent (ExpectedExtent min..max) — exact for non-subsampled, TIFF 6.0 §21 YCbCr chroma-subsampling range (final strip may pad to full RowsPerStrip) for chunky subsampled YCbCr.
@@ -27,6 +28,7 @@ annotate=[
 	src/rgba.zig = Decode one IFD to packed 8-bit RGBA for CLI dump
 	src/tags.zig = Named TIFF tag constants (incl. ycbcr_subsampling=530) + compression/photometric/planar code enums.
 	tests/cli/dependency_freshness_test = Deterministic fake-adapter classifier for dependency freshness policy and ./build blocking behavior
+	tests/cli/libjxlz_seed_control = Classifier over fake caches for check-libjxlz-seed
 	tests/dual_module_test.zig = Blocking Zig 0.16 single-ownership gate proving full tiffz and tiffz-parser coexist with identical shared parser types.
 	tests/fixture_test.zig = Independent TIFF fixture and inline-byte regressions, including strict LZW terminator and decoded-extent coverage.
 	tests/fixtures/cr2 = Canon CR2 must-accept controls (byte-identical vendors of validate labeled-good corpus); sRAW2 exercises finding-16 partial-coverage skips

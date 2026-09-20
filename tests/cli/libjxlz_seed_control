@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# libjxlz_seed_control — the private-dependency seed control the Nix FOD runs
+# (scripts/check-libjxlz-seed) must judge the RESOLVED packages, not a text
+# match anywhere (Einstein, 2026-09-19): every jpegz package the fetch produced
+# must declare libjxlz at the seeded rev, all declaring packages must agree on
+# one content hash, and exactly one libjxlz package named by that hash must be
+# present. Classifier over fake caches (tarball and directory forms), each a
+# minimal pair against the good cache.
+set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CTL="$PROJECT_ROOT/scripts/check-libjxlz-seed"
+W="$(mktemp -d "${TMPDIR:-/tmp}/seedctl.XXXXXX")"; trap 'rm -rf "$W"' EXIT
+failures=0
+pass() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; failures=$((failures+1)); }
+REV=93b29e86281ea4ba9c681f4879318c87e8a800a4
+OTHER=5e8f9d68152ae8a70cb823061f4b6c733eb09166
+H=libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq
+H2=libjxlz-0.1.0-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ
+# pkg CACHE NAME [rev hash]: add a cached package tarball (Zig layout: NAME/build.zig.zon)
+pkg() { local cache=$1 name=$2 rev=${3:-} hash=${4:-}; local d="$W/src/$name"; mkdir -p "$d/deps/inner"
+	{ echo '.{ .name = .x, .version = "0.1.0", .dependencies = .{'
+	  [ -n "$rev" ] && printf '        .libjxlz = .{\n            .url = "https://github.com/pmarreck/libjxlz/archive/%s.tar.gz",\n            .hash = "%s",\n        },\n' "$rev" "$hash"
+	  echo '    }, .paths = .{""} }'; } > "$d/build.zig.zon"
+	printf '.{ .name = .inner }\n' > "$d/deps/inner/build.zig.zon"   # a nested zon must not be mistaken for the package's own
+	mkdir -p "$cache"; tar -czf "$cache/$name.tar.gz" -C "$W/src" "$name"; rm -rf "$d"; }
+pkgdir() { local cache=$1 name=$2 rev=${3:-} hash=${4:-}; pkg "$W/tmp_$name" "$name" "$rev" "$hash"; mkdir -p "$cache"; tar -xzf "$W/tmp_$name/$name.tar.gz" -C "$cache"; rm -rf "$W/tmp_$name"; }
+run() { local cache=$1 want=$2 label=$3; "$CTL" "$cache" "$REV" >"$W/out" 2>&1; local rc=$?
+	if [ "$want" = pass ] && [ "$rc" -eq 0 ]; then pass "$label"; elif [ "$want" = fail ] && [ "$rc" -ne 0 ]; then pass "$label (refused: $(head -1 "$W/out"))"; else fail "$label: rc=$rc $(head -2 "$W/out")"; fi; }
+
+[ -x "$CTL" ] || { echo "FAIL: $CTL missing or not executable"; exit 1; }
+good="$W/good"; pkg "$good" jpegz-0.1.0-AAAA "$REV" "$H"; pkg "$good" jpegz-0.1.0-BBBB; pkg "$good" libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq; pkg "$good" tiffz-0.1.0-CCCC
+run "$good" pass "good cache (one declaring jpegz, one older jpegz without libjxlz, the declared libjxlz present)"
+c="$W/dirform"; pkgdir "$c" jpegz-0.1.0-AAAA "$REV" "$H"; pkgdir "$c" libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq
+run "$c" pass "directory-form packages (local zig-pkg layout) are judged the same way"
+c="$W/wrongrev"; pkg "$c" jpegz-0.1.0-AAAA "$OTHER" "$H"; pkg "$c" libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq
+run "$c" fail "jpegz declares another rev than the seed"
+c="$W/stale"; pkg "$c" jpegz-0.1.0-AAAA "$REV" "$H"; pkg "$c" jpegz-0.1.0-OLD1 "$OTHER" "$H2"; pkg "$c" libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq; pkg "$c" "$H2"
+run "$c" fail "a stale jpegz in the closure still declaring the old rev (the text-match false positive)"
+c="$W/diamond"; pkg "$c" jpegz-0.1.0-AAAA "$REV" "$H"; pkg "$c" jpegz-0.1.0-DDDD "$REV" "$H2"; pkg "$c" libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq; pkg "$c" "$H2"
+run "$c" fail "two jpegz packages agree on the rev but not on the content hash (diamond)"
+c="$W/missing"; pkg "$c" jpegz-0.1.0-AAAA "$REV" "$H"
+run "$c" fail "the declared libjxlz package is absent from the cache"
+c="$W/renamed"; pkg "$c" jpegz-0.1.0-AAAA "$REV" "$H"; pkg "$c" "$H2"
+run "$c" fail "a libjxlz package is present but not the declared hash"
+c="$W/extra"; pkg "$c" jpegz-0.1.0-AAAA "$REV" "$H"; pkg "$c" libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq; pkg "$c" "$H2"
+run "$c" fail "two libjxlz packages in one closure"
+c="$W/nodecl"; pkg "$c" jpegz-0.1.0-BBBB; pkg "$c" libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq
+run "$c" fail "no jpegz declares libjxlz at all (an unexplained seed)"
+c="$W/nojpegz"; pkg "$c" tiffz-0.1.0-CCCC
+run "$c" fail "no jpegz package in the closure"
+"$CTL" "$W/does-not-exist" "$REV" >/dev/null 2>&1 && fail "missing cache dir accepted" || pass "missing cache dir refused"
+"$CTL" "$good" >/dev/null 2>&1 && fail "missing rev argument accepted" || pass "usage error refused"
+
+[ "$failures" -eq 0 ] && echo "=== libjxlz seed control gate passed ===" || echo "FAIL: $failures seed control failure(s)"
+exit "$failures"

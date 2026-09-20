@@ -16,6 +16,15 @@ completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
       09:16 EDT. The build used `ALLOW_STALE=1` to honor the existing dependency
       hold, without advancing pins.
 
+- [x] **Re-pin jpegz to published 3f6066c** (2026-09-20 ~15:00 EDT).
+      jpegz `3f6066c9bd24089f8208ab40ce44874caae56fe8` (package
+      `jpegz-0.1.0-staw4HuDEgDNMwQMoOqK7uGaWAoI3Yb9EQbcTCohIaja`). jp2z
+      `77dbeaa` (TPsot==TNsot WARN present). libjxlz `93b29e86` seeded via
+      locked git+ssh; `scripts/check-libjxlz-seed` in the FOD. JXL leaf 9/13
+      classified corrupt to match jpegz facade. zigDepsHash
+      `sha256-8FuulHWLjLGmqY1Dz38THMyz5WM06vXybb1Oa3X8cP4=`. `./test` and
+      `./build` green. One jpegz module instance.
+
 - [ ] **Carry current strict JPEG XL finding semantics through tiffz.**
       Classify libjxlz leaf codes 9 and 13 as recoverable valid findings,
       codes 10, 11, 12, and 14 as corruption, and unknown future codes as
@@ -56,8 +65,9 @@ completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
       hashes, run the full suite/build and exact-commit CI, and prepare the tiffz
       SHA/package hash for validate. Curiosity poke: verify actual transitive
       revisions and finding-code mappings, not merely a newer jpegz date.
-      The three validate inbox notes remain pending; no dependency changes or
-      replies were made during the September 9 handoff.
+      Superseded 2026-09-20 by jpegz `3f6066c` (jp2z `77dbeaa` carries
+      `9369627`). Inbox notes from the HOLD chain can be trashed after the
+      re-pin reply.
 
 - [x] **INTENT.md established** (2026-09-09 ~19:15 EDT). Purpose, users,
       outcomes, scope, non-goals (OJPEG blocked; demosaic blocked; no second

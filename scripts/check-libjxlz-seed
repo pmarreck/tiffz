@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# check-libjxlz-seed CACHE_P_DIR REV — control over the private-dependency
+# seed in the Nix fixed-output derivation (Einstein, 2026-09-19). libjxlz is
+# private, so the FOD seeds it from a locked git+ssh input before
+# `zig build --fetch=all`; this proves the seed is the dependency the resolved
+# tree actually declares, judged on the RESOLVED packages:
+#   1. every jpegz package in CACHE_P_DIR that declares libjxlz names REV in its
+#      url and one content hash; at least one must declare it;
+#   2. all declaring packages agree on that hash (two hashes = a diamond on the
+#      private dep);
+#   3. exactly one libjxlz package exists in CACHE_P_DIR and its name is that hash.
+# Packages may be cached tarballs (NAME.tar.gz unpacking to NAME/build.zig.zon,
+# Zig's fetch cache) or directories (NAME/build.zig.zon). Only the package's own
+# top-level build.zig.zon is read, never nested ones. Exit 0 = proven; nonzero
+# with one line on stderr = refused. complexity: O(packages).
+set -u
+[ $# -eq 2 ] || { echo "usage: check-libjxlz-seed CACHE_P_DIR REV" >&2; exit 64; }
+cache=$1; rev=$2
+[ -d "$cache" ] || { echo "cache dir not found: $cache" >&2; exit 1; }
+
+# zon_of PKG: print the package's own build.zig.zon (tarball or directory).
+zon_of() {
+	local p=$1 name member
+	if [ -d "$p" ]; then
+		cat "$p/build.zig.zon"
+	else
+		name=$(basename "$p" .tar.gz)
+		member=$(tar -tzf "$p" | grep -E "^(\./)?$name/build\.zig\.zon$" | head -1)
+		[ -n "$member" ] || member=$(tar -tzf "$p" | grep -E '^(\./)?build\.zig\.zon$' | head -1)
+		[ -n "$member" ] || return 1
+		tar -xOzf "$p" "$member"
+	fi
+}
+
+# libjxlz_decl ZON: print "url hash" of the .libjxlz dependency, or nothing.
+libjxlz_decl() {
+	awk '
+		/^[[:space:]]*\.libjxlz[[:space:]]*=[[:space:]]*\.\{/ { in_dep = 1; next }
+		in_dep && /\.url[[:space:]]*=/ { if (match($0, /"[^"]*"/)) url = substr($0, RSTART + 1, RLENGTH - 2) }
+		in_dep && /\.hash[[:space:]]*=/ { if (match($0, /"[^"]*"/)) hash = substr($0, RSTART + 1, RLENGTH - 2) }
+		in_dep && /^[[:space:]]*\},?[[:space:]]*$/ { in_dep = 0 }
+		END { if (url != "" || hash != "") print url, hash }
+	'
+}
+
+jpegz_count=0; declaring=0; want_hash=""
+for p in "$cache"/jpegz-*; do
+	[ -e "$p" ] || continue
+	jpegz_count=$((jpegz_count + 1))
+	zon=$(zon_of "$p") || { echo "cannot read build.zig.zon of $(basename "$p")" >&2; exit 1; }
+	decl=$(printf '%s\n' "$zon" | libjxlz_decl)
+	[ -n "$decl" ] || continue
+	declaring=$((declaring + 1))
+	url=${decl%% *}; hash=${decl#* }
+	case "$url" in
+		*"/$rev.tar.gz"|*"#$rev"|*"/$rev") ;;
+		*) echo "$(basename "$p") declares libjxlz at '$url', not the seeded rev $rev" >&2; exit 1 ;;
+	esac
+	[ -n "$hash" ] || { echo "$(basename "$p") declares libjxlz without a content hash" >&2; exit 1; }
+	if [ -z "$want_hash" ]; then want_hash=$hash
+	elif [ "$want_hash" != "$hash" ]; then echo "jpegz packages disagree on the libjxlz content hash ($want_hash vs $hash): a diamond on the private dependency" >&2; exit 1
+	fi
+done
+[ "$jpegz_count" -gt 0 ] || { echo "no jpegz package in $cache: nothing explains the libjxlz seed" >&2; exit 1; }
+[ "$declaring" -gt 0 ] || { echo "no jpegz package declares libjxlz: nothing explains the seed" >&2; exit 1; }
+
+found=0; found_name=""
+for p in "$cache"/libjxlz-*; do
+	[ -e "$p" ] || continue
+	found=$((found + 1)); found_name=$(basename "$p" .tar.gz)
+done
+[ "$found" -eq 1 ] || { echo "expected exactly one libjxlz package in $cache, found $found" >&2; exit 1; }
+[ "$found_name" = "$want_hash" ] || { echo "the cached libjxlz package is $found_name, not the declared $want_hash" >&2; exit 1; }
+echo "libjxlz seed proven: rev $rev, hash $want_hash, declared by $declaring of $jpegz_count jpegz package(s)"

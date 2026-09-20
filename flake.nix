@@ -13,9 +13,17 @@
       url = "github:mitchellh/zig-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Private transitive dep (tiffz -> jpegz -> libjxlz). Anonymous GitHub
+    # archives 404; Nix fetches this with the caller's SSH, then we seed
+    # Zig's package cache before `zig build --fetch=all`. Never put
+    # credentials in a derivation. Rev must match jpegz's zon pin.
+    libjxlz-src = {
+      url = "git+ssh://git@github.com/pmarreck/libjxlz?ref=yolo&rev=93b29e86281ea4ba9c681f4879318c87e8a800a4";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, zig-overlay }:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay, libjxlz-src }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -53,6 +61,12 @@
             zlib = pkgs.zlib;
           };
 
+        brotliPkg = if isLinux then pkgs.pkgsStatic.brotli else pkgs.brotli;
+        brotliEnv = ''
+          export BROTLI_INCLUDE_DIR=${brotliPkg.dev}/include
+          export BROTLI_LIB_DIR=${brotliPkg.lib}/lib
+        '';
+
         # GDAL's pytest suite segfaults on aarch64-darwin against
         # nixpkgs-unstable as of 2026-05-04 (Python 3.13 + GDAL 3.12.4
         # in gcore/hdf4multidim.py). We don't need GDAL's own tests,
@@ -73,7 +87,7 @@
         #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-a7XUgcFojWJJptWv5ifyX9zGOy+i9eOdIjCQ9TZEGVI=";
+        zigDepsHash = "sha256-8FuulHWLjLGmqY1Dz38THMyz5WM06vXybb1Oa3X8cP4=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";
@@ -93,13 +107,18 @@
           # builders but Linux builders demand the global-cache layout.
           # Consumer derivations rebuild the cache via
           # `cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/`.
+          # Private libjxlz is seeded from the locked git+ssh input
+          # (jpegz/validate pattern). Never publish this FOD to a
+          # public cache; it contains private source.
           buildPhase = ''
             export HOME=$TMPDIR
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
             export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+            zig fetch ${libjxlz-src}
             zig build --fetch=all
+            bash ./scripts/check-libjxlz-seed $ZIG_GLOBAL_CACHE_DIR/p ${libjxlz-src.rev}
           '';
 
           installPhase = ''
@@ -134,7 +153,7 @@
           # AdobeDeflate); we use the system zlib (linked via
           # linkSystemLibrary("z")) rather than allyourcodebase/zlib,
           # which has a Zig 0.16 cross-compile quirk on Linux.
-          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib ];
+          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib brotliPkg ];
 
           dontConfigure = true;
 
@@ -144,6 +163,7 @@
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
             chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${brotliEnv}
 
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
@@ -189,6 +209,7 @@
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
             chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${brotliEnv}
             if ! zig build parser-consumer --verbose \
               -Doptimize=ReleaseSafe ${zigTargetFlag} \
               > parser-build.log 2>&1; then
@@ -228,6 +249,7 @@
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
             chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${brotliEnv}
             ${pkgs.lib.optionalString isLinux ''
               unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
             ''}
@@ -271,6 +293,7 @@
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
             chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${brotliEnv}
             ${pkgs.lib.optionalString isLinux ''
               unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
             ''}
@@ -299,7 +322,7 @@
               pkgs.apple-sdk
             ];
 
-          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib ];
+          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib brotliPkg ];
 
           dontConfigure = true;
 
@@ -309,6 +332,7 @@
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
             chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${brotliEnv}
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
@@ -363,7 +387,7 @@
               pkgs.apple-sdk
             ];
 
-          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib ];
+          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib brotliPkg ];
 
           dontConfigure = true;
 
@@ -373,6 +397,7 @@
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
             chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${brotliEnv}
             ${pkgs.lib.optionalString isDarwin ''
               export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
             ''}
@@ -409,6 +434,7 @@
             # JPEG codec libraries (via jpegz Phase 1 wrapper)
             pkgs.libjpeg     # libjpeg-turbo: baseline / progressive / lossless
             pkgs.openjpeg    # JPEG 2000 (linked by jpegz but unused by tiffz)
+            pkgs.brotli      # jpegz→libjxlz @cImport / link (BROTLI_*_DIR)
 
             # TIFF fixture / oracle toolchain (SPEC §4 verification oracles + §A fixture recipes)
             pkgs.libtiff       # tiffcp, tiffinfo, tiff2rgba, tiffmedian, raw2tiff, tiffdump
@@ -438,6 +464,8 @@
           # buildPhase passes the same path explicitly, so dev + CI
           # stay symmetric.
           OPENJPEG_INC = "${pkgs.openjpeg.dev}/include/openjpeg-2.5";
+          BROTLI_INCLUDE_DIR = "${pkgs.brotli.dev}/include";
+          BROTLI_LIB_DIR = "${pkgs.brotli.lib}/lib";
 
           shellHook = ''
             echo "tiffz dev shell"

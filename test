@@ -48,6 +48,9 @@ run_subtest "native codec artifact export contract (external consumer pkg, sandb
 run_subtest "sibling dependency freshness gate" \
     tests/cli/dependency_freshness_test
 
+run_subtest "libjxlz private-seed control" \
+    tests/cli/libjxlz_seed_control
+
 if [[ "$failures" -gt 0 ]]; then
     printf '\n%d test suite(s) failed.\n' "$failures" >&2
     exit "$failures"

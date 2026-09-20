@@ -128,7 +128,8 @@ pub const MetadataFlags = struct {
 
 /// Preserve a strict facade finding's own outcome instead of deriving one from
 /// the aggregate result. Unknown mapped JP2 codes and future JXL leaf codes
-/// fail closed as indeterminate.
+/// fail closed as indeterminate. JPEG XL padding (9) and truncated box-header
+/// (13) stay corrupt even when jpegz reports them at warning severity.
 pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
     const jpegz = @import("jpegz");
     return switch (finding.source) {
@@ -141,10 +142,9 @@ pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
         else
             .valid,
         .libjxlz => switch (finding.leaf_code) {
-            1, 2, 3, 10, 11, 12, 14, 15, 16 => .corrupt,
+            1, 2, 3, 9, 10, 11, 12, 13, 14, 15, 16 => .corrupt,
             4 => .unsupported,
             5, 6, 7, 8 => .indeterminate,
-            9, 13 => .valid,
             else => .indeterminate,
         },
         // jpegz's own cleanroom T.81/T.87 leg (validateAny, added 2026-08-06),
@@ -175,11 +175,11 @@ test "strict JXL finding verdict classifies the complete known code set" {
         .{ .leaf_code = 6, .expected = .indeterminate },
         .{ .leaf_code = 7, .expected = .indeterminate },
         .{ .leaf_code = 8, .expected = .indeterminate },
-        .{ .leaf_code = 9, .expected = .valid },
+        .{ .leaf_code = 9, .expected = .corrupt },
         .{ .leaf_code = 10, .expected = .corrupt },
         .{ .leaf_code = 11, .expected = .corrupt },
         .{ .leaf_code = 12, .expected = .corrupt },
-        .{ .leaf_code = 13, .expected = .valid },
+        .{ .leaf_code = 13, .expected = .corrupt },
         .{ .leaf_code = 14, .expected = .corrupt },
         .{ .leaf_code = 15, .expected = .corrupt },
         .{ .leaf_code = 16, .expected = .corrupt },
