@@ -1994,6 +1994,123 @@ test "JPEG-in-TIFF: corrupt strip surfaces error.JpegInTiffPayload through the p
 
 
 
+const lossless_cfa_jpeg = [_]u8{
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0xff, 0xc3, 0x00, 0x0b, 0x08, 0x00, 0x04, 0x00, 0x04, 0x01, 0x01, 0x11,
+    0x00, 0xff, 0xc4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0xff, 0xd9,
+};
+
+fn putU16(buf: []u8, at: usize, v: u16) void {
+    std.mem.writeInt(u16, buf[at..][0..2], v, .little);
+}
+
+fn putU32(buf: []u8, at: usize, v: u32) void {
+    std.mem.writeInt(u32, buf[at..][0..4], v, .little);
+}
+
+/// Classic little-endian TIFF: 4×4, Compression=7, Photometric=CFA, one strip.
+fn wrapCfaJpeg(allocator: std.mem.Allocator, jpeg: []const u8) ![]u8 {
+    const ntags: usize = 9;
+    const ifd_bytes = 2 + ntags * 12 + 4;
+    const strip_off: u32 = @intCast(8 + ifd_bytes);
+    const buf = try allocator.alloc(u8, strip_off + jpeg.len);
+    @memset(buf, 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    putU16(buf, 2, 42);
+    putU32(buf, 4, 8);
+    putU16(buf, 8, @intCast(ntags));
+    const tags = [_]struct { tag: u16, typ: u16, val: u32 }{
+        .{ .tag = 256, .typ = 4, .val = 4 },
+        .{ .tag = 257, .typ = 4, .val = 4 },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 7 },
+        .{ .tag = 262, .typ = 3, .val = 32803 },
+        .{ .tag = 273, .typ = 4, .val = strip_off },
+        .{ .tag = 277, .typ = 3, .val = 1 },
+        .{ .tag = 278, .typ = 4, .val = 4 },
+        .{ .tag = 279, .typ = 4, .val = @intCast(jpeg.len) },
+    };
+    for (tags, 0..) |entry, i| {
+        const at = 10 + i * 12;
+        putU16(buf, at, entry.tag);
+        putU16(buf, at + 2, entry.typ);
+        putU32(buf, at + 4, 1);
+        putU32(buf, at + 8, entry.val);
+    }
+    @memcpy(buf[strip_off..], jpeg);
+    return buf;
+}
+
+test "DNG CFA compression 7: lossless grayscale JPEG validates as sensor samples, not RGB" {
+    const allocator = std.testing.allocator;
+    const bytes = try wrapCfaJpeg(allocator, &lossless_cfa_jpeg);
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try dec.validateAllStripsAndTiles(&ws);
+
+    var dest: [64]u8 = undefined;
+    const n = try dec.decodeStrip(0, 0, &dest, &ws);
+    try std.testing.expectEqual(@as(usize, 16), n);
+}
+
+test "DNG CFA compression 7: a damaged scan byte is JpegInTiffPayload with a jpegz finding" {
+    const allocator = std.testing.allocator;
+    var jpeg = lossless_cfa_jpeg;
+    jpeg[jpeg.len - 3] ^= 0xff;
+    const bytes = try wrapCfaJpeg(allocator, &jpeg);
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.JpegInTiffPayload, dec.validateAllStripsAndTiles(&ws));
+    var saw = false;
+    for (recorder.findings.items) |finding| {
+        if (finding.source == .jpegz and finding.verdict == .corrupt) saw = true;
+    }
+    try std.testing.expect(saw);
+    try std.testing.expectEqual(@as(usize, 0), recorder.count(.unsupported_compression_skipped));
+}
+
+test "DNG CFA compression 7: a non-mosaic SOF still reaches jpegz instead of a coverage skip" {
+    const allocator = std.testing.allocator;
+    // SOF2 (progressive) in place of SOF3. jpegz rejects it as a JPEG payload
+    // failure. That is the reach record: a nested jpegz finding, not finding 16.
+    var jpeg = lossless_cfa_jpeg;
+    jpeg[21] = 0xc2;
+    const bytes = try wrapCfaJpeg(allocator, &jpeg);
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.JpegInTiffPayload, dec.validateAllStripsAndTiles(&ws));
+    var saw_reach = false;
+    for (recorder.findings.items) |finding| {
+        if (finding.source == .jpegz) saw_reach = true;
+    }
+    try std.testing.expect(saw_reach);
+    try std.testing.expectEqual(@as(usize, 0), recorder.count(.unsupported_compression_skipped));
+}
+
 test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
     // Same 8×1 bilevel layout as the positive integration fixture, but its
     // LZW strip is CLEAR + EOD. The terminator is valid; its zero decoded

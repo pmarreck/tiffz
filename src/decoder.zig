@@ -1182,7 +1182,8 @@ pub const Decoder = struct {
                 // Lab) inside JPEG-in-TIFF are out of scope; the JPEG
                 // codec would need explicit colorspace handling.
                 const photo = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse return error.Malformed;
-                if (photo != tags.photometric_rgb and photo != tags.photometric_ycbcr) {
+                const cfa = photo == tags.photometric_color_filter_array;
+                if (photo != tags.photometric_rgb and photo != tags.photometric_ycbcr and !cfa) {
                     break :blk error.UnsupportedCompression;
                 }
 
@@ -1225,6 +1226,26 @@ pub const Decoder = struct {
                     );
                 }
                 if (!validation.isValid()) break :blk error.JpegInTiffPayload;
+
+                if (cfa) {
+                    // Sensor mosaic: only a checked single-component decode is
+                    // sensor samples. An unchecked variant keeps jpegz's reach
+                    // finding and does not become RGB. A multi-component JPEG
+                    // under photometric CFA is not a mosaic stream.
+                    if (validation.codec_check != .decoded) break :blk error.UnsupportedCompression;
+                    const img = compressions_jpeg.jpegz.decode(self.allocator, prepared.bytes) catch |e| switch (e) {
+                        error.OutOfMemory => break :blk error.OutOfMemory,
+                        else => break :blk error.JpegInTiffPayload,
+                    };
+                    defer self.allocator.free(img.pixels);
+                    if (img.layout != .grayscale or img.channels != 1) break :blk error.UnsupportedCompression;
+                    if (img.pixels.len > dest.len) break :blk error.DestTooSmall;
+                    if (img.pixels.len > self.limits.max_decompressed_strip_bytes) {
+                        break :blk error.LimitExceededDecompressedStripBytes;
+                    }
+                    @memcpy(dest[0..img.pixels.len], img.pixels);
+                    break :blk img.pixels.len;
+                }
 
                 const written = compressions_jpeg.decodePrepared(self.allocator, prepared.bytes, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {

@@ -7,6 +7,20 @@ completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
 
 ## Next up
 
+- [x] DNG CFA compression 7 validates through the single jpegz instance as single-component samples, not RGB (done 2026-09-24 21:48 EDT).
+
+- [ ] **Waiting on validate's dual re-pin** (updated 2026-09-23).
+      validate received tiffz `0004f747` but will not re-pin until rawz
+      also moves to that SHA. Their seed control refuses two jpegz
+      packages declaring different libjxlz revs (`5e8f9d68` vs `93b29e86`).
+      Peter re-erected rawz 2026-09-23 and Einstein's note
+      (`rawz/inbox/2026-09-23-from-einstein@thelio-nixos-...`) assigns
+      that pin. Intended tiffz revision is still origin/yolo
+      `0004f7473645bfe0ddcd24ae4ee95a2863687f98` unless yolo moves.
+      No tiffz action until rawz lands and validate re-pins.
+
+
+
 - [x] Recognize libjxlz raw findings 15 (hybrid-uint configuration) and 16
       (histogram) as corruption. Extend the complete-set classifier controls;
       preserve unknown-code indeterminacy and the dependency-promotion hold.
