@@ -434,18 +434,28 @@ pub const Decoder = struct {
 
         // Materialize the full IFD chain up-front so the loop sees
         // every IFD. ifdCount() reflects only what's been parsed so
-        // far; advance until ifd(N) errors (end-of-chain or
-        // structural). Graceful end-of-chain surfaces as
-        // InvalidArgument; treat it as termination.
+        // far. End of chain is InvalidArgument (next offset 0). Any
+        // other error is structural and must fail the walk; swallowing
+        // it reported a later corrupt page as fully validated.
         var probe: usize = 1;
         while (true) : (probe += 1) {
-            _ = self.ifd(probe) catch break;
+            _ = self.ifd(probe) catch |err| switch (err) {
+                error.InvalidArgument => break,
+                else => return err,
+            };
         }
 
         var ifd_index: usize = 0;
         while (ifd_index < self.ifdCount()) : (ifd_index += 1) {
             const dir = try self.ifd(ifd_index);
-            const layout = (try self.chunkLayout(dir)) orelse continue;
+            // No strip/tile arrays. A JPEGInterchangeFormat thumbnail (CR2
+            // IFD1) is still a known page with nothing for this walk to
+            // decode. Any other main-chain IFD in that shape is not an
+            // image page: validate must not report it as fully checked.
+            const layout = (try self.chunkLayout(dir)) orelse {
+                if (dir.get(tags.jpeg_interchange_format) != null) continue;
+                return error.Malformed;
+            };
             // Partial-coverage skip (Peter's 2026-08-27 ruling; finding code 16,
             // Einstein-approved): an otherwise well-formed IFD whose compression
             // tiffz deliberately never supports is not Malformed and must not
@@ -496,9 +506,6 @@ pub const Decoder = struct {
                 };
                 try self.acceptDecodedExtent(ext, written);
             }
-            // IFDs with no strip/tile arrays (e.g. SubIFD chains
-            // carrying only metadata) are silently skipped — there's
-            // nothing to decode.
         }
     }
 
@@ -1730,4 +1737,66 @@ test "validateAllStripsAndTiles: tag-absent YCbCrSubSampling uses the {2,2} defa
     defer ws.deinit();
 
     try dec.validateAllStripsAndTiles(&ws);
+}
+
+// Validate's 131-byte repro: a real 1x1 LZW page chained to an IFD whose
+// only entry has field type 0 and no image geometry. Both the type and the
+// missing page tags must fail closed. The walk must not treat that failure
+// as the end of the chain.
+test "validateAllStripsAndTiles: chained IFD with field type 0 is Malformed" {
+    const bytes = [_]u8{
+        0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
+        0x08, 0x00,
+        0x00, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+        0x01, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x02, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+        0x06, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x6E, 0x00, 0x00, 0x00,
+        0x16, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+        0x71, 0x00, 0x00, 0x00,
+        0x80, 0x2A, 0x80,
+        0x01, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    };
+    var handle = BufferHandle.init(&bytes);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    try std.testing.expectError(error.Malformed, dec.ifd(1));
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&ws));
+}
+
+// Same shape as the type-0 chain, but IFD1's single entry is a legal ASCII
+// tag and still carries no ImageWidth, ImageLength, or strip/tile offsets.
+test "validateAllStripsAndTiles: main-chain IFD without image tags is Malformed" {
+    const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const bps_entry: [12]u8 = .{ 0x02, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00 };
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const photo_entry: [12]u8 = .{ 0x06, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x6E, 0x00, 0x00, 0x00 };
+    const rps_entry: [12]u8 = .{ 0x16, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const strip = [_]u8{0x7F};
+    var bytes = synthesize(8, .{ w_entry, h_entry, bps_entry, comp_entry, photo_entry, so_entry, rps_entry, sbc_entry }, &strip, 0x6E);
+    // next IFD at 116. synthesize leaves the pointer at 0.
+    bytes[106] = 116;
+    bytes[116] = 1;
+    // ImageDescription, ASCII, count 1, inline 'A'.
+    const desc = [_]u8{ 0x0E, 0x01, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00 };
+    @memcpy(bytes[118..130], &desc);
+
+    var handle = BufferHandle.init(&bytes);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    _ = try dec.ifd(1);
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&ws));
 }

@@ -7,6 +7,10 @@ completions for continuity. Purpose and non-goals: `INTENT.md`. Terms:
 
 ## Next up
 
+- [x] Reject field types outside 1..18, and a main-chain IFD with no strip/tile layout and no JPEGInterchangeFormat, as error.Malformed (done 2026-09-28 23:32 EDT). CR2 IFD1 thumbnails still skip.
+- [ ] Hold the jpegz repin. 6ef766c (Canon SOF3, CI green 2026-09-24) is in jpegz yolo f56de74, which does not contain the 2026-09-26 DHT stack-overflow fix still sitting in jpegz's inbox. Stay on jpegz 3f6066c and libjxlz 93b29e86 until one revision contains both.
+- [ ] Adopt lercz a88c39b (LERC 4.2.0, package lercz-4.2.0-y1r8kc2CBgBez9hD_Evo5kg3RH-MaMLLGi3GkOcKFcjz) when a pin window is open. Current pin is f1e7dea (4.1.1). Review C status 6, err_dimensions_too_large, then tell validate, pdfz, and rawz the tiffz SHA.
+
 - [x] DNG CFA compression 7 validates through the single jpegz instance as single-component samples, not RGB (done 2026-09-24 21:48 EDT).
 
 - [ ] **Waiting on validate's dual re-pin** (updated 2026-09-23).

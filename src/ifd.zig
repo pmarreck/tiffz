@@ -301,6 +301,9 @@ pub const Ifd = struct {
 /// Entries also differ: classic uses u32 count + 4-byte slot; big
 /// uses u64 count + 8-byte slot. We normalize both into the unified
 /// Entry shape (u64 count, [8]u8 slot) so consumers don't care.
+/// Field types outside 1..18 are Malformed. 13..15 stay `.unknown`
+/// because TIFF Tech Note 1 assigns 13 to IFD and 14..15 are inside
+/// the span validate asked us to keep representable.
 pub fn parse(
     allocator: Allocator,
     source: Source,
@@ -353,11 +356,11 @@ pub fn parse(
             .classic => @memcpy(slot[0..4], entries_buf[base + 8 ..][0..4]),
             .big => @memcpy(&slot, entries_buf[base + 12 ..][0..8]),
         }
+        const type_code = header_mod.readU16(entries_buf[base + 2 ..][0..2], endian);
+        if (type_code == 0 or type_code > 18) return error.Malformed;
         entry.* = .{
             .tag = header_mod.readU16(entries_buf[base..][0..2], endian),
-            .field_type = FieldType.fromU16(
-                header_mod.readU16(entries_buf[base + 2 ..][0..2], endian),
-            ),
+            .field_type = FieldType.fromU16(type_code),
             .count = switch (offset_width) {
                 .classic => @as(u64, header_mod.readU32(entries_buf[base + 4 ..][0..4], endian)),
                 .big => header_mod.readU64(entries_buf[base + 4 ..][0..8], endian),

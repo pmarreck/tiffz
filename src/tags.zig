@@ -23,6 +23,8 @@ pub const tile_offsets: u16 = 324;           // 0x0144
 pub const tile_byte_counts: u16 = 325;       // 0x0145
 pub const extra_samples: u16 = 338;          // 0x0152; SHORT[N]; per extra sample: 0=unspec, 1=associated alpha (pre-multiplied), 2=unassociated alpha
 pub const jpeg_tables: u16 = 347;            // 0x015B; TIFF TN2 Mode 2 — shared JPEG abbreviated table datastream
+pub const jpeg_interchange_format: u16 = 513; // 0x0201; thumbnail JPEG blob, not a strip offset
+pub const jpeg_interchange_format_length: u16 = 514; // 0x0202
 pub const ycbcr_subsampling: u16 = 530;      // 0x0212; SHORT[2] [ChromaSubsampleHoriz, ChromaSubsampleVert], default [2,2]
 
 /// DNG / TIFF-EP tags (M8).
