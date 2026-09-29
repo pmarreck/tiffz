@@ -97,7 +97,7 @@ pub fn decode(
 		info_array_size,
 		0,
 	);
-	if (info_status != lerc.err_ok) return error.Malformed;
+	try mapLercStatus(info_status);
 
 	const data_type = info[info_data_type];
 	const n_cols_u = info[info_n_cols];
@@ -133,11 +133,26 @@ pub fn decode(
 		data_type,
 		dest.ptr,
 	);
-	if (status != lerc.err_ok) return error.Malformed;
+	try mapLercStatus(status);
 	return @intCast(total_bytes);
 }
 
+/// LERC 4.2 status 6 is a dimension limit (INT_MAX bytes per band), not a
+/// broken blob. Other non-ok statuses stay Malformed.
+fn mapLercStatus(status: c_uint) errors.Error!void {
+	if (status == lerc.err_ok) return;
+	if (status == lerc.err_dimensions_too_large) return error.LimitExceededDimension;
+	return error.Malformed;
+}
+
 // ---- tests ----
+
+test "lerc status: dimension limit is LimitExceededDimension, other failures stay Malformed" {
+	try std.testing.expectError(error.LimitExceededDimension, mapLercStatus(lerc.err_dimensions_too_large));
+	try std.testing.expectError(error.Malformed, mapLercStatus(lerc.err_failed));
+	try std.testing.expectError(error.Malformed, mapLercStatus(lerc.err_wrong_param));
+	try mapLercStatus(lerc.err_ok);
+}
 
 test "lerc.parseParameters: accepts LERC2 v4 none/deflate/zstd" {
 	{
