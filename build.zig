@@ -250,6 +250,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_jpeg_validation_consumer_tests = b.addRunArtifact(jpeg_validation_consumer_tests);
+    const jpeg_validation_consumer_test_step = b.step(
+        "jpeg-validation-consumer-test",
+        "Run the production JPEG validation closure proof tests",
+    );
+    jpeg_validation_consumer_test_step.dependOn(&run_jpeg_validation_consumer_tests.step);
 
     // --- C CLI executable (dogfoods the C FFI per project convention) ---
     const cli = b.addExecutable(.{
