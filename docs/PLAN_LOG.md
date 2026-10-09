@@ -13,3 +13,4 @@ until the next retire.
 ## Retired 2026-10-08
 
 - [x] [Done] DNG CFA compression 7 validates through the single jpegz instance as single-component samples (done 2026-09-24 21:48 EDT, `b38c2f47`).
+- [x] [Done] Reject field types outside 1..18, and a tagless main-chain IFD without JPEGInterchangeFormat, as `error.Malformed` (done 2026-09-28 23:32 EDT, `c87b1604`).

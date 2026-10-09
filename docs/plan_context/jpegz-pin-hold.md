@@ -1,6 +1,8 @@
 # jpegz pin hold
 
-Moved again 2026-10-08 20:55 EDT to upstream head `4d68daa069b016d20bf4c3e95763f8dba93d9d47` (`jpegz-0.1.0-staw4PbSEgCyWgwNhBjEnN5Fc52iN0IeM5BvioFljMXG`). That commit only frees partially allocated baseline buffers on OOM. `5c5191a` and `6ef766c` remain ancestors. libjxlz stays `93b29e86`.
+Moved again 2026-10-08 21:30 EDT to upstream head `33ea3946d06a66892ab4b8e080a6bcf968096889` (`jpegz-0.1.0-staw4DnTEgCYeNwk6bthDfVGlAAOYP6WzLA6SOFujMSR`). That commit refreshes jpegz's own pins. jp2z inside it is `54917d611b087fea46df721bf66a66f2db84b9dd`. libjxlz stays `93b29e86`. Zig stays 0.16.0, the newest 0.16 release. `4d68daa`, `5c5191a`, and `6ef766c` remain ancestors.
+
+The 2026-10-08 20:55 EDT pin was `4d68daa069b016d20bf4c3e95763f8dba93d9d47` (`jpegz-0.1.0-staw4PbSEgCyWgwNhBjEnN5Fc52iN0IeM5BvioFljMXG`). That commit only frees partially allocated baseline buffers on OOM. `5c5191a` and `6ef766c` remain ancestors. libjxlz stays `93b29e86`.
 
 The 2026-09-29 pin was jpegz `5c5191a1b6fc27aa542f7c15ee70750f6a9e1a60` (`jpegz-0.1.0-staw4IzPEgBjqjh6AAsIWM0OdCgaLitbitbHOFR3AtZR`). That revision contains Canon SOF3 `6ef766c` and rejects `code + count >= (1 << len)` before assignment. libjxlz stays `93b29e86281ea4ba9c681f4879318c87e8a800a4`. The previous pin was `3f6066c9bd24089f8208ab40ce44874caae56fe8`.
 
