@@ -1,6 +1,8 @@
 # jpegz pin hold
 
-Lifted 2026-09-29 20:05 EDT. tiffz pins jpegz `5c5191a1b6fc27aa542f7c15ee70750f6a9e1a60` (`jpegz-0.1.0-staw4IzPEgBjqjh6AAsIWM0OdCgaLitbitbHOFR3AtZR`). That revision contains Canon SOF3 `6ef766c` and rejects `code + count >= (1 << len)` before assignment. libjxlz stays `93b29e86281ea4ba9c681f4879318c87e8a800a4`. The previous pin was `3f6066c9bd24089f8208ab40ce44874caae56fe8`.
+Moved again 2026-10-08 20:55 EDT to upstream head `4d68daa069b016d20bf4c3e95763f8dba93d9d47` (`jpegz-0.1.0-staw4PbSEgCyWgwNhBjEnN5Fc52iN0IeM5BvioFljMXG`). That commit only frees partially allocated baseline buffers on OOM. `5c5191a` and `6ef766c` remain ancestors. libjxlz stays `93b29e86`.
+
+The 2026-09-29 pin was jpegz `5c5191a1b6fc27aa542f7c15ee70750f6a9e1a60` (`jpegz-0.1.0-staw4IzPEgBjqjh6AAsIWM0OdCgaLitbitbHOFR3AtZR`). That revision contains Canon SOF3 `6ef766c` and rejects `code + count >= (1 << len)` before assignment. libjxlz stays `93b29e86281ea4ba9c681f4879318c87e8a800a4`. The previous pin was `3f6066c9bd24089f8208ab40ce44874caae56fe8`.
 
 jpegz yolo `f56de741f180347d53cc1f1a549dcc4bfe6fcc58` contains the Canon SOF3 work `6ef766c8d35d9e4b3aebf533a0854632df9bda96` and does not contain validate's DHT stack-overflow fix. Those reports are still in the jpegz inbox (2026-09-26 and 2026-09-28). tiffz replied on 2026-09-28 that it will repin the first revision that contains both, through the single `tiffz.jpegz` instance.
 
