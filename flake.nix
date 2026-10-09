@@ -67,13 +67,13 @@
           export BROTLI_LIB_DIR=${brotliPkg.lib}/lib
         '';
 
-        # GDAL's pytest suite segfaults on aarch64-darwin against
+        # GDAL's pytest suite segfaulted on aarch64-darwin against
         # nixpkgs-unstable as of 2026-05-04 (Python 3.13 + GDAL 3.12.4
-        # in gcore/hdf4multidim.py). We don't need GDAL's own tests,
-        # only the binaries (gdal_translate, gdalinfo). Strip the
-        # pytest-check-hook entirely — `doCheck = false` alone is
-        # ineffective because the hook fires from nativeCheckInputs
-        # regardless of the doCheck flag.
+        # in gcore/hdf4multidim.py). The 2026-10-09 lock refresh keeps
+        # the override: we need gdal_translate and gdalinfo, not GDAL's
+        # own tests. Strip the pytest-check-hook entirely —
+        # `doCheck = false` alone is ineffective because the hook fires
+        # from nativeCheckInputs regardless of the doCheck flag.
         gdalNoCheck = pkgs.gdal.overrideAttrs (old: {
           doCheck = false;
           dontCheck = true;
