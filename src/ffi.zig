@@ -256,6 +256,40 @@ test "tiffz_open_from_buffer rejects an empty buffer" {
     try std.testing.expect(status != 0);
 }
 
+test "tiffz_validate: a dimension cap is status 15, not Malformed" {
+    var buf: [87]u8 = @splat(0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 42, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
+    std.mem.writeInt(u16, buf[8..10], 6, .little);
+    const entries = [_]struct { tag: u16, typ: u16, val: u32 }{
+        .{ .tag = 256, .typ = 4, .val = (1 << 30) + 1 },
+        .{ .tag = 257, .typ = 3, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = 86 },
+        .{ .tag = 279, .typ = 4, .val = 1 },
+    };
+    for (entries, 0..) |entry, i| {
+        const at = 10 + i * 12;
+        std.mem.writeInt(u16, buf[at..][0..2], entry.tag, .little);
+        std.mem.writeInt(u16, buf[at + 2 ..][0..2], entry.typ, .little);
+        std.mem.writeInt(u32, buf[at + 4 ..][0..4], 1, .little);
+        std.mem.writeInt(u32, buf[at + 8 ..][0..4], entry.val, .little);
+    }
+    buf[86] = 0x5A;
+    var status: i32 = -1;
+    const bytes: []const u8 = &buf;
+    const dec = tiffz_open_from_buffer(bytes.ptr, bytes.len, &status);
+    try std.testing.expectEqual(@as(i32, 0), status);
+    try std.testing.expect(dec != null);
+    defer tiffz_close(dec);
+    const verdict = tiffz_validate(dec.?);
+    try std.testing.expectEqual(@as(i32, 15), verdict);
+    try std.testing.expect(verdict != 2);
+}
+
 test "tiffz_open_from_buffer + validate accepts a clean RGB TIFF" {
     const io = std.testing.io;
     const file = try std.Io.Dir.cwd().openFile(io, "tests/fixtures/uncompressed/rgb-3c-8b.tiff", .{});

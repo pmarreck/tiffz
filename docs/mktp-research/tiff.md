@@ -89,6 +89,16 @@ The same filtered ReleaseSafe run then reported 5 passed in 9 ms. The four tests
 
 Full `./test` exited 0 on 2026-10-10 (about 293 seconds). That run includes sandboxed `checks.test` (ReleaseSafe), the parser closure, the JPEG validation closure, the native codec artifact export, the sibling freshness gate, and the libjxlz seed control. This pass does not change pins, does not add a finding code, and does not retune mutation vocabulary.
 
+## Resource limits are not corruption findings
+
+A configured cap is not evidence the file is malformed. The cheap distinction is the 3×2 uncompressed page under `max_total_samples = 4`: `decodeStrip` returns `LimitExceededTotalSamples`, and the same page at a cap of 4 decodes. A short strip that cannot cover its declared pixels stays `Malformed`. That extent check was not changed.
+
+The C FFI already returns distinct codes. `LimitExceededDimension` is 15 and `LimitExceededTotalSamples` is 16. `Malformed` is 2. `tiffz_validate` on a page wider than the default `max_dim` returns 15.
+
+The CLI used to print `invalid` and exit 1 for that same page, which is the corruption exit. It now prints `limited`, exits 4, and JSON uses `"status":"limited"` with the numeric FFI code. Exit 1 remains corrupt or malformed.
+
+`101d007d` Mechatron Prime CI succeeded 2026-10-10T04:04:39Z–04:13:33Z (534 seconds, no failure stage). Its package hash is `tiffz-0.1.0-qutJAXTd0AEhSWmh2avZ3-YKS2JDQo20AiTmo3d0MDnJ`. The CLI wording above is a later commit. Do not reuse that package hash for the later commit.
+
 ## Still open, not treated as file defects
 
 - FP24 and FP64 predictor vectors.

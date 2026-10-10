@@ -78,7 +78,9 @@ pub fn build(b: *std.Build) void {
     ) orelse "";
     if (opt_zlib_inc.len > 0) lib_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) lib_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
-    lib_module.linkSystemLibrary("z", .{});
+    // Do not link zlib into the static archive. Nix's musl libz.a would be
+    // stored as an archive member, and LLD then refuses to link the CLI
+    // ("neither ET_REL nor LLVM bitcode"). Final artifacts link -lz themselves.
 
     // jpegz for compression=7 (JPEG-in-TIFF) at M9.5 and lossless JPEG
     // (DNG raw) at M8. Peter's sibling project — Phase 1 wraps
@@ -280,8 +282,8 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_lib_path.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     if (opt_libjpeg_lib.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_openjpeg_lib.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
-    cli.root_module.linkSystemLibrary("z", .{});
     cli.root_module.linkLibrary(lib);
+    cli.root_module.linkSystemLibrary("z", .{});
     b.installArtifact(cli);
     const install_cli = b.addInstallArtifact(cli, .{});
 

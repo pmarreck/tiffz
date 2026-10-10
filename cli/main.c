@@ -31,6 +31,7 @@
 #define EXIT_INVALID 1
 #define EXIT_USAGE 2
 #define EXIT_IO 3
+#define EXIT_LIMITED 4
 
 typedef struct Finding {
 	int32_t source;
@@ -98,7 +99,8 @@ static int print_help(void) {
 		"    0  valid (named WARN/INFO findings, including partial coverage)\n"
 		"    1  corrupt or malformed\n"
 		"    2  usage error\n"
-		"    3  I/O error (missing file, read failure)\n",
+		"    3  I/O error (missing file, read failure)\n"
+		"    4  configured resource limit (not a corruption finding)\n",
 		tiffz_version());
 	return EXIT_OK;
 }
@@ -193,6 +195,25 @@ static void write_payload_hex(FILE *out, const uint8_t *p, size_t n) {
 	fputc('"', out);
 }
 
+static int is_resource_limit(tiffz_status_t status) {
+	return status >= TIFFZ_LIMIT_EXCEEDED_IFD_COUNT &&
+		status <= TIFFZ_LIMIT_EXCEEDED_DECOMPRESSED_STRIP_BYTES;
+}
+
+static const char *report_word(int ok, tiffz_status_t status) {
+	if (ok)
+		return "ok";
+	if (is_resource_limit(status))
+		return "limited";
+	return "invalid";
+}
+
+static int exit_for_status(tiffz_status_t status) {
+	if (is_resource_limit(status))
+		return EXIT_LIMITED;
+	return EXIT_INVALID;
+}
+
 static void write_json(
 	const char *path,
 	int ok,
@@ -201,7 +222,7 @@ static void write_json(
 	const FindingList *list) {
 	size_t i;
 	fputs("{\"status\":", stdout);
-	json_escape(stdout, ok ? "ok" : "invalid");
+	json_escape(stdout, report_word(ok, status));
 	fputs(",\"path\":", stdout);
 	json_escape(stdout, path);
 	fprintf(stdout, ",\"error\":%d,\"ifds\":%zu,\"findings\":[", (int)status, ifds);
@@ -381,18 +402,18 @@ static int dump_one(const char *path, const char *out_path, size_t ifd_index) {
 
 	dec = tiffz_open_from_buffer(buf, len, &status);
 	if (dec == NULL) {
-		fprintf(stderr, "invalid  %s  (%s)\n", path, tiffz_status_name(status));
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, tiffz_status_name(status));
 		free(buf);
-		return EXIT_INVALID;
+		return exit_for_status(status);
 	}
 	status = tiffz_decode_rgba(dec, ifd_index, &pixels, &width, &height);
 	if (status != TIFFZ_OK) {
 		const char *msg = tiffz_last_error_message(dec);
-		fprintf(stderr, "invalid  %s  (%s)\n", path,
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path,
 			(msg != NULL && msg[0] != '\0') ? msg : tiffz_status_name(status));
 		tiffz_close(dec);
 		free(buf);
-		return EXIT_INVALID;
+		return exit_for_status(status);
 	}
 	pix_len = (size_t)width * (size_t)height * 4;
 
@@ -461,10 +482,10 @@ static int validate_one(const char *path, int json) {
 			FindingList empty = {0};
 			write_json(path, 0, status, 0, &empty);
 		} else {
-			fprintf(stderr, "invalid  %s  (%s)\n", path, tiffz_status_name(status));
+			fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, tiffz_status_name(status));
 		}
 		free(buf);
-		return EXIT_INVALID;
+		return exit_for_status(status);
 	}
 
 	tiffz_set_finding_callback(dec, on_finding, &findings);
@@ -478,16 +499,14 @@ static int validate_one(const char *path, int json) {
 		fprintf(stderr, "ok  %s\n", path);
 	} else {
 		const char *msg = tiffz_last_error_message(dec);
-		if (msg != NULL && msg[0] != '\0')
-			fprintf(stderr, "invalid  %s  (%s)\n", path, msg);
-		else
-			fprintf(stderr, "invalid  %s  (%s)\n", path, tiffz_status_name(status));
+		const char *detail = (msg != NULL && msg[0] != '\0') ? msg : tiffz_status_name(status);
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, detail);
 	}
 
 	tiffz_close(dec);
 	findings_free(&findings);
 	free(buf);
-	return ok ? EXIT_OK : EXIT_INVALID;
+	return ok ? EXIT_OK : exit_for_status(status);
 }
 
 static int is_win_alias(const char *arg, const char *name) {
