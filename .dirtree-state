@@ -12,6 +12,7 @@ annotate=[
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
 	cli/main.c = C CLI dogfooding FFI: validate and PNG dump
 	docs/PLAN_LOG.md = Retired PLAN completions
+	docs/mktp-research/tiff.md = TIFF MKTP inventory, fixture hashes, and the raster-limit experiment
 	docs/parser_only_module.md = Consumer wiring and mechanically enforced production-closure contract for tiffz-parser.
 	docs/plan_context = Background for open PLAN items
 	docs/plan_context/jpegz-pin-hold.md = Why the jpegz repin stays on 3f6066c

@@ -684,6 +684,7 @@ pub const Decoder = struct {
 
         const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
         if (samples == 0) return error.Malformed;
+        try enforceRasterLimits(self, image_width, image_length, samples);
         const planar_raw = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse tags.planar_chunky;
         const planar = switch (planar_raw) {
             tags.planar_chunky, tags.planar_separate => planar_raw,
@@ -709,6 +710,7 @@ pub const Decoder = struct {
                 const tile_width = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
                 const tile_length = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
                 if (tile_width == 0 or tile_length == 0) return error.Malformed;
+                if (tile_width > self.limits.max_dim or tile_length > self.limits.max_dim) return error.LimitExceededDimension;
                 const tiles_across = try ceilDivU32(image_width, tile_width);
                 const tiles_down = try ceilDivU32(image_length, tile_length);
                 break :blk .{
@@ -904,6 +906,9 @@ pub const Decoder = struct {
         // these come from ImageWidth + clamped RowsPerStrip × strip_index.
         const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
         const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
+        const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+        if (samples == 0) return error.Malformed;
+        try enforceRasterLimits(self, width, length, samples);
         const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
         const rps: u32 = if (rps_raw > length) length else rps_raw;
         // Resolve the planar-separate plane band before the row math (see
@@ -939,8 +944,15 @@ pub const Decoder = struct {
         }
         const byte_count: u32 = @intCast(byte_count_u64);
 
+        const image_width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
+        const image_length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
+        const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+        if (samples == 0) return error.Malformed;
+        try enforceRasterLimits(self, image_width, image_length, samples);
         const tile_w = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
         const tile_h = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
+        if (tile_w == 0 or tile_h == 0) return error.Malformed;
+        if (tile_w > self.limits.max_dim or tile_h > self.limits.max_dim) return error.LimitExceededDimension;
 
         return self.decodeBytes(dir, .{
             .offset = offset,
@@ -1412,6 +1424,20 @@ fn checkedMul(a: usize, b: usize) errors.Error!usize {
     return a * b;
 }
 
+/// Stop a declared width, height, or sample count before a later
+/// multiply can wrap. `max_dim` and `max_total_samples` are inclusive caps.
+fn enforceRasterLimits(self: *Decoder, width: u32, length: u32, samples: u16) errors.Error!void {
+    if (width == 0 or length == 0 or samples == 0) return error.Malformed;
+    if (width > self.limits.max_dim or length > self.limits.max_dim) return error.LimitExceededDimension;
+    const width_u: u64 = width;
+    const length_u: u64 = length;
+    if (length_u > std.math.maxInt(u64) / width_u) return error.LimitExceededTotalSamples;
+    const area = width_u * length_u;
+    const samples_u: u64 = samples;
+    if (samples_u > std.math.maxInt(u64) / area) return error.LimitExceededTotalSamples;
+    if (area * samples_u > self.limits.max_total_samples) return error.LimitExceededTotalSamples;
+}
+
 /// Scan-lines contributed by one strip, correct for both PlanarConfiguration
 /// values. For planar=separate, StripOffsets spans every sample plane
 /// (total strips = ceil(length/rps) × SamplesPerPixel), so a raw
@@ -1420,11 +1446,14 @@ fn checkedMul(a: usize, b: usize) errors.Error!usize {
 /// under ReleaseFast it wrapped huge and the very next @min clamp masked it into
 /// the right answer by accident). Reducing the index into its own plane band via
 /// `strip_index % strips_per_plane` fixes it; for chunky, strips_per_plane ==
-/// total strips so the modulo is a no-op. rps==0 / length==0 (malformed) yield 0
-/// rows rather than dividing by zero, preserving the prior clamp behaviour.
+/// total strips so the modulo is a no-op. The plane count is `ceil(length/rps)`
+/// via division, not `length + rps - 1`, which wraps when both are near u32 max
+/// and then divides by zero. rps==0 / length==0 yield 0 rows.
 fn stripRowSpan(length: u32, rps: u32, strip_index: u32) u32 {
     if (rps == 0 or length == 0) return 0;
-    const strips_per_plane = (length + rps - 1) / rps; // ceil-div, ≥1 here
+    // ceil(length / rps) without `length + rps - 1`, which wraps at u32 max
+    // and then divides by zero.
+    const strips_per_plane = length / rps + @intFromBool(length % rps != 0);
     const band = strip_index % strips_per_plane;
     const remaining_rows = length - band * rps; // > 0: band*rps < length by ceil
     return @min(rps, remaining_rows);
@@ -1597,6 +1626,110 @@ test "decodeStrip: compression=6 (OJPEG, never supported) rejected as Unsupporte
         error.UnsupportedCompression,
         dec.decodeStrip(0, 0, &dest, &ws),
     );
+}
+
+/// One uncompressed gray strip. Dimensions above 65535 are stored as LONG
+/// so the declared raster, not the on-disk payload, is what the limit sees.
+fn writeGrayStrip(buf: []u8, width: u32, length: u32, payload_len: usize) usize {
+    const ntags: usize = 6;
+    const strip_at: u32 = @intCast(8 + 2 + ntags * 12 + 4);
+    @memset(buf, 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 42, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
+    std.mem.writeInt(u16, buf[8..10], @intCast(ntags), .little);
+    const dimType = struct {
+        fn of(v: u32) u16 {
+            return if (v > 65535) 4 else 3;
+        }
+    }.of;
+    const entries = [_]struct { tag: u16, typ: u16, val: u32 }{
+        .{ .tag = 256, .typ = dimType(width), .val = width },
+        .{ .tag = 257, .typ = dimType(length), .val = length },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = strip_at },
+        .{ .tag = 279, .typ = 4, .val = @intCast(payload_len) },
+    };
+    for (entries, 0..) |entry, i| {
+        const at = 10 + i * 12;
+        std.mem.writeInt(u16, buf[at..][0..2], entry.tag, .little);
+        std.mem.writeInt(u16, buf[at + 2 ..][0..2], entry.typ, .little);
+        std.mem.writeInt(u32, buf[at + 4 ..][0..4], 1, .little);
+        std.mem.writeInt(u32, buf[at + 8 ..][0..4], entry.val, .little);
+    }
+    @memset(buf[strip_at..][0..payload_len], 0x5A);
+    return strip_at + payload_len;
+}
+
+test "raster limit: ImageLength at u32 max is LimitExceededDimension on decode and validate" {
+    // RowsPerStrip is absent, so the row span is the declared length.
+    // length + rows-per-strip overflows u32; the pre-limit decode path
+    // divided by a wrapped strip count (0) and aborted.
+    var storage: [128]u8 = undefined;
+    const n = writeGrayStrip(&storage, 1, 0xFFFFFFFF, 1);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    var dest: [1]u8 = undefined;
+    try std.testing.expectError(error.LimitExceededDimension, dec.decodeStrip(0, 0, &dest, &ws));
+    try std.testing.expectError(error.LimitExceededDimension, dec.validateAllStripsAndTiles(&ws));
+}
+
+test "raster limit: ImageWidth above the default max_dim is LimitExceededDimension" {
+    var storage: [128]u8 = undefined;
+    const n = writeGrayStrip(&storage, (1 << 30) + 1, 1, 1);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    var dest: [1]u8 = undefined;
+    try std.testing.expectError(error.LimitExceededDimension, dec.decodeStrip(0, 0, &dest, &ws));
+    try std.testing.expectError(error.LimitExceededDimension, dec.validateAllStripsAndTiles(&ws));
+}
+
+test "raster limit: sample count above max_total_samples is rejected, and the cap itself still decodes" {
+    var limits = Limits.default;
+    limits.max_dim = 8;
+    limits.max_total_samples = 4;
+
+    var over: [128]u8 = undefined;
+    const over_n = writeGrayStrip(&over, 3, 2, 6);
+    var over_handle = BufferHandle.init(over[0..over_n]);
+    const over_src = Source.fromBuffer(&over_handle);
+    var over_dec = try Decoder.openWithLimits(std.testing.allocator, over_src, limits);
+    defer over_dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    var dest: [8]u8 = undefined;
+    try std.testing.expectError(error.LimitExceededTotalSamples, over_dec.decodeStrip(0, 0, &dest, &ws));
+    try std.testing.expectError(error.LimitExceededTotalSamples, over_dec.validateAllStripsAndTiles(&ws));
+
+    var at_cap: [128]u8 = undefined;
+    const cap_n = writeGrayStrip(&at_cap, 2, 2, 4);
+    var cap_handle = BufferHandle.init(at_cap[0..cap_n]);
+    const cap_src = Source.fromBuffer(&cap_handle);
+    var cap_dec = try Decoder.openWithLimits(std.testing.allocator, cap_src, limits);
+    defer cap_dec.deinit();
+    const written = try cap_dec.decodeStrip(0, 0, &dest, &ws);
+    try std.testing.expectEqual(@as(usize, 4), written);
+    try std.testing.expectEqualSlices(u8, &.{ 0x5A, 0x5A, 0x5A, 0x5A }, dest[0..written]);
+    try cap_dec.validateAllStripsAndTiles(&ws);
+}
+
+test "stripRowSpan: u32-max length and rows-per-strip stay one full band" {
+    // Independent of the implementation's old `length + rps - 1` sum,
+    // which wraps to 0 at this corner and then divides by zero.
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), stripRowSpan(0xFFFFFFFF, 0xFFFFFFFF, 0));
+    // ceil(max / (max-1)) is 2 bands: a full rows-per-strip, then the 1-row remainder.
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFE), stripRowSpan(0xFFFFFFFF, 0xFFFFFFFE, 0));
+    try std.testing.expectEqual(@as(u32, 1), stripRowSpan(0xFFFFFFFF, 0xFFFFFFFE, 1));
 }
 
 test "subsampledYCbCrExtent: interior 2:2 strip is exact (min == max)" {
