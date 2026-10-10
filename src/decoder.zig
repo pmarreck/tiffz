@@ -1663,6 +1663,38 @@ fn writeGrayStrip(buf: []u8, width: u32, length: u32, payload_len: usize) usize 
     return strip_at + payload_len;
 }
 
+/// One uncompressed 8-bit gray tile. Image size and tile size are independent
+/// so the tile-dimension cap can reject a padded tile while the page stays inside it.
+fn writeGrayTile(buf: []u8, image_w: u32, image_h: u32, tile_w: u32, tile_h: u32, payload_len: usize) usize {
+    const ntags: usize = 8;
+    const tile_at: u32 = @intCast(8 + 2 + ntags * 12 + 4);
+    @memset(buf, 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 42, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
+    std.mem.writeInt(u16, buf[8..10], @intCast(ntags), .little);
+    const entries = [_]struct { tag: u16, typ: u16, val: u32 }{
+        .{ .tag = 256, .typ = 3, .val = image_w },
+        .{ .tag = 257, .typ = 3, .val = image_h },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 322, .typ = 3, .val = tile_w },
+        .{ .tag = 323, .typ = 3, .val = tile_h },
+        .{ .tag = 324, .typ = 4, .val = tile_at },
+        .{ .tag = 325, .typ = 4, .val = @intCast(payload_len) },
+    };
+    for (entries, 0..) |entry, i| {
+        const at = 10 + i * 12;
+        std.mem.writeInt(u16, buf[at..][0..2], entry.tag, .little);
+        std.mem.writeInt(u16, buf[at + 2 ..][0..2], entry.typ, .little);
+        std.mem.writeInt(u32, buf[at + 4 ..][0..4], 1, .little);
+        std.mem.writeInt(u32, buf[at + 8 ..][0..4], entry.val, .little);
+    }
+    @memset(buf[tile_at..][0..payload_len], 0x5A);
+    return tile_at + payload_len;
+}
+
 test "raster limit: ImageLength at u32 max is LimitExceededDimension on decode and validate" {
     // RowsPerStrip is absent, so the row span is the declared length.
     // length + rows-per-strip overflows u32; the pre-limit decode path
@@ -1721,6 +1753,59 @@ test "raster limit: sample count above max_total_samples is rejected, and the ca
     try std.testing.expectEqual(@as(usize, 4), written);
     try std.testing.expectEqualSlices(u8, &.{ 0x5A, 0x5A, 0x5A, 0x5A }, dest[0..written]);
     try cap_dec.validateAllStripsAndTiles(&ws);
+}
+
+test "raster limit: max_dim is inclusive on both axes for strips and tiles" {
+    // Custom cap 4 keeps every accepted page tiny. The other axis stays 1.
+    // Tiles use a 1×1 page so TileWidth/TileLength, not ImageWidth, is the
+    // value compared with the cap. One past the cap is LimitExceededDimension
+    // before any pixel buffer is required.
+    const cap: u32 = 4;
+    var limits = Limits.default;
+    limits.max_dim = cap;
+    const Axis = enum { width, length };
+    const points = [_]struct { dim: u32, over: bool }{
+        .{ .dim = cap - 1, .over = false },
+        .{ .dim = cap, .over = false },
+        .{ .dim = cap + 1, .over = true },
+    };
+
+    var storage: [160]u8 = undefined;
+    var dest: [8]u8 = undefined;
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+
+    for ([_]bool{ false, true }) |tiled| {
+        for ([_]Axis{ .width, .length }) |axis| {
+            for (points) |point| {
+                const across: u32 = 1;
+                const width: u32 = if (axis == .width) point.dim else across;
+                const length: u32 = if (axis == .length) point.dim else across;
+                const payload: usize = if (point.over) 1 else @intCast(point.dim);
+                const n: usize = if (tiled)
+                    writeGrayTile(&storage, 1, 1, width, length, payload)
+                else
+                    writeGrayStrip(&storage, width, length, payload);
+                var handle = BufferHandle.init(storage[0..n]);
+                const src = Source.fromBuffer(&handle);
+                var dec = try Decoder.openWithLimits(std.testing.allocator, src, limits);
+                defer dec.deinit();
+                const decoded = if (tiled)
+                    dec.decodeTile(0, 0, &dest, &ws)
+                else
+                    dec.decodeStrip(0, 0, &dest, &ws);
+                if (point.over) {
+                    try std.testing.expectError(error.LimitExceededDimension, decoded);
+                    try std.testing.expectError(error.LimitExceededDimension, dec.validateAllStripsAndTiles(&ws));
+                    continue;
+                }
+                const written = try decoded;
+                try std.testing.expectEqual(payload, written);
+                for (dest[0..written]) |byte| try std.testing.expectEqual(@as(u8, 0x5A), byte);
+                try dec.validateAllStripsAndTiles(&ws);
+            }
+        }
+    }
 }
 
 test "stripRowSpan: u32-max length and rows-per-strip stay one full band" {

@@ -91,7 +91,7 @@ Full `./test` exited 0 on 2026-10-10 (about 293 seconds). That run includes sand
 
 ## Resource limits are not corruption findings
 
-A configured cap is not evidence the file is malformed. The cheap distinction is the 3×2 uncompressed page under `max_total_samples = 4`: `decodeStrip` returns `LimitExceededTotalSamples`, and the same page at a cap of 4 decodes. A short strip that cannot cover its declared pixels stays `Malformed`. That extent check was not changed.
+A configured cap is not evidence the file is malformed. The cheap distinction is a 3×2 uncompressed page (six bytes) under `max_total_samples = 4`: `decodeStrip` returns `LimitExceededTotalSamples`. A different 2×2 page, four bytes of `0x5A`, decodes and validates at that same cap. A short strip that cannot cover its declared pixels stays `Malformed`. That extent check was not changed.
 
 The C FFI already returns distinct codes. `LimitExceededDimension` is 15 and `LimitExceededTotalSamples` is 16. `Malformed` is 2. `tiffz_validate` on a page wider than the default `max_dim` returns 15.
 
