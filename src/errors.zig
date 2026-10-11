@@ -30,7 +30,7 @@ pub const Error = error{
     OutOfMemory,                         // 21
     Io,                                  // 22 — Source.read_at error pass-through
     Bug,                                 // 23 — internal invariant violated
-    IfdChainCycle,                       // 24 — next_ifd_offset revisits a previously-parsed IFD
+    IfdChainCycle,                       // 24 — a next-IFD or tag 330 link revisits an ancestor
     JpegInTiffPayload,                   // 25 — jpegz failed decoding a Compression=7 strip/tile stream
 };
 

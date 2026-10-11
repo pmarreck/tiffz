@@ -12,6 +12,8 @@ pub const strip_offsets: u16 = 273;          // 0x0111
 pub const samples_per_pixel: u16 = 277;      // 0x0115
 pub const rows_per_strip: u16 = 278;         // 0x0116
 pub const strip_byte_counts: u16 = 279;      // 0x0117
+/// Child IFD offsets (TIFF Tech Note 1 / DNG). Not a next-IFD link.
+pub const sub_ifds: u16 = 330;               // 0x014A
 pub const planar_configuration: u16 = 284;   // 0x011C
 pub const t4_options: u16 = 292;             // 0x0124; bit 0 = 2D, bit 1 = uncompressed, bit 2 = EOL byte align
 pub const t6_options: u16 = 293;             // 0x0125; bit 1 = uncompressed

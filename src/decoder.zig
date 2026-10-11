@@ -33,6 +33,14 @@ const compressions_lerc = @import("compressions/lerc.zig");
 const predictors_mod = @import("predictors.zig");
 const findings_mod = @import("findings.zig");
 
+/// One tag 330 value plus the directory that named it. The parent index is
+/// how a pointer back at an ancestor is told from a second name for a page
+/// that was already parsed.
+const SubIfdJob = struct {
+    offset: u64,
+    parent: usize,
+};
+
 pub const Decoder = struct {
     allocator: Allocator,
     source: Source,
@@ -48,6 +56,18 @@ pub const Decoder = struct {
     /// repeat means the chain loops back on itself (malformed file
     /// defense — TIFF spec doesn't permit cycles).
     ifd_offsets: std.ArrayListUnmanaged(u64),
+    /// Parent index for each materialized IFD, parallel to `ifds`.
+    /// Null is IFD0. A next-IFD link parents the new page on the page
+    /// that pointed at it. A tag 330 link does the same. Walking this
+    /// chain decides whether a child offset is an ancestor.
+    ifd_parent: std.ArrayListUnmanaged(?usize),
+    /// Tag 330 jobs waiting to be parsed. Drained only once the
+    /// current next-IFD link is 0, so existing chain indices stay put
+    /// and children follow that chain.
+    pending_subifds: std.ArrayListUnmanaged(SubIfdJob) = .empty,
+    pending_subifd_read: usize = 0,
+    /// Next materialized IFD whose tag 330 list has not been queued.
+    subifd_scan: usize = 0,
     /// Offset of the next-IFD pointer for the last IFD we've parsed
     /// — 0 if we've reached the end of the chain.
     next_ifd_offset: u64,
@@ -84,10 +104,14 @@ pub const Decoder = struct {
         var ifd_offsets: std.ArrayListUnmanaged(u64) = .empty;
         errdefer ifd_offsets.deinit(allocator);
 
+        var ifd_parent: std.ArrayListUnmanaged(?usize) = .empty;
+        errdefer ifd_parent.deinit(allocator);
+
         var ifd0 = try ifd_mod.parse(allocator, source, h.endian, h.ifd0_offset, limits, offset_width);
         errdefer ifd0.deinit();
         ifds.append(allocator, ifd0) catch return error.OutOfMemory;
         ifd_offsets.append(allocator, h.ifd0_offset) catch return error.OutOfMemory;
+        ifd_parent.append(allocator, null) catch return error.OutOfMemory;
 
         return .{
             .allocator = allocator,
@@ -97,6 +121,7 @@ pub const Decoder = struct {
             .bigtiff = h.bigtiff,
             .ifds = ifds,
             .ifd_offsets = ifd_offsets,
+            .ifd_parent = ifd_parent,
             .next_ifd_offset = ifd0.next_offset,
         };
     }
@@ -305,48 +330,108 @@ pub const Decoder = struct {
         for (self.ifds.items) |*i| i.deinit();
         self.ifds.deinit(self.allocator);
         self.ifd_offsets.deinit(self.allocator);
+        self.ifd_parent.deinit(self.allocator);
+        self.pending_subifds.deinit(self.allocator);
     }
 
     pub fn ifdCount(self: *const Decoder) usize {
         return self.ifds.items.len;
     }
 
-    /// Get an IFD by index. Lazily walks the chain to materialize
-    /// IFDs we haven't parsed yet (so a consumer that only ever
-    /// touches IFD0 pays nothing for trailing IFDs).
+    /// Get an IFD by index. Lazily walks the next-IFD chain, then tag 330
+    /// children of directories already materialized. A consumer that only
+    /// touches IFD0 pays nothing for either. The codec-free parser does not
+    /// do this walk.
     pub fn ifd(self: *Decoder, index: usize) errors.Error!*const Ifd {
         while (index >= self.ifds.items.len) {
-            if (self.next_ifd_offset == 0) return error.InvalidArgument;
-            if (self.ifds.items.len >= self.limits.max_ifds) {
-                return error.LimitExceededIfdCount;
+            if (self.next_ifd_offset == 0) {
+                try self.queueUnscannedSubifds();
+                const child = try self.nextQueuedSubifd() orelse return error.InvalidArgument;
+                try self.materializeLinkedIfd(child.offset, child.parent);
+                continue;
             }
-            // Cycle defense: malformed files can have next_ifd_offset
-            // point back to a previously-parsed IFD (self-loop, or a
-            // multi-step cycle through the chain). Linear scan is fine
-            // — capped at max_ifds (1024 default) so this stays cheap.
-            for (self.ifd_offsets.items) |seen| {
-                if (seen == self.next_ifd_offset) return error.IfdChainCycle;
-            }
-            const offset_width: ifd_mod.OffsetWidth = if (self.bigtiff) .big else .classic;
-            const parsed_from = self.next_ifd_offset;
-            var next = try ifd_mod.parse(
-                self.allocator,
-                self.source,
-                self.endian,
-                parsed_from,
-                self.limits,
-                offset_width,
-            );
-            errdefer next.deinit();
-            self.ifds.append(self.allocator, next) catch return error.OutOfMemory;
-            self.ifd_offsets.append(self.allocator, parsed_from) catch return error.OutOfMemory;
-            self.next_ifd_offset = next.next_offset;
-            // Fire findings for the newly-materialized IFD. The
-            // freshly-appended IFD lives at `self.ifds.items.len - 1`.
-            const new_index = self.ifds.items.len - 1;
-            self.scanIfdForFindings(&self.ifds.items[new_index], new_index);
+            // A next pointer that revisits a parsed IFD does not terminate.
+            // TIFF 6.0 ends the chain with zero. Linear scan is enough:
+            // max_ifds caps the list.
+            if (self.offsetAlreadyMaterialized(self.next_ifd_offset)) return error.IfdChainCycle;
+            const chain_parent: ?usize = self.ifds.items.len - 1;
+            try self.materializeLinkedIfd(self.next_ifd_offset, chain_parent);
         }
         return &self.ifds.items[index];
+    }
+
+    /// Parse one IFD and remember its next-link and parent. Findings for
+    /// that page fire here, before the caller decodes strips.
+    fn materializeLinkedIfd(self: *Decoder, offset: u64, parent: ?usize) errors.Error!void {
+        if (self.ifds.items.len >= self.limits.max_ifds) return error.LimitExceededIfdCount;
+        const offset_width: ifd_mod.OffsetWidth = if (self.bigtiff) .big else .classic;
+        var parsed = try ifd_mod.parse(
+            self.allocator,
+            self.source,
+            self.endian,
+            offset,
+            self.limits,
+            offset_width,
+        );
+        errdefer parsed.deinit();
+        const next_offset = parsed.next_offset;
+        self.ifds.append(self.allocator, parsed) catch return error.OutOfMemory;
+        self.ifd_offsets.append(self.allocator, offset) catch return error.OutOfMemory;
+        self.ifd_parent.append(self.allocator, parent) catch return error.OutOfMemory;
+        self.next_ifd_offset = next_offset;
+        const new_index = self.ifds.items.len - 1;
+        self.scanIfdForFindings(&self.ifds.items[new_index], new_index);
+    }
+
+    fn offsetAlreadyMaterialized(self: *const Decoder, offset: u64) bool {
+        for (self.ifd_offsets.items) |seen| {
+            if (seen == offset) return true;
+        }
+        return false;
+    }
+
+    /// Queue tag 330 offsets from directories parsed since the last call.
+    /// Count 0 is an empty array. The drain classifies each offset.
+    fn queueUnscannedSubifds(self: *Decoder) errors.Error!void {
+        while (self.subifd_scan < self.ifds.items.len) {
+            const parent = self.subifd_scan;
+            self.subifd_scan += 1;
+            const dir = &self.ifds.items[parent];
+            const entry = dir.get(tags.sub_ifds) orelse continue;
+            if (entry.count > std.math.maxInt(u32)) return error.Malformed;
+            var index: u32 = 0;
+            while (index < @as(u32, @intCast(entry.count))) : (index += 1) {
+                const offset = try dir.arrayElementU64(tags.sub_ifds, index, self.endian, self.source);
+                self.pending_subifds.append(self.allocator, .{
+                    .offset = offset,
+                    .parent = parent,
+                }) catch return error.OutOfMemory;
+            }
+        }
+    }
+
+    /// A tag 330 value that names the queuing directory or one of its
+    /// ancestors is a cycle. TIFF 6.0 ends a chain with a zero next
+    /// pointer, and this pointer does not name a new image. A value that
+    /// names some other already-parsed directory is that same page again.
+    fn nextQueuedSubifd(self: *Decoder) errors.Error!?SubIfdJob {
+        while (self.pending_subifd_read < self.pending_subifds.items.len) {
+            const job = self.pending_subifds.items[self.pending_subifd_read];
+            self.pending_subifd_read += 1;
+            if (self.offsetIsAncestor(job.parent, job.offset)) return error.IfdChainCycle;
+            if (self.offsetAlreadyMaterialized(job.offset)) continue;
+            return job;
+        }
+        return null;
+    }
+
+    fn offsetIsAncestor(self: *const Decoder, start: usize, offset: u64) bool {
+        var cursor: ?usize = start;
+        while (cursor) |idx| {
+            if (self.ifd_offsets.items[idx] == offset) return true;
+            cursor = self.ifd_parent.items[idx];
+        }
+        return false;
     }
 
     /// Decode one strip into dest. Dispatches on the IFD's
@@ -432,11 +517,11 @@ pub const Decoder = struct {
         var dest_buf = self.allocator.alloc(u8, initial) catch return error.OutOfMemory;
         defer self.allocator.free(dest_buf);
 
-        // Materialize the full IFD chain up-front so the loop sees
-        // every IFD. ifdCount() reflects only what's been parsed so
-        // far. End of chain is InvalidArgument (next offset 0). Any
-        // other error is structural and must fail the walk; swallowing
-        // it reported a later corrupt page as fully validated.
+        // Materialize the next-IFD chain and tag 330 children so the loop
+        // sees every page. ifdCount() reflects only what's been parsed so
+        // far. End of that graph is InvalidArgument. Any other error is
+        // structural and must fail the walk; swallowing it reported a
+        // later corrupt page as fully validated.
         var probe: usize = 1;
         while (true) : (probe += 1) {
             _ = self.ifd(probe) catch |err| switch (err) {
@@ -1695,6 +1780,197 @@ fn writeGrayTile(buf: []u8, image_w: u32, image_h: u32, tile_w: u32, tile_h: u32
     return tile_at + payload_len;
 }
 
+/// Classic TIFF whose next-IFD link is zero and whose tag 330 (LONG) names a
+/// nested 1×1 gray page. `child_stored` is that child's strip length: one byte
+/// matches the declared pixel, zero is short of it. The child is not on the chain.
+fn writeGrayParentAndChild(buf: []u8, child_stored: u32) usize {
+    const parent_bytes: u32 = 2 + 7 * 12 + 4;
+    const child_bytes: u32 = 2 + 6 * 12 + 4;
+    const parent_ifd: u32 = 8;
+    const parent_strip: u32 = parent_ifd + parent_bytes;
+    const child_ifd: u32 = parent_strip + 1;
+    const child_strip: u32 = child_ifd + child_bytes;
+    const total: usize = @as(usize, child_strip) + @as(usize, child_stored);
+    @memset(buf[0..total], 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 42, .little);
+    std.mem.writeInt(u32, buf[4..8], parent_ifd, .little);
+
+    const Entry = struct { tag: u16, typ: u16, val: u32 };
+    const parent_entries = [_]Entry{
+        .{ .tag = 256, .typ = 3, .val = 1 },
+        .{ .tag = 257, .typ = 3, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = parent_strip },
+        .{ .tag = 279, .typ = 4, .val = 1 },
+        .{ .tag = 330, .typ = 4, .val = child_ifd },
+    };
+    std.mem.writeInt(u16, buf[parent_ifd..][0..2], @intCast(parent_entries.len), .little);
+    for (parent_entries, 0..) |entry, i| {
+        const at: usize = @as(usize, parent_ifd) + 2 + i * 12;
+        std.mem.writeInt(u16, buf[at..][0..2], entry.tag, .little);
+        std.mem.writeInt(u16, buf[at + 2 ..][0..2], entry.typ, .little);
+        std.mem.writeInt(u32, buf[at + 4 ..][0..4], 1, .little);
+        std.mem.writeInt(u32, buf[at + 8 ..][0..4], entry.val, .little);
+    }
+    buf[parent_strip] = 0x5A;
+
+    const child_entries = [_]Entry{
+        .{ .tag = 256, .typ = 3, .val = 1 },
+        .{ .tag = 257, .typ = 3, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = child_strip },
+        .{ .tag = 279, .typ = 4, .val = child_stored },
+    };
+    std.mem.writeInt(u16, buf[child_ifd..][0..2], @intCast(child_entries.len), .little);
+    for (child_entries, 0..) |entry, i| {
+        const at: usize = @as(usize, child_ifd) + 2 + i * 12;
+        std.mem.writeInt(u16, buf[at..][0..2], entry.tag, .little);
+        std.mem.writeInt(u16, buf[at + 2 ..][0..2], entry.typ, .little);
+        std.mem.writeInt(u32, buf[at + 4 ..][0..4], 1, .little);
+        std.mem.writeInt(u32, buf[at + 8 ..][0..4], entry.val, .little);
+    }
+    if (child_stored > 0) @memset(buf[child_strip..][0..child_stored], 0x5A);
+    return total;
+}
+
+fn writeClassicEntry(buf: []u8, at: usize, tag: u16, typ: u16, count: u32, val: u32) void {
+    std.mem.writeInt(u16, buf[at..][0..2], tag, .little);
+    std.mem.writeInt(u16, buf[at + 2 ..][0..2], typ, .little);
+    std.mem.writeInt(u32, buf[at + 4 ..][0..4], count, .little);
+    std.mem.writeInt(u32, buf[at + 8 ..][0..4], val, .little);
+}
+
+/// IFD0 is a valid 1×1 gray page. Tag 330 has `sub_count` values and, when
+/// the count is 1, its inline LONG is `sub_off`. No child directory is written.
+fn writeGrayParentPointingAt(buf: []u8, sub_off: u32, sub_count: u32) usize {
+    const ifd: u32 = 8;
+    const strip: u32 = ifd + 2 + 7 * 12 + 4;
+    const total: usize = @as(usize, strip) + 1;
+    @memset(buf[0..total], 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 42, .little);
+    std.mem.writeInt(u32, buf[4..8], ifd, .little);
+    std.mem.writeInt(u16, buf[ifd..][0..2], 7, .little);
+    const rows = [_]struct { tag: u16, typ: u16, count: u32, val: u32 }{
+        .{ .tag = 256, .typ = 3, .count = 1, .val = 1 },
+        .{ .tag = 257, .typ = 3, .count = 1, .val = 1 },
+        .{ .tag = 258, .typ = 3, .count = 1, .val = 8 },
+        .{ .tag = 259, .typ = 3, .count = 1, .val = 1 },
+        .{ .tag = 273, .typ = 4, .count = 1, .val = strip },
+        .{ .tag = 279, .typ = 4, .count = 1, .val = 1 },
+        .{ .tag = 330, .typ = 4, .count = sub_count, .val = sub_off },
+    };
+    for (rows, 0..) |row, i| {
+        writeClassicEntry(buf, @as(usize, ifd) + 2 + i * 12, row.tag, row.typ, row.count, row.val);
+    }
+    buf[strip] = 0x5A;
+    return total;
+}
+
+/// IFD0 and IFD1 are chained. Both tag 330 values name one child page.
+fn writeTwoParentsSharingChild(buf: []u8) usize {
+    const ifd_bytes: u32 = 2 + 7 * 12 + 4;
+    const child_bytes: u32 = 2 + 6 * 12 + 4;
+    const ifd0: u32 = 8;
+    const ifd1: u32 = ifd0 + ifd_bytes;
+    const child: u32 = ifd1 + ifd_bytes;
+    const strip0: u32 = child + child_bytes;
+    const strip1: u32 = strip0 + 1;
+    const stripc: u32 = strip1 + 1;
+    const total: usize = @as(usize, stripc) + 1;
+    @memset(buf[0..total], 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 42, .little);
+    std.mem.writeInt(u32, buf[4..8], ifd0, .little);
+
+    std.mem.writeInt(u16, buf[ifd0..][0..2], 7, .little);
+    const parent_rows = [_]struct { tag: u16, val: u32 }{
+        .{ .tag = 256, .val = 1 },
+        .{ .tag = 257, .val = 1 },
+        .{ .tag = 258, .val = 8 },
+        .{ .tag = 259, .val = 1 },
+    };
+    for (parent_rows, 0..) |row, i| {
+        const typ: u16 = if (row.tag == 273 or row.tag == 279 or row.tag == 330) 4 else 3;
+        writeClassicEntry(buf, @as(usize, ifd0) + 2 + i * 12, row.tag, typ, 1, row.val);
+    }
+    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 4 * 12, 273, 4, 1, strip0);
+    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 5 * 12, 279, 4, 1, 1);
+    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 6 * 12, 330, 4, 1, child);
+    std.mem.writeInt(u32, buf[@as(usize, ifd0) + 2 + 7 * 12 ..][0..4], ifd1, .little);
+
+    std.mem.writeInt(u16, buf[ifd1..][0..2], 7, .little);
+    for (parent_rows, 0..) |row, i| {
+        const typ: u16 = if (row.tag == 273 or row.tag == 279 or row.tag == 330) 4 else 3;
+        writeClassicEntry(buf, @as(usize, ifd1) + 2 + i * 12, row.tag, typ, 1, row.val);
+    }
+    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 4 * 12, 273, 4, 1, strip1);
+    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 5 * 12, 279, 4, 1, 1);
+    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 6 * 12, 330, 4, 1, child);
+
+    std.mem.writeInt(u16, buf[child..][0..2], 6, .little);
+    for (parent_rows, 0..) |row, i| {
+        const typ: u16 = if (row.tag == 273 or row.tag == 279 or row.tag == 330) 4 else 3;
+        writeClassicEntry(buf, @as(usize, child) + 2 + i * 12, row.tag, typ, 1, row.val);
+    }
+    writeClassicEntry(buf, @as(usize, child) + 2 + 4 * 12, 273, 4, 1, stripc);
+    writeClassicEntry(buf, @as(usize, child) + 2 + 5 * 12, 279, 4, 1, 1);
+    buf[strip0] = 0x11;
+    buf[strip1] = 0x22;
+    buf[stripc] = 0x5A;
+    return total;
+}
+
+/// The child page is intact and its tag 330 points back at IFD0.
+fn writeChildPointingAtParent(buf: []u8) usize {
+    const ifd0: u32 = 8;
+    const dir_bytes: u32 = 2 + 7 * 12 + 4;
+    const strip0: u32 = ifd0 + dir_bytes;
+    const child: u32 = strip0 + 1;
+    const stripc: u32 = child + dir_bytes;
+    const total: usize = @as(usize, stripc) + 1;
+    @memset(buf[0..total], 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 42, .little);
+    std.mem.writeInt(u32, buf[4..8], ifd0, .little);
+    const rows = [_]struct { tag: u16, typ: u16, val: u32 }{
+        .{ .tag = 256, .typ = 3, .val = 1 },
+        .{ .tag = 257, .typ = 3, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = strip0 },
+        .{ .tag = 279, .typ = 4, .val = 1 },
+        .{ .tag = 330, .typ = 4, .val = child },
+    };
+    std.mem.writeInt(u16, buf[ifd0..][0..2], 7, .little);
+    for (rows, 0..) |row, i| {
+        writeClassicEntry(buf, @as(usize, ifd0) + 2 + i * 12, row.tag, row.typ, 1, row.val);
+    }
+    buf[strip0] = 0x5A;
+    const child_rows = [_]struct { tag: u16, typ: u16, val: u32 }{
+        .{ .tag = 256, .typ = 3, .val = 1 },
+        .{ .tag = 257, .typ = 3, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = stripc },
+        .{ .tag = 279, .typ = 4, .val = 1 },
+        .{ .tag = 330, .typ = 4, .val = ifd0 },
+    };
+    std.mem.writeInt(u16, buf[child..][0..2], 7, .little);
+    for (child_rows, 0..) |row, i| {
+        writeClassicEntry(buf, @as(usize, child) + 2 + i * 12, row.tag, row.typ, 1, row.val);
+    }
+    buf[stripc] = 0x5A;
+    return total;
+}
+
 test "raster limit: ImageLength at u32 max is LimitExceededDimension on decode and validate" {
     // RowsPerStrip is absent, so the row span is the declared length.
     // length + rows-per-strip overflows u32; the pre-limit decode path
@@ -1806,6 +2082,118 @@ test "raster limit: max_dim is inclusive on both axes for strips and tiles" {
             }
         }
     }
+}
+
+test "SubIFD: an intact uncompressed child decodes to its byte and validates" {
+    // Tag 330 is not a next-IFD link. Index 0 stays the parent; index 1 is the child.
+    var storage: [192]u8 = undefined;
+    const n = writeGrayParentAndChild(&storage, 1);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    var dest: [1]u8 = undefined;
+    const parent_n = try dec.decodeStrip(0, 0, &dest, &ws);
+    try std.testing.expectEqual(@as(usize, 1), parent_n);
+    try std.testing.expectEqual(@as(u8, 0x5A), dest[0]);
+    const child_n = try dec.decodeStrip(1, 0, &dest, &ws);
+    try std.testing.expectEqual(@as(usize, 1), child_n);
+    try std.testing.expectEqual(@as(u8, 0x5A), dest[0]);
+    try std.testing.expectEqual(@as(usize, 2), dec.ifdCount());
+    try std.testing.expectError(error.InvalidArgument, dec.ifd(2));
+    try dec.validateAllStripsAndTiles(&ws);
+}
+
+test "SubIFD: a short uncompressed child is Malformed" {
+    // The parent strip is a real pixel. The child declares 1×1 and stores nothing.
+    var storage: [192]u8 = undefined;
+    const n = writeGrayParentAndChild(&storage, 0);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    var dest: [1]u8 = undefined;
+    const parent_n = try dec.decodeStrip(0, 0, &dest, &ws);
+    try std.testing.expectEqual(@as(usize, 1), parent_n);
+    try std.testing.expectEqual(@as(u8, 0x5A), dest[0]);
+    try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&ws));
+}
+
+test "SubIFD: tag 330 count 0 adds no page" {
+    var storage: [128]u8 = undefined;
+    const n = writeGrayParentPointingAt(&storage, 0, 0);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try dec.validateAllStripsAndTiles(&ws);
+    try std.testing.expectEqual(@as(usize, 1), dec.ifdCount());
+    try std.testing.expectError(error.InvalidArgument, dec.ifd(1));
+}
+
+test "SubIFD: an offset past the file is SourceTooShort" {
+    var storage: [128]u8 = undefined;
+    const n = writeGrayParentPointingAt(&storage, 0x00FF0000, 1);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.SourceTooShort, dec.validateAllStripsAndTiles(&ws));
+}
+
+test "SubIFD: two parents sharing one child materialize that child once" {
+    var storage: [320]u8 = undefined;
+    const n = writeTwoParentsSharingChild(&storage);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    var dest: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), try dec.decodeStrip(0, 0, &dest, &ws));
+    try std.testing.expectEqual(@as(u8, 0x11), dest[0]);
+    try std.testing.expectEqual(@as(usize, 1), try dec.decodeStrip(1, 0, &dest, &ws));
+    try std.testing.expectEqual(@as(u8, 0x22), dest[0]);
+    try std.testing.expectEqual(@as(usize, 1), try dec.decodeStrip(2, 0, &dest, &ws));
+    try std.testing.expectEqual(@as(u8, 0x5A), dest[0]);
+    try std.testing.expectEqual(@as(usize, 3), dec.ifdCount());
+    try std.testing.expectError(error.InvalidArgument, dec.ifd(3));
+    try dec.validateAllStripsAndTiles(&ws);
+}
+
+test "SubIFD: a pointer at the directory itself is IfdChainCycle" {
+    // TIFF 6.0 terminates a chain with a zero next pointer. Tag 330 naming
+    // the same directory does not name a new image and does not terminate.
+    var storage: [128]u8 = undefined;
+    const n = writeGrayParentPointingAt(&storage, 8, 1);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.IfdChainCycle, dec.validateAllStripsAndTiles(&ws));
+}
+
+test "SubIFD: a child pointing back at its parent is IfdChainCycle" {
+    var storage: [256]u8 = undefined;
+    const n = writeChildPointingAtParent(&storage);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.IfdChainCycle, dec.validateAllStripsAndTiles(&ws));
 }
 
 test "stripRowSpan: u32-max length and rows-per-strip stay one full band" {

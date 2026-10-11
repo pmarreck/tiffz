@@ -17,19 +17,20 @@ annotate=[
 	docs/plan_context = Background for open PLAN items
 	docs/plan_context/jpegz-pin-hold.md = Why the jpegz repin stays on 3f6066c
 	docs/plan_context/legacy-plan-2026-09-29.md = Verbatim PLAN.md before the 2026-09-29 shortening
+	docs/plan_context/subifd-payload.md = Tag 330 payload-walk contract: child controls, cycle versus alias, limits stay reach
 	docs/tiffz_coverage_matrix.md = Coverage matrix: strict/partial/unsupported/blocked inventory across compression, structure, predictor, photometric, metadata, DNG, embedded-JPEG (Einstein outcome 2)
 	fuzz = Top-level fuzz runner: hermetic ReleaseSafe mutation fuzzer via checks.fuzz + (native) oracle diff
 	include/tiffz.h = Public C API header
 	scripts/check-libjxlz-seed = Prove zigDeps cache seed matches jpegz's declared private libjxlz rev
 	src/compressions/jpeg.zig = TIFF TN2 JPEG stream preparation, exact host-offset mapping, strict validation, and cleanroom decode
 	src/compressions/lerc.zig = LERC-in-TIFF (Compression=34887) codec adapter: strict LercParameters parse (codec_version 2..6, add_compression 0/1/2), chains Deflate/Zstd post-filter, then calls lercz C ABI via lerc_getBlobInfo + lerc_decode.
-	src/decoder.zig = Core TIFF decoder; delegates strict LZW to lzwz; validates each chunk's decoded extent (ExpectedExtent min..max) — exact for non-subsampled, TIFF 6.0 §21 YCbCr chroma-subsampling range (final strip may pad to full RowsPerStrip) for chunky subsampled YCbCr.
+	src/decoder.zig = Core TIFF decoder; tag 330 children follow the next-IFD chain; validates each chunk's decoded extent (exact, or TIFF 6.0 YCbCr chroma range)
 	src/ffi.zig = C ABI: open-from-buffer, validate, findings callback, decode-rgba
 	src/findings.zig = Typed source/code callback ABI with four-way verdicts, complete strict JPEG XL leaf-code classification, mapped codes, and offset provenance.
 	src/geotiff.zig = GeoTIFF metadata parser: strict parseFromIfd → Metadata with pixel_scale, tiepoints, transformation, key directory + double/ascii params. Reads DOUBLE payloads via cachedValueBytes since Ifd.arrayElementU64 is SHORT/LONG/LONG8 only.
 	src/lib.zig = Full public tiffz API; re-exports parser-owned core types and exact jpegz/lzwz module identities downstream.
 	src/parser.zig = Codec-free public Zig module exporting TIFF source/header/IFD/tag parsing as tiffz-parser.
-	src/parser_decoder.zig = Codec-free lazy TIFF IFD-chain decoder compatible with the rawz parser surface.
+	src/parser_decoder.zig = Codec-free lazy TIFF IFD-chain decoder. Does not follow tag 330
 	src/rgba.zig = Decode one IFD to packed 8-bit RGBA for CLI dump
 	src/tags.zig = Named TIFF tag constants (incl. ycbcr_subsampling=530) + compression/photometric/planar code enums.
 	tests/cli/dependency_freshness_test = Deterministic fake-adapter classifier for dependency freshness policy and ./build blocking behavior

@@ -5,13 +5,14 @@ Open work and the latest completions. Older narrative:
 
 ## Now
 
-- [ ] Walk tag 330 SubIFDs during strip and tile validation: an intact uncompressed child validates, a short child is Malformed. JPEG hold stays `33ea394` (Turing 2026-10-10).
+- [ ] Cap SubIFD depth and bytes visited. Crossing either stays a resource limit, not Malformed. JPEG hold stays `33ea394`.
 - [ ] Add an Adobe Deflate 32946 tag discriminator after the SubIFD walk. It shares the zlib arm with compression 8.
 - [ ] Migrate local mutation vocabulary to sparse shotgun and dense nuke, and keep historical 4096-byte shotgun reports labeled as nuke (Einstein 2026-09-29).
-- [ ] Repin jpegz only after its published green receipt for the jp2z head; do not pin an unpublished tree (jpegz 2026-10-10).
+- [ ] After jpegz publishes a green head, repin that jpegz only and keep lercz on published yolo `a88c39b` (default-branch `3125e79` has no Zig package).
 
 ## Done
 
+- [x] Walk tag 330 after the next-IFD chain: an intact child decodes, a short child is Malformed, count 0 adds no page, a past-EOF offset is SourceTooShort, a shared child is one page, and an ancestor pointer is IfdChainCycle (done 2026-10-10 21:08 EDT).
 - [x] Prefer tag 330 payload reach over a 32946 oracle. rawz locates sensors; it does not validate every nested image (done 2026-10-10 19:16 EDT).
 - [x] Report the abc2beb2 payload-versus-tag inventory and the validate `179e4261` versus rawz `abc2beb2` pin split (done 2026-10-10 19:08 EDT).
 - [x] Publish `abc2beb2`. Mechatron Prime CI succeeded 2026-10-10T06:35:29Z–06:44:14Z. Package hash `tiffz-0.1.0-qutJAY8I0QHEcRu8-jNoUM7yDnVBfAIpKHp3CA6tQYtT` (done 2026-10-10 02:44 EDT).
@@ -21,4 +22,3 @@ Open work and the latest completions. Older narrative:
 - [x] Report configured resource limits as `limited` / exit 4 on the CLI, and lock FFI status 15 against `Malformed` (2026-10-10 00:30 EDT).
 - [x] Record the TIFF MKTP inventory and reject declared rasters past `max_dim` / `max_total_samples` before the u32 row-span sum wraps (`docs/mktp-research/tiff.md`) (2026-10-10 00:05 EDT).
 - [x] Refresh nixpkgs to `39ad350a` (2026-10-07) and zig-overlay to `940ecf1b` (2026-10-09), keeping Zig 0.16.0 (done 2026-10-09 12:50 EDT).
-- [x] Repin jpegz to upstream head `33ea394` (jp2z `54917d6` inside; libjxlz stays `93b29e86`; Zig stays 0.16.0) (done 2026-10-08 21:30 EDT).
