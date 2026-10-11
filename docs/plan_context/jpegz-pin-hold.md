@@ -1,5 +1,7 @@
 # jpegz pin hold
 
+Moved again 2026-10-10 20:14 EDT to published head `f1a255a5b132680da1a2ac670e84a2bda7eec2ee` (`jpegz-0.1.0-staw4DnTEgAkHRUJvJtUx6xpS1KAMDI5HBVsW17BQ8xC`). Its package content is commit `8d325c659d5fef85988d083ee3eb69cc7b0a2193`, which pins jp2z head `91264891cdce2180dd65e211029098dac80ff067`; the later JPEGZ commit records the delivery outside its package paths. JPEGZ's complete local gates passed. Mechatron Prime passed package commit `8d325c6` in 14 seconds and head `f1a255a` in 7 minutes 26 seconds. libjxlz stays `93b29e86`; Zig stays 0.16.0.
+
 Moved again 2026-10-08 21:30 EDT to upstream head `33ea3946d06a66892ab4b8e080a6bcf968096889` (`jpegz-0.1.0-staw4DnTEgCYeNwk6bthDfVGlAAOYP6WzLA6SOFujMSR`). That commit refreshes jpegz's own pins. jp2z inside it is `54917d611b087fea46df721bf66a66f2db84b9dd`. libjxlz stays `93b29e86`. Zig stays 0.16.0, the newest 0.16 release. `4d68daa`, `5c5191a`, and `6ef766c` remain ancestors.
 
 The 2026-10-08 20:55 EDT pin was `4d68daa069b016d20bf4c3e95763f8dba93d9d47` (`jpegz-0.1.0-staw4PbSEgCyWgwNhBjEnN5Fc52iN0IeM5BvioFljMXG`). That commit only frees partially allocated baseline buffers on OOM. `5c5191a` and `6ef766c` remain ancestors. libjxlz stays `93b29e86`.

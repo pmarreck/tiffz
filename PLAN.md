@@ -5,7 +5,7 @@ Open work and the latest completions. Older narrative:
 
 ## Now
 
-- [ ] Publish after the Z7Z sequence grants the lane. ReleaseFast `./build` of `d3295f9a` exited 0. jpegz stays `33ea394`. Exact CI follows the push.
+- [ ] Publish the separate SubIFD lane after the Z7Z sequence grants it; its earlier ReleaseFast build predates the JPEGZ head update, so integrate and rerun its gates before publication.
 - [ ] Migrate local mutation vocabulary to sparse shotgun and dense nuke, and keep historical 4096-byte shotgun reports labeled as nuke (Einstein 2026-09-29).
 - [ ] Repin jpegz only after its published green receipt for the jp2z head; do not pin an unpublished tree (jpegz 2026-10-10).
 
