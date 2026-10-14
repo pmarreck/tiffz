@@ -1,6 +1,6 @@
 # Tag 330 payload walk
 
-The full decoder follows `next_ifd_offset` only. `validateAllStripsAndTiles` checks that chain. A tag 330 child is never decoded, so a short nested strip still validates. The codec-free parser stays chain-only: sensor classification and vendor locate remain with the consumer that already walks tag 330 for that purpose.
+The full decoder follows the next-IFD chain first, then tag 330 children. `validateAllStripsAndTiles` materializes both. The codec-free parser stays chain-only: sensor classification and vendor locate remain with the consumer that already walks tag 330 for that purpose.
 
 Children append after the main chain. Existing chain indices stay put. A child is then an ordinary IFD index for `decodeStrip` / `decodeTile`.
 
@@ -15,13 +15,21 @@ Children append after the main chain. Existing chain indices stay put. A child i
 - Unsupported compression on a child stays finding 16 (`unsupported_compression_skipped`) and does not fail the walk. A supported codec's decode failure stays that codec's error.
 - JPEG-compressed children stay on the single pinned jpegz instance. This slice uses uncompressed pages only.
 
-Offsets stored in tag 330 and in strip/tile arrays are file offsets from byte 0. There is no region base. `tiffz_validate` still returns a status code, not an offset channel. No new status variant is part of this slice.
+Offsets stored in tag 330 and in strip/tile arrays are file offsets from byte 0. There is no region base. `tiffz_validate` returns a status code. The stored error is that status plus the error name. It does not carry a byte offset, an IFD index, or a bytes-consumed count. No new status variant was added for the walk.
 
 ## Limits
 
-`max_ifds` bounds how many directories the walk parses. Crossing it is `LimitExceededIfdCount` (reach), not `Malformed`.
+`max_ifds` bounds how many directories the walk parses. Crossing it is `LimitExceededIfdCount` (status 11). Statuses 11 through 19 are reach, and finding 16 (unsupported compression) is structural reach. Validate confirmed both on 2026-10-14. `IfdChainCycle`, `Malformed`, and a supported codec's own decode error stay claims about the file. A configured cap is not `Malformed`.
 
-The walk itself is in the full decoder. A separate depth cap and a total-bytes-visited cap are still open. Both will be high safety stops, because capacity grows (BDFN, 2026-10-14). The existing defaults stay as they are: `max_ifds` 1024, `max_dim` 2^30, `max_total_samples` 2^40, and the strip caps at 2^30. Crossing a cap is not `Malformed`. Whether the library status stays `limited` (CLI exit 4, statuses 11 through 19) or Validate records it only as reach is the question sent to Validate. If a new status code is required, append it and announce it before a consumer repins. Do not renumber the existing set.
+The walk has no separate depth cap and no total-bytes-visited cap yet. Both will be high safety stops, because capacity grows (BDFN, 2026-10-14). Existing defaults stay: `max_ifds` 1024, `max_tags_per_ifd` 4096, `max_tag_value_bytes` 64 MiB, `max_strips_or_tiles` 16<<20, `max_dim` 2^30, `max_total_samples` 2^40, `max_codec_scratch` 256 MiB, and both strip caps at 2^30. Do not lower them.
+
+A depth or bytes-visited stop reuses an existing limit status when that status can say what stopped. `LimitExceededIfdCount` already covers directory count. Any new code is appended and announced before a consumer repins. Do not renumber.
+
+Validate's shim still maps 11-19 to FAIL and finding 16 to WARN. That routing is theirs to fix. This library does not emit `KNOWN_DEFECT`, `mktp`, or `full`.
+
+## Progress on a limit
+
+A limit result does not say how far the walk got. A later appended channel may carry a byte offset, the IFD index, or bytes consumed. Until that channel exists, a consumer that needs `examined_bytes` has only the status. A caller that walks `ifd()` itself can see how many directories were materialized, and that count is not part of the status return.
 
 ## Later, not this walk
 
