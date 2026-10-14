@@ -21,7 +21,7 @@ Offsets stored in tag 330 and in strip/tile arrays are file offsets from byte 0.
 
 `max_ifds` bounds how many directories the walk parses. Crossing it is `LimitExceededIfdCount` (reach), not `Malformed`.
 
-The walk itself is in the full decoder. A separate depth cap and a total-bytes-visited cap are still open. If either needs a new status code, append it and announce it before a consumer repins. Do not renumber the existing set.
+The walk itself is in the full decoder. A separate depth cap and a total-bytes-visited cap are still open. Both will be high safety stops, because capacity grows (BDFN, 2026-10-14). The existing defaults stay as they are: `max_ifds` 1024, `max_dim` 2^30, `max_total_samples` 2^40, and the strip caps at 2^30. Crossing a cap is not `Malformed`. Whether the library status stays `limited` (CLI exit 4, statuses 11 through 19) or Validate records it only as reach is the question sent to Validate. If a new status code is required, append it and announce it before a consumer repins. Do not renumber the existing set.
 
 ## Later, not this walk
 

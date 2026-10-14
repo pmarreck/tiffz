@@ -5,7 +5,7 @@ Open work and the latest completions. Older narrative:
 
 ## Now
 
-- [ ] Cap SubIFD depth and bytes visited. Crossing either stays a resource limit, not Malformed. JPEG hold stays `33ea394`.
+- [ ] Keep SubIFD depth and bytes-visited caps high, and name that result only after Validate maps a limit onto reach (BDFN 2026-10-14). JPEG hold stays `33ea394`.
 - [ ] Add an Adobe Deflate 32946 tag discriminator after the SubIFD walk. It shares the zlib arm with compression 8.
 - [ ] Migrate local mutation vocabulary to sparse shotgun and dense nuke, and keep historical 4096-byte shotgun reports labeled as nuke (Einstein 2026-09-29).
 - [ ] After jpegz publishes a green head, repin that jpegz only and keep lercz on published yolo `a88c39b` (default-branch `3125e79` has no Zig package).
