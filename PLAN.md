@@ -10,6 +10,7 @@ Open work and the latest completions. Older narrative:
 - [ ] Add an Adobe Deflate 32946 tag discriminator after the SubIFD walk. It shares the zlib arm with compression 8.
 - [ ] Append a CCITT T.6 early-EOFB outcome, distinct from Malformed, with zero-fill after EOFB (context: docs/plan_context/ccitt-t6-eofb.md).
 - [ ] Migrate local mutation vocabulary to sparse shotgun and dense nuke, and keep historical 4096-byte shotgun reports labeled as nuke (Einstein 2026-09-29).
+- [ ] Score known-good TIFF seeds through corruption-reader 0.7.0 (`21ee639`): exit 1 is a detection, exit 4 is reach, and a no-op is not a trial (context: docs/plan_context/corruption-reader.md).
 
 ## Done
 

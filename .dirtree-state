@@ -16,6 +16,7 @@ annotate=[
 	docs/parser_only_module.md = Consumer wiring and mechanically enforced production-closure contract for tiffz-parser.
 	docs/plan_context = Background for open PLAN items
 	docs/plan_context/ccitt-t6-eofb.md = CCITT T.6 early-EOFB outcome: appended, distinct from Malformed
+	docs/plan_context/corruption-reader.md = How tiffz scores corruption-reader cases: exit 1 detects, exit 4 is reach, a no-op is not a trial
 	docs/plan_context/jpegz-pin-hold.md = Why the jpegz repin stays on 3f6066c
 	docs/plan_context/legacy-plan-2026-09-29.md = Verbatim PLAN.md before the 2026-09-29 shortening
 	docs/plan_context/subifd-payload.md = Tag 330 payload-walk contract: child controls, cycle versus alias, limits stay reach
