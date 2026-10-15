@@ -10,10 +10,10 @@ Open work and the latest completions. Older narrative:
 - [ ] Add an Adobe Deflate 32946 tag discriminator after the SubIFD walk. It shares the zlib arm with compression 8.
 - [ ] Append a CCITT T.6 early-EOFB outcome, distinct from Malformed, with zero-fill after EOFB (context: docs/plan_context/ccitt-t6-eofb.md).
 - [ ] Migrate local mutation vocabulary to sparse shotgun and dense nuke, and keep historical 4096-byte shotgun reports labeled as nuke (Einstein 2026-09-29).
-- [ ] Score known-good TIFF seeds through corruption-reader 0.7.0 (`21ee639`): exit 1 is a detection, exit 4 is reach, and a no-op is not a trial (context: docs/plan_context/corruption-reader.md).
 
 ## Done
 
+- [x] Run ./corruption-coverage on the known-good corpus: sniper, bolter, shotgun, nuke, 95% Wilson half-width 0.05 (done 2026-10-15 13:11 EDT).
 - [x] Integrate published jpegz `f1a255a` (origin `e9564e4f`) into the local SubIFD commits. `./test` passed on that tree. lercz stays `a88c39b` (done 2026-10-14 15:14 EDT).
 - [x] Record that statuses 11-19 and finding 16 are reach, and that IfdChainCycle, Malformed, and a supported codec error stay file claims (done 2026-10-14 14:43 EDT).
 - [x] Walk tag 330 after the next-IFD chain: an intact child decodes, a short child is Malformed, count 0 adds no page, a past-EOF offset is SourceTooShort, a shared child is one page, and an ancestor pointer is IfdChainCycle (done 2026-10-10 21:08 EDT).
@@ -23,4 +23,3 @@ Open work and the latest completions. Older narrative:
 - [x] ReleaseFast `./build` of `d3295f9a` exited 0 at 2026-10-10 02:25 EDT. Binary sha256 `1b904345008517af23840f3c5ab1e3a093818b3010bcaa208a3b0b3027e84382` (done 2026-10-10 02:25 EDT).
 - [x] Record the publication-freeze release at 2026-10-10 02:19 EDT. Published tip stays `618d38d4`; `4b5e9507` stays local until its CI lane (done 2026-10-10 02:19 EDT).
 - [x] Correct the MKTP sample-cap sentence and lock inclusive max_dim on both axes for strips and tiles, plus CLI Malformed status 2 beside the dimension cap (done 2026-10-10 01:28 EDT).
-- [x] Report configured resource limits as `limited` / exit 4 on the CLI, and lock FFI status 15 against `Malformed` (2026-10-10 00:30 EDT).

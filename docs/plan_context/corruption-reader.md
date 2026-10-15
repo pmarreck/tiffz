@@ -41,4 +41,17 @@ An uncompressed sample byte is still legal TIFF. A sniper, bolter, shotgun, or n
 
 One worked pipe, on the ReleaseFast binary of `d3295f9a` (sha256 `1b904345008517af23840f3c5ab1e3a093818b3010bcaa208a3b0b3027e84382`), not on current HEAD. Seed `tests/fixtures/uncompressed/minisblack-1c-8b.tiff`, 24001 bytes, master 42. The unmutated file was ok. Sniper round 0, bolter round 0, `shotgun_variable` round 0, and nuke rounds 0 through 2 were applied and stayed ok. The `header` profile was applied and came back invalid, error 2, with no IFD opened. `apply --case` reproduced nuke item 0 byte for byte.
 
-A sandboxed `./test` cannot see the executable until this repo pins commit `21ee639` as a flake input. An unzoned detection rate is a report, not a failing gate, until someone chooses a threshold for a named zone.
+`./corruption-coverage` runs that score on the known-good corpus in `tests/fuzz/fuzz.zig`. It draws the built-in profiles `sniper`, `bolter`, `shotgun`, and `nuke`. `shotgun` here is corruption-reader's profile: 16 distinct bits inside a 32-byte window. The detection rate is detections divided by decisive trials, with a 95% Wilson interval. The default margin is 0.05. The run stops a profile once that interval's half-width is within the margin, or at the worst-case 385 decisive trials. `--trials N` collects N decisive trials instead. Exit 0 means every profile met the margin and no seed was rejected, no draw failed, and tiffz did not crash. The rate itself is not a pass/fail gate. `tests/cli/corruption_coverage_test` locks the arithmetic and the exit classes with fakes; it does not call the real tools.
+
+A sandboxed `./test` does not run the campaign. The executable is resolved from `PATH`, then from a sibling `corruption_reader` binary. Commit `21ee639` is the 0.7.0 tree this contract was read against.
+
+One measurement, 2026-10-15, master 42, margin 0.05. corruption-reader 0.7.0. tiffz binary sha256 `e49f80bc933e516badcb84927345d69a2a4c9d0c360d24af69753d4904a7d4a4`, the ReleaseFast build of this tree with lercz still `a88c39b`. All 19 unmutated seeds were accepted. No crashes and no no-op draws.
+
+| Profile | Decisive | Detected | Rate | 95% Wilson |
+|---|---:|---:|---:|---|
+| sniper | 340 | 112 | 0.329412 | 0.281603 to 0.381032 |
+| bolter | 385 | 153 | 0.397403 | 0.349766 to 0.447066 |
+| shotgun | 385 | 197 | 0.511688 | 0.461889 to 0.561257 |
+| nuke | 335 | 251 | 0.749254 | 0.700190 to 0.792665 |
+
+Reach cases were 2, 2, 14, and 7. They are not in the rates. These are unzoned rejection rates: a changed sample byte can still be a legal TIFF.

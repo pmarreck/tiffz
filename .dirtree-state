@@ -11,6 +11,7 @@ annotate=[
 	build.zig = Build graph for full tiffz and codec-free tiffz-parser modules, C/Zig artifacts, tests, and shared dependency instances.
 	build.zig.zon = Pinned Zig dependencies, including the shared strict lzwz core.
 	cli/main.c = C CLI dogfooding FFI: validate and PNG dump
+	corruption-coverage = Wilson 95% detection rates for sniper, bolter, shotgun, and nuke on the known-good TIFF corpus
 	docs/PLAN_LOG.md = Retired PLAN completions
 	docs/mktp-research/tiff.md = TIFF MKTP inventory, fixture hashes, and the raster-limit experiment
 	docs/parser_only_module.md = Consumer wiring and mechanically enforced production-closure contract for tiffz-parser.
@@ -35,6 +36,7 @@ annotate=[
 	src/parser_decoder.zig = Codec-free lazy TIFF IFD-chain decoder. Does not follow tag 330
 	src/rgba.zig = Decode one IFD to packed 8-bit RGBA for CLI dump
 	src/tags.zig = Named TIFF tag constants (incl. ycbcr_subsampling=530) + compression/photometric/planar code enums.
+	tests/cli/corruption_coverage_test = Fake-tool contract for corruption-coverage scoring and exit classes
 	tests/cli/dependency_freshness_test = Deterministic fake-adapter classifier for dependency freshness policy and ./build blocking behavior
 	tests/cli/libjxlz_seed_control = Classifier over fake caches for check-libjxlz-seed
 	tests/dual_module_test.zig = Blocking Zig 0.16 single-ownership gate proving full tiffz and tiffz-parser coexist with identical shared parser types.

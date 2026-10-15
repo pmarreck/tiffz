@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+# Scorer and driver contract for ./corruption-coverage.
+# Fakes stand in for corruption-reader and tiffz. No network, no real decoder.
+
+set -u
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+subject="$root/corruption-coverage"
+failures=0
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-corruption-coverage.XXXXXX")"
+
+cleanup() {
+	case "$sandbox" in
+		"${TMPDIR:-/tmp}"/tiffz-corruption-coverage.*) rm -rf -- "$sandbox" ;;
+	esac
+}
+trap cleanup EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+assert_equal() {
+	local label="$1" expected="$2" actual="$3"
+	if [ "$actual" != "$expected" ]; then
+		fail "$label"
+		printf '  expected: %q\n' "$expected" >&2
+		printf '  actual:   %q\n' "$actual" >&2
+	fi
+}
+
+assert_contains() {
+	local label="$1" haystack="$2" needle="$3"
+	if [[ "$haystack" != *"$needle"* ]]; then
+		fail "$label"
+		printf '  missing: %q\n' "$needle" >&2
+	fi
+}
+
+assert_not_contains() {
+	local label="$1" haystack="$2" needle="$3"
+	if [[ "$haystack" == *"$needle"* ]]; then
+		fail "$label"
+		printf '  unexpected: %q\n' "$needle" >&2
+	fi
+}
+
+run_subject() {
+	local out="$sandbox/out" err="$sandbox/err"
+	: >"$out"
+	: >"$err"
+	"$subject" "$@" >"$out" 2>"$err"
+	subject_status=$?
+	subject_out="$(cat "$out")"
+	subject_err="$(cat "$err")"
+}
+
+# --- help and the known-good seed list ---------------------------------
+
+if [ ! -x "$subject" ]; then
+	fail "corruption-coverage is missing or not executable"
+	printf '%d failure(s)\n' "$failures" >&2
+	exit 1
+fi
+
+run_subject --help
+assert_equal "--help exits 0" 0 "$subject_status"
+assert_contains "--help names sniper" "$subject_out" "sniper"
+assert_contains "--help names bolter" "$subject_out" "bolter"
+assert_contains "--help names shotgun" "$subject_out" "shotgun"
+assert_contains "--help names nuke" "$subject_out" "nuke"
+assert_contains "--help names the 95% interval" "$subject_out" "Wilson"
+
+run_subject --list-seeds
+assert_equal "--list-seeds exits 0" 0 "$subject_status"
+seed_count="$(printf '%s\n' "$subject_out" | awk 'NF { n++ } END { print n+0 }')"
+zig_count="$(awk '
+	/const seed_corpus/ { grab = 1; next }
+	grab && /};/ { exit }
+	grab && /"/ {
+		line = $0
+		while (match(line, /"[^"]+"/)) {
+			n++
+			line = substr(line, RSTART + RLENGTH)
+		}
+	}
+	END { print n+0 }
+' "$root/tests/fuzz/fuzz.zig")"
+assert_equal "seed count matches tests/fuzz/fuzz.zig" "$zig_count" "$seed_count"
+assert_contains "uncompressed seed is listed" "$subject_out" \
+	"tests/fixtures/uncompressed/minisblack-1c-8b.tiff"
+assert_contains "jpeg seed is listed" "$subject_out" \
+	"tests/fixtures/jpeg/rgb-jpeg.tif"
+
+# --- Wilson summary: reach and no-op stay out of the denominator --------
+
+ledger="$sandbox/ledger"
+{
+	i=0
+	while [ "$i" -lt 81 ]; do printf 'sniper\tdetect\n'; i=$((i + 1)); done
+	i=0
+	while [ "$i" -lt 19 ]; do printf 'sniper\taccept\n'; i=$((i + 1)); done
+	i=0
+	while [ "$i" -lt 7 ]; do printf 'sniper\treach\n'; i=$((i + 1)); done
+	i=0
+	while [ "$i" -lt 3 ]; do printf 'sniper\tnoop\n'; i=$((i + 1)); done
+} >"$ledger"
+
+run_subject --summarize --margin 0.08 <"$ledger"
+assert_equal "81/100 summary exits 0" 0 "$subject_status"
+assert_equal "81/100 summary is silent on stderr" "" "$subject_err"
+assert_contains "81/100 Wilson line" "$subject_out" \
+	"sniper decisive=100 detect=81 accept=19 reach=7 noop=3 crash=0 harness=0 rate=0.810000 low=0.722212 high=0.874852 half=0.076320 precise=yes"
+
+printf 'sniper\tcrash\n' >"$ledger"
+run_subject --summarize --margin 0.5 <"$ledger"
+assert_equal "a crash is not a successful measurement" 1 "$subject_status"
+assert_contains "crash is counted apart" "$subject_out" \
+	"sniper decisive=0 detect=0 accept=0 reach=0 noop=0 crash=1 harness=0 rate=na low=na high=na half=na precise=no"
+
+# --- end to end, with fakes ----------------------------------------------
+
+bindir="$sandbox/bin"
+mkdir -p "$bindir"
+cat >"$bindir/corruption-reader" <<'EOF'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = "--about" ]; then
+	printf 'corruption-reader 0.0.0-fake (test)\n'
+	exit 0
+fi
+log="${FAKE_READER_LOG:?}"
+printf '%s\n' "$*" >>"$log"
+profile=""
+master=""
+round=""
+count=""
+tmpdir=""
+report=""
+seed=""
+prev=""
+for arg in "$@"; do
+	case "$prev" in
+		--master) master="$arg" ;;
+		--round) round="$arg" ;;
+		--count) count="$arg" ;;
+		--tmp-dir) tmpdir="$arg" ;;
+		--report) report="$arg" ;;
+	esac
+	case "$arg" in
+		--master|--round|--count|--tmp-dir|--report) prev="$arg"; continue ;;
+	esac
+	prev=""
+	if [ "$arg" = "corrupt" ]; then
+		expect_profile=1
+		continue
+	fi
+	if [ "${expect_profile:-0}" = 1 ]; then
+		profile="$arg"
+		expect_profile=0
+	fi
+	case "$arg" in
+		--*) ;;
+		*) seed="$arg" ;;
+	esac
+done
+if [ -z "$profile" ] || [ -z "$tmpdir" ] || [ -z "$report" ] || [ -z "$seed" ]; then
+	printf 'fake reader: missing args\n' >&2
+	exit 2
+fi
+: >"$report"
+i=0
+any_noop=0
+while [ "$i" -lt "$count" ]; do
+	r=$((round + i))
+	if [ "$profile" = "nuke" ] && [ "${FAKE_MODE:-all-detect}" = "mixed" ]; then
+		printf '{"report":1,"item":%d,"round":%d,"status":"noop","noop":"too_small","emitted":false,"record":{}}\n' \
+			"$i" "$r" >>"$report"
+		any_noop=1
+	else
+		out="$tmpdir/cr-${profile}-r${r}-fake.tiff"
+		cp -- "$seed" "$out"
+		printf '%s\n' "$out"
+		printf '{"report":1,"item":%d,"round":%d,"status":"applied","noop":null,"emitted":true,"record":{"profile":{"name":"%s"}}}\n' \
+			"$i" "$r" "$profile" >>"$report"
+	fi
+	i=$((i + 1))
+done
+if [ "$any_noop" -eq 1 ]; then
+	exit 3
+fi
+exit 0
+EOF
+cat >"$bindir/tiffz" <<'EOF'
+#!/usr/bin/env bash
+set -u
+path=""
+for arg in "$@"; do
+	case "$arg" in
+		--json|validate) ;;
+		*) path="$arg" ;;
+	esac
+done
+case "$path" in
+	*"/cr-sniper-"*) code=1 ;;
+	*"/cr-bolter-"*) code=4 ;;
+	*"/cr-shotgun-"*) code=0 ;;
+	*"/cr-nuke-"*) code=1 ;;
+	*)
+		if [ "${FAKE_MODE:-all-detect}" = "reject-seed" ]; then
+			code=1
+		else
+			code=0
+		fi
+		;;
+esac
+if [ "${FAKE_MODE:-all-detect}" = "all-detect" ]; then
+	case "$path" in
+		*"/cr-"*) code=1 ;;
+	esac
+fi
+printf '{"status":"fake","path":"%s","error":%d,"ifds":0,"findings":[]}\n' "$path" "$code"
+exit "$code"
+EOF
+chmod +x "$bindir/corruption-reader" "$bindir/tiffz"
+
+seedfile="$sandbox/seeds"
+printf '%s\n' "$sandbox/seed-a.tiff" >"$seedfile"
+printf 'ok\n' >"$sandbox/seed-a.tiff"
+export FAKE_READER_LOG="$sandbox/reader.log"
+: >"$FAKE_READER_LOG"
+
+FAKE_MODE=all-detect run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--master 42 \
+	--trials 8 \
+	--margin 0.20
+assert_equal "all-detect measurement exits 0" 0 "$subject_status"
+progress_stripped="$(printf '%s\n' "$subject_err" | awk '$1 != "progress" && NF')"
+assert_equal "all-detect measurement is silent aside from progress" "" "$progress_stripped"
+for profile in sniper bolter shotgun nuke; do
+	assert_contains "$profile 8/8 is precise" "$subject_out" \
+		"$profile decisive=8 detect=8 accept=0 reach=0 noop=0 crash=0 harness=0 rate=1.000000 low=0.675592 high=1.000000 half=0.162204 precise=yes"
+done
+assert_contains "master is recorded" "$subject_out" "master=42"
+assert_contains "reader was invoked" "$(cat "$FAKE_READER_LOG")" "--master 42"
+
+: >"$FAKE_READER_LOG"
+FAKE_MODE=reject-seed run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--master 42 \
+	--trials 4 \
+	--margin 0.20
+assert_equal "rejected seed stops the measurement" 1 "$subject_status"
+assert_contains "specificity names the reject" "$subject_out" "specificity"
+assert_equal "no corruption is drawn after a rejected seed" "" "$(cat "$FAKE_READER_LOG")"
+
+FAKE_MODE=mixed run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--master 42 \
+	--trials 8 \
+	--margin 0.20
+assert_equal "mixed measurement is not precise for every profile" 1 "$subject_status"
+assert_contains "sniper detections" "$subject_out" \
+	"sniper decisive=8 detect=8 accept=0 reach=0 noop=0 crash=0 harness=0"
+assert_contains "bolter is reach, not a detection" "$subject_out" \
+	"bolter decisive=0 detect=0 accept=0 reach=8 noop=0 crash=0 harness=0 rate=na"
+assert_contains "shotgun accepts are misses" "$subject_out" \
+	"shotgun decisive=8 detect=0 accept=8 reach=0 noop=0 crash=0 harness=0 rate=0.000000 low=0.000000 high=0.324408 half=0.162204 precise=yes"
+assert_contains "nuke no-op is not a trial" "$subject_out" \
+	"nuke decisive=0 detect=0 accept=0 reach=0 noop=8 crash=0 harness=0 rate=na"
+
+if [ "$failures" -eq 0 ]; then
+	printf 'corruption-coverage contract passed\n'
+	exit 0
+fi
+printf '%d failure(s)\n' "$failures" >&2
+exit 1

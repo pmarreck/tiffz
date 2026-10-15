@@ -51,6 +51,9 @@ run_subtest "sibling dependency freshness gate" \
 run_subtest "libjxlz private-seed control" \
     tests/cli/libjxlz_seed_control
 
+run_subtest "corruption-coverage scorer" \
+    tests/cli/corruption_coverage_test
+
 if [[ "$failures" -gt 0 ]]; then
     printf '\n%d test suite(s) failed.\n' "$failures" >&2
     exit "$failures"

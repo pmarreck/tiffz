@@ -1,0 +1,506 @@
+#!/usr/bin/env bash
+# Estimate tiffz corrupt-input detection on known-good TIFF seeds.
+#
+# corruption-reader draws each case. tiffz validate scores it.
+#   exit 1  detection
+#   exit 0  accept (a miss against this draw, not always a spec miss)
+#   exit 4  reach, not a trial
+#   a no-op draw is not a trial
+#   a signal is a crash, counted apart
+# The unmutated seed must validate. A 95% Wilson interval is reported for
+# the detection rate among decisive trials (detections and accepts).
+# The run is precise when that interval's half-width is within --margin.
+
+set -u
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+profiles=(sniper bolter shotgun nuke)
+z_95=1.959963984540054
+
+mode=campaign
+margin=0.05
+trials=""
+master=42
+tiffz_bin="${TIFFZ:-}"
+cr_bin="${CORRUPTION_READER:-}"
+seeds_file=""
+
+usage() {
+	cat <<'EOF'
+usage: corruption-coverage [options]
+
+Draw sniper, bolter, shotgun, and nuke cases with corruption-reader and
+score them with tiffz validate. Seeds default to the known-good corpus in
+tests/fuzz/fuzz.zig. The same --master reproduces the draws.
+
+A decisive trial is a tiffz exit 0 (accept) or exit 1 (detection). Exit 4
+is reach and a corruption-reader no-op is not a trial. The detection rate
+is detections / decisive trials. Each profile gets a 95% Wilson interval.
+precise=yes when the half-width is at most --margin (default 0.05), which
+needs 385 decisive trials at a rate near one half and fewer when the rate
+is near 0 or 1.
+
+Exit 0 means every profile is precise and no seed was rejected, no draw
+failed, and tiffz did not crash. The rate itself is not a pass/fail gate.
+
+options:
+  -h, --help                 show this text
+  --list-seeds               print the default known-good corpus
+  --summarize                score a TSV of "profile<TAB>outcome" on stdin
+  --seeds-file PATH          one seed path per line, instead of the corpus
+  --master SEED              corruption-reader master seed (default 42)
+  --margin P                 Wilson half-width target in (0, 1] (default 0.05)
+  --trials N                 decisive trials to collect per profile
+  --tiffz PATH               tiffz executable
+  --corruption-reader PATH   corruption-reader executable
+EOF
+}
+
+die() {
+	printf 'corruption-coverage: %s\n' "$1" >&2
+	exit 2
+}
+
+default_seeds() {
+	awk '
+		/const seed_corpus/ { grab = 1; next }
+		grab && /};/ { exit }
+		grab && /"/ {
+			line = $0
+			while (match(line, /"[^"]+"/)) {
+				print substr(line, RSTART + 1, RLENGTH - 2)
+				line = substr(line, RSTART + RLENGTH)
+			}
+		}
+	' "$root/tests/fuzz/fuzz.zig"
+}
+
+load_seeds() {
+	if [ -n "$seeds_file" ]; then
+		awk 'NF && $0 !~ /^#/ { print }' "$seeds_file"
+	else
+		default_seeds
+	fi
+}
+
+worst_case_trials() {
+	awk -v margin="$1" -v z="$z_95" 'BEGIN {
+		if (margin <= 0 || margin > 1) exit 2
+		z2 = z * z
+		n = z2 * 0.25 / (margin * margin)
+		c = int(n)
+		if (c < n) c++
+		if (c < 1) c = 1
+		print c
+	}'
+}
+
+# Print one profile line. Exit 1 when that profile is not precise.
+print_profile() {
+	awk -v profile="$1" -v detect="$2" -v accept="$3" -v reach="$4" \
+		-v noop="$5" -v crash="$6" -v harness="$7" -v margin="$8" \
+		-v z="$z_95" 'BEGIN {
+		decisive = detect + accept
+		printf "%s decisive=%d detect=%d accept=%d reach=%d noop=%d crash=%d harness=%d ", \
+			profile, decisive, detect, accept, reach, noop, crash, harness
+		if (decisive < 1) {
+			printf "rate=na low=na high=na half=na precise=no\n"
+			exit 1
+		}
+		z2 = z * z
+		den = decisive + z2
+		center = (detect + z2 / 2) / den
+		inner = (detect * accept / decisive) + z2 / 4
+		if (inner < 0) inner = 0
+		halfspan = z / den * sqrt(inner)
+		low = center - halfspan
+		high = center + halfspan
+		if (low < 0) low = 0
+		if (high > 1) high = 1
+		half = (high - low) / 2
+		rate = detect / decisive
+		precise = "yes"
+		if (crash > 0 || harness > 0 || half > margin + 1e-12) precise = "no"
+		printf "rate=%.6f low=%.6f high=%.6f half=%.6f precise=%s\n", \
+			rate, low, high, half, precise
+		exit (precise == "yes" ? 0 : 1)
+	}'
+}
+
+count_file() {
+	if [ -f "$1" ]; then
+		wc -l <"$1" | tr -d '[:space:]'
+	else
+		printf '0'
+	fi
+}
+
+summarize() {
+	local dir profile outcome
+	local overall=0
+	dir="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-coverage-sum.XXXXXX")"
+	touch "$dir/order"
+	while IFS="$(printf '\t')" read -r profile outcome; do
+		[ -n "${profile:-}" ] || continue
+		case "$outcome" in
+			detect|accept|reach|noop|crash|harness) ;;
+			*)
+				rm -rf -- "$dir"
+				die "bad outcome: $outcome"
+				;;
+		esac
+		if [ ! -e "$dir/seen.$profile" ]; then
+			printf '%s\n' "$profile" >>"$dir/order"
+			: >"$dir/seen.$profile"
+		fi
+		printf 'x\n' >>"$dir/n.$profile.$outcome"
+	done
+	while IFS= read -r profile; do
+		local detect accept reach noop crash harness
+		detect="$(count_file "$dir/n.$profile.detect")"
+		accept="$(count_file "$dir/n.$profile.accept")"
+		reach="$(count_file "$dir/n.$profile.reach")"
+		noop="$(count_file "$dir/n.$profile.noop")"
+		crash="$(count_file "$dir/n.$profile.crash")"
+		harness="$(count_file "$dir/n.$profile.harness")"
+		print_profile "$profile" "$detect" "$accept" "$reach" "$noop" \
+			"$crash" "$harness" "$margin" || overall=1
+	done <"$dir/order"
+	rm -rf -- "$dir"
+	return "$overall"
+}
+
+json_field() {
+	# $1 is the field name. The JSON object is on stdin.
+	awk -v key="$1" '
+		BEGIN { pat = "\"" key "\":" }
+		{
+			i = index($0, pat)
+			if (i == 0) { print ""; exit }
+			rest = substr($0, i + length(pat))
+			if (substr(rest, 1, 4) == "null") { print "null"; exit }
+			if (substr(rest, 1, 1) == "\"") {
+				rest = substr(rest, 2)
+				q = index(rest, "\"")
+				print substr(rest, 1, q - 1)
+				exit
+			}
+			n = match(rest, /[,}]/)
+			if (n == 0) print rest
+			else print substr(rest, 1, n - 1)
+		}
+	'
+}
+
+resolve_tools() {
+	if [ -z "$tiffz_bin" ]; then
+		if [ -x "$root/zig-out/bin/tiffz" ]; then
+			tiffz_bin="$root/zig-out/bin/tiffz"
+		elif command -v tiffz >/dev/null 2>&1; then
+			tiffz_bin="$(command -v tiffz)"
+		else
+			die "tiffz not found; pass --tiffz"
+		fi
+	fi
+	if [ ! -x "$tiffz_bin" ]; then
+		die "tiffz is not executable: $tiffz_bin"
+	fi
+	if [ -z "$cr_bin" ]; then
+		local arch bundled
+		arch="$(uname -m)"
+		bundled="$root/../corruption_reader/bin/linux/$arch/corruption-reader"
+		if command -v corruption-reader >/dev/null 2>&1; then
+			cr_bin="$(command -v corruption-reader)"
+		elif [ -x "$bundled" ]; then
+			cr_bin="$bundled"
+		else
+			die "corruption-reader not found; pass --corruption-reader"
+		fi
+	fi
+	if [ ! -x "$cr_bin" ]; then
+		die "corruption-reader is not executable: $cr_bin"
+	fi
+}
+
+classify_tiffz() {
+	# $1 is the wait status from tiffz validate.
+	local status="$1"
+	# 124 is gtimeout's status when the decoder did not finish.
+	if [ "$status" -ge 128 ] || [ "$status" -eq 124 ]; then
+		printf 'crash\n'
+	elif [ "$status" -eq 0 ]; then
+		printf 'accept\n'
+	elif [ "$status" -eq 1 ]; then
+		printf 'detect\n'
+	elif [ "$status" -eq 4 ]; then
+		printf 'reach\n'
+	else
+		printf 'harness\n'
+	fi
+}
+
+score_batch() {
+	# Append outcomes for one corruption-reader invocation.
+	# $1 profile  $2 report  $3 path list file  $4 reader exit  $5 outcome file
+	local profile="$1" report="$2" pathfile="$3" reader_status="$4" out="$5"
+	local line status noop emitted path
+	if [ "$reader_status" -eq 2 ] || [ ! -s "$report" ]; then
+		printf '%s\tharness\n' "$profile" >>"$out"
+		return
+	fi
+	local -a paths=()
+	while IFS= read -r path; do
+		[ -n "$path" ] || continue
+		paths+=("$path")
+	done <"$pathfile"
+	local cursor=0
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		status="$(printf '%s\n' "$line" | json_field status)"
+		noop="$(printf '%s\n' "$line" | json_field noop)"
+		emitted="$(printf '%s\n' "$line" | json_field emitted)"
+		if [ "$status" = "noop" ] || { [ -n "$noop" ] && [ "$noop" != "null" ]; }; then
+			printf '%s\tnoop\n' "$profile" >>"$out"
+			continue
+		fi
+		if [ "$emitted" != "true" ] || [ "$cursor" -ge "${#paths[@]}" ]; then
+			printf '%s\tharness\n' "$profile" >>"$out"
+			continue
+		fi
+		path="${paths[$cursor]}"
+		cursor=$((cursor + 1))
+		local tiffz_status=0
+		if command -v gtimeout >/dev/null 2>&1; then
+			gtimeout 30 "$tiffz_bin" validate --json -- "$path" >/dev/null 2>"$work/tiffz.err" || tiffz_status=$?
+		else
+			"$tiffz_bin" validate --json -- "$path" >/dev/null 2>"$work/tiffz.err" || tiffz_status=$?
+		fi
+		rm -f -- "$path"
+		classify_tiffz "$tiffz_status" | awk -v profile="$profile" '{ printf "%s\t%s\n", profile, $0 }' >>"$out"
+	done <"$report"
+}
+
+campaign() {
+	local seeds nseeds target cap seed profile
+	local accepted=0 rejected=0
+	resolve_tools
+	seeds="$(load_seeds)"
+	if [ -z "$seeds" ]; then
+		die "no seeds"
+	fi
+	nseeds="$(printf '%s\n' "$seeds" | awk 'NF { n++ } END { print n+0 }')"
+	if [ -n "$trials" ]; then
+		target="$trials"
+	else
+		target="$(worst_case_trials "$margin")" || die "margin must be in (0, 1]"
+	fi
+	case "$target" in
+		''|*[!0-9]*) die "trials must be a positive integer" ;;
+	esac
+	if [ "$target" -lt 1 ]; then
+		die "trials must be a positive integer"
+	fi
+	cap=$((target * 4))
+	printf 'master=%s margin=%.6f confidence=0.95 trials=%s\n' "$master" "$margin" "$target"
+	printf 'reader=%s\n' "$("$cr_bin" --about 2>/dev/null || printf 'unknown\n')"
+	printf 'tiffz=%s\n' "$tiffz_bin"
+
+	while IFS= read -r seed; do
+		[ -n "$seed" ] || continue
+		local st=0
+		if [ ! -f "$seed" ]; then
+			rejected=$((rejected + 1))
+			printf 'specificity reject %s missing\n' "$seed"
+			continue
+		fi
+		if command -v gtimeout >/dev/null 2>&1; then
+			gtimeout 30 "$tiffz_bin" validate --json -- "$seed" >/dev/null 2>"$work/tiffz.err" || st=$?
+		else
+			"$tiffz_bin" validate --json -- "$seed" >/dev/null 2>"$work/tiffz.err" || st=$?
+		fi
+		if [ "$st" -eq 0 ]; then
+			accepted=$((accepted + 1))
+		else
+			rejected=$((rejected + 1))
+			printf 'specificity reject %s exit %s\n' "$seed" "$st"
+		fi
+	done <<EOF
+$seeds
+EOF
+	printf 'specificity seeds=%s accepted=%s rejected=%s\n' "$nseeds" "$accepted" "$rejected"
+	if [ "$rejected" -ne 0 ]; then
+		return 1
+	fi
+
+	local ledger="$work/ledger"
+	: >"$ledger"
+	local overall=0
+	for profile in "${profiles[@]}"; do
+		local decisive=0 attempts=0 round_base=0
+		local per
+		if [ -n "$trials" ]; then
+			per=$(((target + nseeds - 1) / nseeds))
+		else
+			# A pass across the corpus, then re-check the interval.
+			per=$(((96 + nseeds - 1) / nseeds))
+		fi
+		if [ "$per" -lt 1 ]; then
+			per=1
+		fi
+		local guard=0
+		while [ "$decisive" -lt "$target" ] && [ "$attempts" -lt "$cap" ] && [ "$guard" -lt 100 ]; do
+			guard=$((guard + 1))
+			local before="$decisive"
+			while IFS= read -r seed; do
+				[ -n "$seed" ] || continue
+				[ "$decisive" -lt "$target" ] || break
+				[ "$attempts" -lt "$cap" ] || break
+				local draw=$((target - decisive))
+				if [ "$draw" -gt "$per" ]; then
+					draw="$per"
+				fi
+				local room=$((cap - attempts))
+				if [ "$draw" -gt "$room" ]; then
+					draw="$room"
+				fi
+				if [ "$draw" -lt 1 ]; then
+					break
+				fi
+				local batch="$work/batch"
+				mkdir -p "$batch"
+				local report="$batch/report.jsonl"
+				local paths="$batch/paths"
+				local reader_status=0
+				"$cr_bin" corrupt "$profile" \
+					--master "$master" \
+					--round "$round_base" \
+					--count "$draw" \
+					--emit tmp \
+					--tmp-dir "$batch" \
+					--report "$report" \
+					-- "$seed" >"$paths" 2>"$batch/reader.err" || reader_status=$?
+				local before_lines
+				before_lines="$(wc -l <"$ledger" | tr -d '[:space:]')"
+				score_batch "$profile" "$report" "$paths" "$reader_status" "$ledger"
+				round_base=$((round_base + draw))
+				attempts=$((attempts + draw))
+				local added
+				added="$(awk -v profile="$profile" -F '\t' '
+					$1 == profile && ($2 == "detect" || $2 == "accept") { n++ }
+					END { print n+0 }
+				' "$ledger")"
+				decisive="$added"
+				rm -rf -- "$batch"
+				# before_lines is only here so a failed batch is still visible in the ledger.
+				: "$before_lines"
+			done <<EOF
+$seeds
+EOF
+			printf 'progress %s decisive=%s attempts=%s\n' "$profile" "$decisive" "$attempts" >&2
+			if [ "$decisive" -eq "$before" ]; then
+				break
+			fi
+			# Without a fixed --trials count, stop once the observed
+			# interval is already within the margin.
+			if [ -z "$trials" ] && [ "$decisive" -ge 1 ]; then
+				local half_now
+				half_now="$(awk -v profile="$profile" -F '\t' -v z="$z_95" '
+					$1 == profile && $2 == "detect" { k++ }
+					$1 == profile && $2 == "accept" { a++ }
+					END {
+						n = k + a
+						if (n < 1) { print "na"; exit }
+						z2 = z * z
+						den = n + z2
+						center = (k + z2 / 2) / den
+						inner = (k * a / n) + z2 / 4
+						if (inner < 0) inner = 0
+						span = z / den * sqrt(inner)
+						low = center - span
+						high = center + span
+						if (low < 0) low = 0
+						if (high > 1) high = 1
+						printf "%.10f\n", (high - low) / 2
+					}
+				' "$ledger")"
+				if [ "$half_now" != "na" ] && awk -v half="$half_now" -v margin="$margin" 'BEGIN { exit !(half <= margin + 1e-12) }'; then
+					break
+				fi
+			fi
+		done
+	done
+
+	local summary_status=0
+	summarize <"$ledger" || summary_status=$?
+	return "$summary_status"
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-h|--help)
+			usage
+			exit 0
+			;;
+		--list-seeds)
+			default_seeds
+			exit 0
+			;;
+		--summarize)
+			mode=summarize
+			shift
+			;;
+		--margin)
+			[ "$#" -ge 2 ] || die "--margin needs a value"
+			margin="$2"
+			shift 2
+			;;
+		--trials)
+			[ "$#" -ge 2 ] || die "--trials needs a value"
+			trials="$2"
+			shift 2
+			;;
+		--master)
+			[ "$#" -ge 2 ] || die "--master needs a value"
+			master="$2"
+			shift 2
+			;;
+		--tiffz)
+			[ "$#" -ge 2 ] || die "--tiffz needs a path"
+			tiffz_bin="$2"
+			shift 2
+			;;
+		--corruption-reader)
+			[ "$#" -ge 2 ] || die "--corruption-reader needs a path"
+			cr_bin="$2"
+			shift 2
+			;;
+		--seeds-file)
+			[ "$#" -ge 2 ] || die "--seeds-file needs a path"
+			seeds_file="$2"
+			shift 2
+			;;
+		--)
+			shift
+			break
+			;;
+		*)
+			die "unknown argument: $1"
+			;;
+	esac
+done
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-corruption-coverage.XXXXXX")"
+cleanup() {
+	case "$work" in
+		"${TMPDIR:-/tmp}"/tiffz-corruption-coverage.*) rm -rf -- "$work" ;;
+	esac
+}
+trap cleanup EXIT
+
+if [ "$mode" = "summarize" ]; then
+	summarize
+	exit $?
+fi
+
+campaign
+exit $?
