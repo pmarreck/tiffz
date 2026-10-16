@@ -15,22 +15,22 @@ Children append after the main chain. Existing chain indices stay put. A child i
 - Unsupported compression on a child stays finding 16 (`unsupported_compression_skipped`) and does not fail the walk. A supported codec's decode failure stays that codec's error.
 - JPEG-compressed children stay on the single pinned jpegz instance. This slice uses uncompressed pages only.
 
-Offsets stored in tag 330 and in strip/tile arrays are file offsets from byte 0. There is no region base. `tiffz_validate` returns a status code. The stored error is that status plus the error name. It does not carry a byte offset, an IFD index, or a bytes-consumed count. No new status variant was added for the walk.
+Offsets stored in tag 330 and in strip/tile arrays are file offsets from byte 0. There is no region base. `tiffz_validate` still returns only a status code. When the status is a limit, `tiffz_limit_progress` reports the file offset, the IFD index being entered, and how many source bytes had been read. The CLI JSON names those `limit_offset`, `limit_ifd`, and `limit_bytes`. No new status was added for the walk itself.
 
 ## Limits
 
 `max_ifds` bounds how many directories the walk parses. Crossing it is `LimitExceededIfdCount` (status 11). Statuses 11 through 19 are reach, and finding 16 (unsupported compression) is structural reach. Validate confirmed both on 2026-10-14. `IfdChainCycle`, `Malformed`, and a supported codec's own decode error stay claims about the file. A configured cap is not `Malformed`.
 
-The walk has no separate depth cap and no total-bytes-visited cap yet. Both will be high safety stops, because capacity grows (BDFN, 2026-10-14). Existing defaults stay: `max_ifds` 1024, `max_tags_per_ifd` 4096, `max_tag_value_bytes` 64 MiB, `max_strips_or_tiles` 16<<20, `max_dim` 2^30, `max_total_samples` 2^40, `max_codec_scratch` 256 MiB, and both strip caps at 2^30. Do not lower them.
+Depth and bytes visited are separate from directory count. `max_ifd_depth` defaults to 1024. IFD0 is depth 1, and a tag 330 child of IFD0 is depth 2. Crossing it is `LimitExceededIfdDepth` (status 27). `max_bytes_visited` defaults to 2^40. A read that would pass that count is refused whole and is `LimitExceededBytesVisited` (status 28). Both are reach: `tiffz_status_is_limit` is 1, and the CLI word is `limited`, exit 4. Existing defaults stay: `max_ifds` 1024, `max_tags_per_ifd` 4096, `max_tag_value_bytes` 64 MiB, `max_strips_or_tiles` 16<<20, `max_dim` 2^30, `max_total_samples` 2^40, `max_codec_scratch` 256 MiB, and both strip caps at 2^30. Do not lower them.
 
-A depth or bytes-visited stop reuses an existing limit status when that status can say what stopped. `LimitExceededIfdCount` already covers directory count. Any new code is appended and announced before a consumer repins. Do not renumber.
+`LimitExceededIfdCount` still means directory count, not depth. Status 26 is `EndOfFacsimileBlock`, a file claim, and `tiffz_status_is_limit` is 0 for it. Do not renumber.
 
 Validate's shim still maps 11-19 to FAIL and finding 16 to WARN. That routing is theirs to fix. This library does not emit `KNOWN_DEFECT`, `mktp`, or `full`.
 
 ## Progress on a limit
 
-A limit result does not say how far the walk got. A later appended channel may carry a byte offset, the IFD index, or bytes consumed. Until that channel exists, a consumer that needs `examined_bytes` has only the status. A caller that walks `ifd()` itself can see how many directories were materialized, and that count is not part of the status return.
+`tiffz_limit_progress` returns 0 when a limit recorded those three numbers, and 1 when it did not. The first site wins. A caller that walks `ifd()` itself can still see how many directories were materialized, and that count is not part of the status return.
 
-## Later, not this walk
+## Compression 32946
 
-An Adobe Deflate 32946 tag check shares the zlib arm with compression 8. It does not show that a nested page was read. Photometric expansion stays in `photometrics.zig`; this walk does not invent a photometric finding.
+Adobe Deflate (tag value 32946) uses the same zlib arm as compression 8. A predictor-2 deflate fixture with that tag rewritten to 32946 decodes to the same bytes. It does not show that a nested page was read. Photometric expansion stays in `photometrics.zig`.

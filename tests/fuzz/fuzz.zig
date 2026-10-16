@@ -39,10 +39,11 @@ fn boltgun(bytes: []u8, offset: usize, len: usize, rng: std.Random) void {
     }
 }
 
-/// Flip `n` bytes at random offsets (broad shotgun). Each hit XORs with a
-/// nonzero value so every targeted offset changes; distinct offsets are not
+/// Flip `n` whole bytes at random offsets. This is a dense overwrite helper,
+/// the nuke class in validate-mutation-v3, not corruption-reader's sparse
+/// shotgun (8 to 16 bits in a 32-byte window). Distinct offsets are not
 /// guaranteed (two hits may coincide), which is fine for a breadth sweep.
-fn shotgun(bytes: []u8, rng: std.Random, n: usize) void {
+fn denseByteFlip(bytes: []u8, rng: std.Random, n: usize) void {
     if (bytes.len == 0) return;
     var i: usize = 0;
     while (i < n) : (i += 1) {
@@ -167,11 +168,11 @@ test "mutation: boltgun overwrites the field, clamps at end, no OOB" {
     try std.testing.expectEqual(@as(u8, 0xAA), buf[5]);
 }
 
-test "mutation: shotgun with a fixed seed changes the buffer" {
+test "mutation: dense byte flip with a fixed seed changes the buffer" {
     var buf = [_]u8{0x00} ** 64;
     const before = buf;
     var prng = std.Random.DefaultPrng.init(0xC0FFEE);
-    shotgun(&buf, prng.random(), 5);
+    denseByteFlip(&buf, prng.random(), 5);
     try std.testing.expect(!std.mem.eql(u8, &before, &buf)); // not a no-op
 }
 
@@ -224,7 +225,7 @@ test "fuzz robustness: seeded mutations never crash the validator" {
 
             switch (it % 3) {
                 0 => snipe(buf, rng.uintLessThan(usize, span), rng.int(u8)),
-                1 => shotgun(buf, rng, 1 + rng.uintLessThan(usize, 8)),
+                1 => denseByteFlip(buf, rng, 1 + rng.uintLessThan(usize, 8)),
                 2 => boltgun(buf, rng.uintLessThan(usize, span), 8, rng),
                 else => unreachable,
             }

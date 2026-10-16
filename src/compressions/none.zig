@@ -17,7 +17,7 @@ pub fn decode(
     dest: []u8,
 ) errors.Error!usize {
     if (byte_count > dest.len) return error.DestTooSmall;
-    const n = source.readAt(dest[0..byte_count], offset) catch return error.Io;
+    const n = source.readAt(dest[0..byte_count], offset) catch |err| return parser.source.preserveReadError(err);
     if (n < byte_count) return error.SourceShortRead;
     return n;
 }

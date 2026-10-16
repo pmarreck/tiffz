@@ -9,6 +9,7 @@
 //! — single-threaded only by contract.
 
 const std = @import("std");
+const errors = @import("errors.zig");
 
 pub const Source = struct {
     ctx: *anyopaque,
@@ -568,4 +569,55 @@ test "fromBufferedReader: request larger than cache iteratively slides" {
     const n = try src.readAt(&dst, 0);
     try std.testing.expectEqual(@as(usize, 200), n);
     try std.testing.expectEqualSlices(u8, data[0..200], &dst);
+}
+
+/// Keep a resource-cap error that a Source raised. Other read failures
+/// stay Io, which is the historical pass-through for unknown sources.
+pub fn preserveReadError(err: anyerror) errors.Error {
+    return switch (err) {
+        error.LimitExceededBytesVisited => error.LimitExceededBytesVisited,
+        error.SourceSeekTooFarBack => error.SourceSeekTooFarBack,
+        error.SourceShortRead => error.SourceShortRead,
+        error.SourceTooShort => error.SourceTooShort,
+        else => error.Io,
+    };
+}
+
+/// Counts bytes a decoder actually reads. A request that would pass
+/// `max_bytes` is refused whole, so a short read is never mistaken
+/// for EOF. The handle must stay put: the returned Source points at it.
+pub const ByteBudget = struct {
+    inner: Source,
+    bytes: u64 = 0,
+    max_bytes: u64,
+    last_offset: u64 = 0,
+
+    pub fn source(self: *ByteBudget) Source {
+        return .{ .ctx = self, .vtable = &budget_vtable };
+    }
+
+    pub fn readAt(self: *ByteBudget, buf: []u8, offset: u64) anyerror!usize {
+        self.last_offset = offset;
+        if (buf.len == 0) return 0;
+        const room = if (self.bytes >= self.max_bytes) 0 else self.max_bytes - self.bytes;
+        if (@as(u64, buf.len) > room) return error.LimitExceededBytesVisited;
+        const n = try self.inner.readAt(buf, offset);
+        self.bytes += n;
+        return n;
+    }
+};
+
+const budget_vtable: Source.VTable = .{
+    .read_at = budgetReadAt,
+    .size = budgetSize,
+};
+
+fn budgetReadAt(ctx: *anyopaque, buf: []u8, offset: u64) anyerror!usize {
+    const self: *ByteBudget = @ptrCast(@alignCast(ctx));
+    return self.readAt(buf, offset);
+}
+
+fn budgetSize(ctx: *anyopaque) anyerror!u64 {
+    const self: *const ByteBudget = @ptrCast(@alignCast(ctx));
+    return self.inner.sizeOf();
 }

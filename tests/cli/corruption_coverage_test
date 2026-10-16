@@ -202,6 +202,7 @@ for arg in "$@"; do
 		*) path="$arg" ;;
 	esac
 done
+findings='[]'
 case "$path" in
 	*"/cr-sniper-"*) code=1 ;;
 	*"/cr-bolter-"*) code=4 ;;
@@ -215,12 +216,24 @@ case "$path" in
 		fi
 		;;
 esac
+if [ "${FAKE_MODE:-all-detect}" = "finding" ]; then
+	case "$path" in
+		*"/cr-sniper-"*)
+			code=0
+			findings='[{"source":1,"code":13,"verdict":0}]'
+			;;
+		*"/cr-bolter-"*)
+			code=0
+			findings='[{"source":1,"code":16,"verdict":2}]'
+			;;
+	esac
+fi
 if [ "${FAKE_MODE:-all-detect}" = "all-detect" ]; then
 	case "$path" in
 		*"/cr-"*) code=1 ;;
 	esac
 fi
-printf '{"status":"fake","path":"%s","error":%d,"ifds":0,"findings":[]}\n' "$path" "$code"
+printf '{"status":"fake","path":"%s","error":%d,"ifds":0,"findings":%s}\n' "$path" "$code" "$findings"
 exit "$code"
 EOF
 chmod +x "$bindir/corruption-reader" "$bindir/tiffz"
@@ -246,6 +259,12 @@ for profile in sniper bolter shotgun nuke; do
 		"$profile decisive=8 detect=8 accept=0 reach=0 noop=0 crash=0 harness=0 rate=1.000000 low=0.675592 high=1.000000 half=0.162204 precise=yes"
 done
 assert_contains "master is recorded" "$subject_out" "master=42"
+assert_contains "mutation definition is validate-mutation-v3" "$subject_out" "mutation_definition=validate-mutation-v3"
+seed_hash="$(sha256sum "$sandbox/seed-a.tiff" | awk '{print $1}')"
+assert_contains "specificity records the seed hash" "$subject_out" "sha256=$seed_hash"
+assert_contains "specificity records the seed length" "$subject_out" "bytes=3"
+assert_contains "shotgun draws the variable window" "$(cat "$FAKE_READER_LOG")" "corrupt shotgun_variable"
+assert_not_contains "shotgun is not the fixed 16-bit profile" "$(cat "$FAKE_READER_LOG")" "corrupt shotgun "
 assert_contains "reader was invoked" "$(cat "$FAKE_READER_LOG")" "--master 42"
 
 : >"$FAKE_READER_LOG"
@@ -276,6 +295,20 @@ assert_contains "shotgun accepts are misses" "$subject_out" \
 	"shotgun decisive=8 detect=0 accept=8 reach=0 noop=0 crash=0 harness=0 rate=0.000000 low=0.000000 high=0.324408 half=0.162204 precise=yes"
 assert_contains "nuke no-op is not a trial" "$subject_out" \
 	"nuke decisive=0 detect=0 accept=0 reach=0 noop=8 crash=0 harness=0 rate=na"
+
+: >"$FAKE_READER_LOG"
+FAKE_MODE=finding run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--master 42 \
+	--trials 4 \
+	--margin 0.20
+assert_equal "a finding on exit 0 is not a clean measurement" 1 "$subject_status"
+assert_contains "a new non-reach finding is a detection" "$subject_out" \
+	"sniper decisive=4 detect=4 accept=0 reach=0 noop=0 crash=0 harness=0"
+assert_contains "finding 16 alone is reach" "$subject_out" \
+	"bolter decisive=0 detect=0 accept=0 reach=4 noop=0 crash=0 harness=0 rate=na"
 
 if [ "$failures" -eq 0 ]; then
 	printf 'corruption-coverage contract passed\n'

@@ -1,6 +1,6 @@
 # CCITT T.6 early EOFB
 
-`compressions/ccitt_t6.decode` returns `error.Malformed` both when EOFB arrives before the requested row count and when a mode or run does not decode. The EOFB path is the synthetic error after the second EOL.
+`compressions/ccitt_t6.decode` returns `error.EndOfFacsimileBlock` (status 26) when EOFB arrives before the requested row count and the bytes after it are only zero fill. A mode or run that does not decode, eight zero bytes, or a 1 bit after EOFB stays `error.Malformed`. `rows_written` is how many rows were fully decoded. `tiffz_facsimile_rows` returns that count, and the CLI JSON names it `rows_decoded`. Status 26 is not a resource limit.
 
 In PDF, EOFB before the declared row count is conforming at the filter level when EndOfBlock defaults to true (ISO 32000-1 Table 11). Those two outcomes have to be distinct so a row shortfall is not the same status as an undecodable code.
 
@@ -8,4 +8,4 @@ The outcome is appended. It is not inserted into the existing error set. EOFB fo
 
 Acceptance pair: two white rows plus EOFB, decoded with `rows=4`, returns the new outcome after 2 rows. Eight zero bytes stay `Malformed`.
 
-Validate's JPEG provider hold blocks adoption of a newer build. Announce the appended code before a repin.
+Status 26 is appended after `JpegInTiffPayload`. Announce it before a consumer repins.

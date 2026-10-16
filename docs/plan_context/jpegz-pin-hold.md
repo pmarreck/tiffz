@@ -1,5 +1,7 @@
 # jpegz pin hold
 
+Moved 2026-10-15 to published yolo `85455ebc1fa284d65581c6501cb641b3ac965997`. `zig fetch` of that URL returned `jpegz-0.1.0-staw4HATEwC0XcJnIkmt6EbZ1qkGp4rbLrT2QLOMznWT`. tiffz's own zigDeps fixed-output hash for that tree is `sha256-fNOCPqNVYefpdyy5dBE6+flXgRyBhyiw+x9jYL4hwe0=`. jpegz's closure hash `sha256-n86bl1BO1NcPy8YAV/sLAUTGcfndo4LfpxAbwVBivRY=` is a different derivation. libjxlz stays `93b29e86`. lercz stays `a88c39b`. One `tiffz.jpegz` instance. Zig stays 0.16.0.
+
 Moved again 2026-10-10 20:14 EDT to published head `f1a255a5b132680da1a2ac670e84a2bda7eec2ee` (`jpegz-0.1.0-staw4DnTEgAkHRUJvJtUx6xpS1KAMDI5HBVsW17BQ8xC`). Its package content is commit `8d325c659d5fef85988d083ee3eb69cc7b0a2193`, which pins jp2z head `91264891cdce2180dd65e211029098dac80ff067`; the later JPEGZ commit records the delivery outside its package paths. JPEGZ's complete local gates passed. Mechatron Prime passed package commit `8d325c6` in 14 seconds and head `f1a255a` in 7 minutes 26 seconds. libjxlz stays `93b29e86`; Zig stays 0.16.0.
 
 Moved again 2026-10-08 21:30 EDT to upstream head `33ea3946d06a66892ab4b8e080a6bcf968096889` (`jpegz-0.1.0-staw4DnTEgCYeNwk6bthDfVGlAAOYP6WzLA6SOFujMSR`). That commit refreshes jpegz's own pins. jp2z inside it is `54917d611b087fea46df721bf66a66f2db84b9dd`. libjxlz stays `93b29e86`. Zig stays 0.16.0, the newest 0.16 release. `4d68daa`, `5c5191a`, and `6ef766c` remain ancestors.

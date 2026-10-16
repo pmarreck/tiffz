@@ -515,9 +515,7 @@ test "predictor2_deflate.tif (Deflate + Predictor=2 horizontal, 32x32 RGB): RGBA
 /// Caller frees. Used for fixtures whose photometric expansion isn't
 /// supported yet (e.g. FP32) but whose post-decode bytes are still
 /// meaningfully verifiable.
-fn decodeAllStripsBytes(allocator: std.mem.Allocator, fixture_path: []const u8) ![]u8 {
-    const bytes = try loadFile(allocator, fixture_path);
-    defer allocator.free(bytes);
+fn decodeStripsFromBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
 
     var handle = tiffz.source.BufferHandle.init(bytes);
     const src = tiffz.Source.fromBuffer(&handle);
@@ -544,6 +542,67 @@ fn decodeAllStripsBytes(allocator: std.mem.Allocator, fixture_path: []const u8) 
         try collected.appendSlice(allocator, scratch[0..n]);
     }
     return try collected.toOwnedSlice(allocator);
+}
+
+fn decodeAllStripsBytes(allocator: std.mem.Allocator, fixture_path: []const u8) ![]u8 {
+    const bytes = try loadFile(allocator, fixture_path);
+    defer allocator.free(bytes);
+    return decodeStripsFromBytes(allocator, bytes);
+}
+
+/// Rewrite inline SHORT tag values. Returns how many slots changed.
+fn patchInlineShort(bytes: []u8, tag: u16, from: u16, to: u16) !u32 {
+    if (bytes.len < 8 or bytes[0] != 'I' or bytes[1] != 'I') return error.Malformed;
+    var offset: u32 = std.mem.readInt(u32, bytes[4..8], .little);
+    var patched: u32 = 0;
+    var guard: u32 = 0;
+    while (offset != 0) {
+        guard += 1;
+        if (guard > 64 or offset + 2 > bytes.len) return error.Malformed;
+        const count = std.mem.readInt(u16, bytes[offset..][0..2], .little);
+        var i: u16 = 0;
+        while (i < count) : (i += 1) {
+            const at: usize = @as(usize, offset) + 2 + @as(usize, i) * 12;
+            if (at + 12 > bytes.len) return error.Malformed;
+            const got = std.mem.readInt(u16, bytes[at..][0..2], .little);
+            const typ = std.mem.readInt(u16, bytes[at + 2 ..][0..2], .little);
+            const n = std.mem.readInt(u32, bytes[at + 4 ..][0..4], .little);
+            if (got == tag and typ == 3 and n == 1) {
+                const val = std.mem.readInt(u16, bytes[at + 8 ..][0..2], .little);
+                if (val == from) {
+                    std.mem.writeInt(u16, bytes[at + 8 ..][0..2], to, .little);
+                    patched += 1;
+                }
+            }
+        }
+        const next_at: usize = @as(usize, offset) + 2 + @as(usize, count) * 12;
+        if (next_at + 4 > bytes.len) return error.Malformed;
+        offset = std.mem.readInt(u32, bytes[next_at..][0..4], .little);
+    }
+    if (patched == 0) return error.Malformed;
+    return patched;
+}
+
+test "compression 32946 decodes with the same zlib arm as compression 8" {
+    const allocator = std.testing.allocator;
+    const raw = try loadFile(allocator, "tests/fixtures/predictor/predictor2_deflate.tif");
+    defer allocator.free(raw);
+    const patched = try allocator.dupe(u8, raw);
+    defer allocator.free(patched);
+    const n = try patchInlineShort(patched, tiffz.tags.compression, 8, tiffz.tags.compression_deflate_adobe);
+    try std.testing.expect(n >= 1);
+
+    const original = try decodeStripsFromBytes(allocator, raw);
+    defer allocator.free(original);
+    const adobe = try decodeStripsFromBytes(allocator, patched);
+    defer allocator.free(adobe);
+    try std.testing.expectEqualSlices(u8, original, adobe);
+
+    var handle = tiffz.source.BufferHandle.init(patched);
+    var dec = try tiffz.Decoder.open(allocator, tiffz.Source.fromBuffer(&handle));
+    defer dec.deinit();
+    const dir = try dec.ifd(0);
+    try std.testing.expectEqual(@as(?u16, 32946), ifdScalarU16(dir, tiffz.tags.compression, dec.endian));
 }
 
 test "rgb16.tif (uncompressed 16x16 RGB 16-bit-per-sample): RGBA matches ImageMagick oracle" {

@@ -2,19 +2,29 @@
 # Estimate tiffz corrupt-input detection on known-good TIFF seeds.
 #
 # corruption-reader draws each case. tiffz validate scores it.
-#   exit 1  detection
-#   exit 0  accept (a miss against this draw, not always a spec miss)
-#   exit 4  reach, not a trial
+# mutation_definition=validate-mutation-v3
+#   sniper            1 bit
+#   bolter            1 byte XOR 0xFF
+#   shotgun           corruption-reader profile shotgun_variable
+#                     (8 to 16 distinct bits in one 32-byte window)
+#   nuke              4096-byte overwrite
+#   exit 1            detection
+#   exit 0            accept, unless a non-reach finding changed
+#   exit 0 + finding  a new finding other than code 16 is a detection
+#   finding 16 only   reach, not a trial
+#   exit 4            reach, not a trial
 #   a no-op draw is not a trial
-#   a signal is a crash, counted apart
-# The unmutated seed must validate. A 95% Wilson interval is reported for
-# the detection rate among decisive trials (detections and accepts).
+#   a signal or gtimeout 124 is a crash, counted apart
+# The unmutated seed must validate. Its sha256 and length are printed.
+# A 95% Wilson interval is reported for detections among decisive trials.
 # The run is precise when that interval's half-width is within --margin.
 
 set -u
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 profiles=(sniper bolter shotgun nuke)
+declare -A seed_non16=()
+declare -A seed_code16=()
 z_95=1.959963984540054
 
 mode=campaign
@@ -30,12 +40,17 @@ usage() {
 usage: corruption-coverage [options]
 
 Draw sniper, bolter, shotgun, and nuke cases with corruption-reader and
-score them with tiffz validate. Seeds default to the known-good corpus in
+score them with tiffz validate. mutation_definition=validate-mutation-v3.
+Shotgun is corruption-reader's shotgun_variable profile: 8 to 16 distinct
+bits in one 32-byte window. Seeds default to the known-good corpus in
 tests/fuzz/fuzz.zig. The same --master reproduces the draws.
 
-A decisive trial is a tiffz exit 0 (accept) or exit 1 (detection). Exit 4
-is reach and a corruption-reader no-op is not a trial. The detection rate
-is detections / decisive trials. Each profile gets a 95% Wilson interval.
+A decisive trial is a detection or an accept. Exit 1 is a detection. Exit 0
+is an accept unless a finding other than code 16 differs from the unmutated
+seed; that difference is a detection. Finding 16 alone, and exit 4, are
+reach and are not trials. A corruption-reader no-op is not a trial. The
+detection rate is detections / decisive trials. Each profile gets a 95%
+Wilson interval.
 precise=yes when the half-width is at most --margin (default 0.05), which
 needs 385 decisive trials at a rate near one half and fewer when the rate
 is near 0 or 1.
@@ -222,18 +237,66 @@ resolve_tools() {
 	fi
 }
 
+reader_profile() {
+	# Vocabulary name -> corruption-reader profile. Shotgun is the
+	# variable 8-to-16-bit window, not the fixed 16-bit profile.
+	case "$1" in
+		shotgun) printf 'shotgun_variable\n' ;;
+		*) printf '%s\n' "$1" ;;
+	esac
+}
+
+non16_key() {
+	awk '
+		{
+			s = $0
+			while (match(s, /"code":[0-9]+/)) {
+				code = substr(s, RSTART + 7, RLENGTH - 7)
+				if (code != "16") print code
+				s = substr(s, RSTART + RLENGTH)
+			}
+		}
+	' "$1" | sort -n | paste -sd, -
+}
+
+has_code16() {
+	awk '
+		BEGIN { found = 0 }
+		{
+			s = $0
+			while (match(s, /"code":[0-9]+/)) {
+				code = substr(s, RSTART + 7, RLENGTH - 7)
+				if (code == "16") found = 1
+				s = substr(s, RSTART + RLENGTH)
+			}
+		}
+		END { print (found ? "yes" : "no") }
+	' "$1"
+}
+
 classify_tiffz() {
-	# $1 is the wait status from tiffz validate.
-	local status="$1"
+	# $1 wait status, $2 JSON file, $3 unmutated seed path.
+	local status="$1" json="$2" seed="$3"
 	# 124 is gtimeout's status when the decoder did not finish.
 	if [ "$status" -ge 128 ] || [ "$status" -eq 124 ]; then
 		printf 'crash\n'
-	elif [ "$status" -eq 0 ]; then
-		printf 'accept\n'
 	elif [ "$status" -eq 1 ]; then
 		printf 'detect\n'
 	elif [ "$status" -eq 4 ]; then
 		printf 'reach\n'
+	elif [ "$status" -eq 0 ]; then
+		local now base now16 base16
+		now="$(non16_key "$json")"
+		base="${seed_non16[$seed]:-}"
+		now16="$(has_code16 "$json")"
+		base16="${seed_code16[$seed]:-no}"
+		if [ "$now" != "$base" ]; then
+			printf 'detect\n'
+		elif [ "$now16" != "$base16" ]; then
+			printf 'reach\n'
+		else
+			printf 'accept\n'
+		fi
 	else
 		printf 'harness\n'
 	fi
@@ -241,8 +304,8 @@ classify_tiffz() {
 
 score_batch() {
 	# Append outcomes for one corruption-reader invocation.
-	# $1 profile  $2 report  $3 path list file  $4 reader exit  $5 outcome file
-	local profile="$1" report="$2" pathfile="$3" reader_status="$4" out="$5"
+	# $1 profile  $2 report  $3 path list  $4 reader exit  $5 outcome file  $6 seed
+	local profile="$1" report="$2" pathfile="$3" reader_status="$4" out="$5" seed="$6"
 	local line status noop emitted path
 	if [ "$reader_status" -eq 2 ] || [ ! -s "$report" ]; then
 		printf '%s\tharness\n' "$profile" >>"$out"
@@ -270,13 +333,15 @@ score_batch() {
 		path="${paths[$cursor]}"
 		cursor=$((cursor + 1))
 		local tiffz_status=0
+		local json="$work/tiffz.json"
+		: >"$json"
 		if command -v gtimeout >/dev/null 2>&1; then
-			gtimeout 30 "$tiffz_bin" validate --json -- "$path" >/dev/null 2>"$work/tiffz.err" || tiffz_status=$?
+			gtimeout 30 "$tiffz_bin" validate --json -- "$path" >"$json" 2>"$work/tiffz.err" || tiffz_status=$?
 		else
-			"$tiffz_bin" validate --json -- "$path" >/dev/null 2>"$work/tiffz.err" || tiffz_status=$?
+			"$tiffz_bin" validate --json -- "$path" >"$json" 2>"$work/tiffz.err" || tiffz_status=$?
 		fi
 		rm -f -- "$path"
-		classify_tiffz "$tiffz_status" | awk -v profile="$profile" '{ printf "%s\t%s\n", profile, $0 }' >>"$out"
+		classify_tiffz "$tiffz_status" "$json" "$seed" | awk -v profile="$profile" '{ printf "%s\t%s\n", profile, $0 }' >>"$out"
 	done <"$report"
 }
 
@@ -301,6 +366,8 @@ campaign() {
 		die "trials must be a positive integer"
 	fi
 	cap=$((target * 4))
+	printf 'mutation_definition=validate-mutation-v3\n'
+	printf 'shotgun_profile=shotgun_variable\n'
 	printf 'master=%s margin=%.6f confidence=0.95 trials=%s\n' "$master" "$margin" "$target"
 	printf 'reader=%s\n' "$("$cr_bin" --about 2>/dev/null || printf 'unknown\n')"
 	printf 'tiffz=%s\n' "$tiffz_bin"
@@ -313,12 +380,20 @@ campaign() {
 			printf 'specificity reject %s missing\n' "$seed"
 			continue
 		fi
+		local spec_json="$work/spec.json"
+		: >"$spec_json"
 		if command -v gtimeout >/dev/null 2>&1; then
-			gtimeout 30 "$tiffz_bin" validate --json -- "$seed" >/dev/null 2>"$work/tiffz.err" || st=$?
+			gtimeout 30 "$tiffz_bin" validate --json -- "$seed" >"$spec_json" 2>"$work/tiffz.err" || st=$?
 		else
-			"$tiffz_bin" validate --json -- "$seed" >/dev/null 2>"$work/tiffz.err" || st=$?
+			"$tiffz_bin" validate --json -- "$seed" >"$spec_json" 2>"$work/tiffz.err" || st=$?
 		fi
 		if [ "$st" -eq 0 ]; then
+			local hash bytes
+			hash="$(sha256sum -- "$seed" | awk '{ print $1 }')"
+			bytes="$(wc -c <"$seed" | tr -d '[:space:]')"
+			printf 'specificity sha256=%s bytes=%s\n' "$hash" "$bytes"
+			seed_non16["$seed"]="$(non16_key "$spec_json")"
+			seed_code16["$seed"]="$(has_code16 "$spec_json")"
 			accepted=$((accepted + 1))
 		else
 			rejected=$((rejected + 1))
@@ -371,7 +446,9 @@ EOF
 				local report="$batch/report.jsonl"
 				local paths="$batch/paths"
 				local reader_status=0
-				"$cr_bin" corrupt "$profile" \
+				local draw_profile
+				draw_profile="$(reader_profile "$profile")"
+				"$cr_bin" corrupt "$draw_profile" \
 					--master "$master" \
 					--round "$round_base" \
 					--count "$draw" \
@@ -381,7 +458,7 @@ EOF
 					-- "$seed" >"$paths" 2>"$batch/reader.err" || reader_status=$?
 				local before_lines
 				before_lines="$(wc -l <"$ledger" | tr -d '[:space:]')"
-				score_batch "$profile" "$report" "$paths" "$reader_status" "$ledger"
+				score_batch "$profile" "$report" "$paths" "$reader_status" "$ledger" "$seed"
 				round_base=$((round_base + draw))
 				attempts=$((attempts + draw))
 				local added

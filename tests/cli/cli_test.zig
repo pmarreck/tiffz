@@ -144,7 +144,11 @@ test "tiffz validate: a dimension cap is limited, not a corruption finding" {
     try std.testing.expectEqual(@as(?u8, 4), exitedCode(j.term));
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"status\":\"limited\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"error\":15") != null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"limit_offset\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"limit_ifd\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"limit_bytes\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "invalid") == null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "discrepancy") == null);
 }
 
 fn writeShortGrayPage(path: []const u8) !void {
@@ -200,6 +204,8 @@ test "tiffz validate: a short strip is invalid status 2, not a resource limit" {
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"status\":\"invalid\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"error\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "limited") == null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "limit_offset") == null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"discrepancy\":{\"class\":\"error\",\"type\":\"Malformed\",\"offset\":86}") != null);
 }
 
 test "tiffz validate rejects a truncated header with exit 1" {

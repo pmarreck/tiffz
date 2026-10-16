@@ -30,7 +30,9 @@ Validate's product measurement at tiffz `bcbe83b4`:
 
 Mutation coverage on `pc260001.tif` (largest fixture only): sniper **0/100**,
 bolter **0/100**, shotgun **0/100**. Prior compressed `bali.tif` was
-7/100, 45/100, 100/100. Per-compression stratification has never been
+7/100, 45/100, 100/100. In those rows, shotgun means the historical
+4096-byte overwrite, which is nuke under validate-mutation-v3, not the
+8-to-16-bit window. Per-compression stratification has never been
 produced; §5 tracks that gap.
 
 ## 2. Reproducers (product path, negative characterization)
@@ -134,14 +136,15 @@ NOT reproduced yet:
 ## 5. Sniper / bolter / shotgun coverage
 
 - **Current state**: mutation runs live in validate, not here. Prior
-  measured cell was `bali.tif` at 7/45/100 (sniper/bolter/shotgun);
-  latest cell `pc260001.tif` is 0/0/0.
+  measured cell was `bali.tif` at 7/45/100 (sniper/bolter/nuke). The
+  third figure was recorded under the name shotgun and is a 4096-byte
+  overwrite. Latest cell `pc260001.tif` is 0/0/0 on that same trio.
 - **Missing**: per-fixture, per-compression stratified matrix. Every
   compression (`none`, `packbits`, `lzw`, `ccitt_t4`, `ccitt_t6`,
   `deflate`, `deflate_adobe`, `jpeg`, `zstd`, `lerc`) needs its own
   row. Absent that stratification, a low overall score can be
-  masked by a single high-coverage codec (Deflate ≈100 shotgun via
-  CRC32) or falsely blamed on the codec (uncompressed → no codec
+  masked by a single high-coverage codec (Deflate ≈100 on the historical
+  4096-byte overwrite, via CRC32) or falsely blamed on the codec (uncompressed → no codec
   invariant → 0 by construction, not by bug).
 - **Not in this slice**: mutation harness lives in validate; a tiffz-
   side stratified sweep would duplicate that harness. See §7 next

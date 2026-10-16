@@ -39,6 +39,14 @@ pub const Limits = struct {
     /// Single decompressed-strip size cap (compression-bomb defense).
     max_decompressed_strip_bytes: u64 = 1 << 30,
 
+    /// Ancestor-chain length, counting IFD0 as depth 1. Distinct from
+    /// max_ifds, which counts directories. 1024 is the same generosity.
+    max_ifd_depth: u32 = 1024,
+
+    /// Bytes returned by Source reads during one open/validate. A
+    /// re-read counts again. 1 TiB stays out of the way of real files.
+    max_bytes_visited: u64 = 1 << 40,
+
     pub const default: Limits = .{};
 };
 
@@ -48,4 +56,6 @@ test "Limits.default has sensible values" {
     try std.testing.expect(l.max_ifds > 0);
     try std.testing.expect(l.max_dim > 0);
     try std.testing.expect(l.max_decompressed_strip_bytes > 0);
+    try std.testing.expectEqual(@as(u32, 1024), l.max_ifd_depth);
+    try std.testing.expectEqual(@as(u64, 1 << 40), l.max_bytes_visited);
 }

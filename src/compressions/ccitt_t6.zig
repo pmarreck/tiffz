@@ -63,9 +63,11 @@ pub fn decode(
     width: u32,
     rows: u32,
     fill_order: FillOrder,
+    rows_written: *u32,
 ) errors.Error!usize {
     const bytes_per_row: usize = (@as(usize, width) + 7) / 8;
     const total_out: usize = bytes_per_row * rows;
+    rows_written.* = 0;
     if (dest.len < total_out) return error.DestTooSmall;
     @memset(dest[0..total_out], 0);
 
@@ -87,7 +89,18 @@ pub fn decode(
     while (rows_done < rows) : (rows_done += 1) {
         const row_dest = dest[rows_done * bytes_per_row ..][0..bytes_per_row];
         coding.clearRetainingCapacity();
-        try decodeRow(&reader, row_dest, width, ref.items, &coding, allocator);
+        decodeRow(&reader, row_dest, width, ref.items, &coding, allocator) catch |err| switch (err) {
+            // EOFB before this row finished. Rows already stored stay.
+            // The unfinished row and everything after it are zero.
+            error.EndOfFacsimileBlock => {
+                try rejectNonZeroTail(&reader);
+                @memset(dest[rows_done * bytes_per_row .. total_out], 0);
+                rows_written.* = rows_done;
+                return error.EndOfFacsimileBlock;
+            },
+            else => |e| return e,
+        };
+        rows_written.* = rows_done + 1;
 
         // Coding line becomes next iteration's reference line.
         ref.clearRetainingCapacity();
@@ -248,16 +261,42 @@ fn readModeCode(reader: *t4.BitReader) errors.Error!Mode {
         return if (b6 == 0) .{ .vertical = -3 } else .{ .vertical = 3 };
     }
 
-    // 0,0,0,0,0,0 — must be EOFB prefix; second 12-bit EOL follows.
-    // Read 5 more zeros + 1 to consume the rest of EOFB.
+    // Six zero bits are in. EOFB is two 12-bit EOLs
+    // (000000000001 000000000001). Finish the first, then the second.
+    // Anything that is not that pattern stays Malformed, including a
+    // run of zeros with no terminating 1.
+    if (!try consumeZerosThenOne(reader, 5)) return error.Malformed;
+    if (!try consumeZerosThenOne(reader, 11)) return error.Malformed;
+    return error.EndOfFacsimileBlock;
+}
+
+/// Read `zeros` zero bits and then a one. False means the pattern is
+/// absent, including running off the end of the buffer.
+fn consumeZerosThenOne(reader: *t4.BitReader, zeros: u32) errors.Error!bool {
     var i: u32 = 0;
-    while (i < 5) : (i += 1) {
-        if ((try reader.readBit()) != 0) return error.Malformed;
+    while (i < zeros) : (i += 1) {
+        const bit = reader.readBit() catch |err| switch (err) {
+            error.SourceTooShort => return false,
+            else => |e| return e,
+        };
+        if (bit != 0) return false;
     }
-    if ((try reader.readBit()) != 1) return error.Malformed;
-    // EOFB ends here. Signal end of strip via a synthetic error;
-    // the outer loop catches and breaks gracefully.
-    return error.Malformed; // caller's safety_iters guard catches this; alternative: dedicated EOFB error
+    const one = reader.readBit() catch |err| switch (err) {
+        error.SourceTooShort => return false,
+        else => |e| return e,
+    };
+    return one == 1;
+}
+
+/// After EOFB, only zero fill may remain. A 1 bit is a different file.
+fn rejectNonZeroTail(reader: *t4.BitReader) errors.Error!void {
+    while (true) {
+        const bit = reader.readBit() catch |err| switch (err) {
+            error.SourceTooShort => return,
+            else => |e| return e,
+        };
+        if (bit != 0) return error.Malformed;
+    }
 }
 
 /// Run a single T.4 1D-style modified-Huffman run on the current
@@ -380,25 +419,48 @@ test "ccitt_t6.decode: all-white image (no coding bits, just EOFB)" {
     // V0: `1`, V0: `1`, EOFB: `000000000001000000000001` (24 bits).
     // Total 26 bits. Pad to byte boundary.
     //
-    // bit stream MSB-first: 11_00000000_00010000_00000001 (then pad)
-    //   = 0xC0, 0x04, 0x01, then pad bits to byte boundary.
-    //
-    // Actually let's just confirm decode produces 2 all-white rows.
-    // We'll need a slightly bigger src to allow the EOFB.
-    var src = [_]u8{ 0b11000000, 0b00010000, 0b00000001 };
+    // 26 data bits, padded with zeros to 4 bytes:
+    // 11 000000000001 000000000001 000000
+    // = C0 04 00 40
+    var src = [_]u8{ 0xC0, 0x04, 0x00, 0x40 };
     var dest: [2]u8 = .{ 0xFF, 0xFF }; // poison
-    const n = decode(std.testing.allocator, &src, &dest, 8, 2, .msb_first) catch |err| {
-        // EOFB-as-Malformed is the current sentinel; that's acceptable
-        // for this minimal test if it happened AFTER both rows decoded.
-        if (err == error.Malformed) {
-            // Verify both rows decoded as white before bailing on EOFB.
-            try std.testing.expectEqual(@as(u8, 0x00), dest[0]);
-            try std.testing.expectEqual(@as(u8, 0x00), dest[1]);
-            return;
-        }
-        return err;
-    };
+    var rows_written: u32 = 0;
+    const n = try decode(std.testing.allocator, &src, &dest, 8, 2, .msb_first, &rows_written);
     try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqual(@as(u32, 2), rows_written);
     try std.testing.expectEqual(@as(u8, 0x00), dest[0]);
     try std.testing.expectEqual(@as(u8, 0x00), dest[1]);
+}
+
+test "ccitt_t6.decode: EOFB after two white rows, asking for four, is EndOfFacsimileBlock" {
+    var src = [_]u8{ 0xC0, 0x04, 0x00, 0x40 };
+    var dest: [4]u8 = .{ 0xFF, 0xFF, 0xFF, 0xFF };
+    var rows_written: u32 = 99;
+    try std.testing.expectError(
+        error.EndOfFacsimileBlock,
+        decode(std.testing.allocator, &src, &dest, 8, 4, .msb_first, &rows_written),
+    );
+    try std.testing.expectEqual(@as(u32, 2), rows_written);
+    try std.testing.expectEqual(@as(u8, 0x00), dest[0]);
+    try std.testing.expectEqual(@as(u8, 0x00), dest[1]);
+    try std.testing.expectEqual(@as(u8, 0x00), dest[2]);
+    try std.testing.expectEqual(@as(u8, 0x00), dest[3]);
+}
+
+test "ccitt_t6.decode: a 1 bit after EOFB stays Malformed" {
+    var src = [_]u8{ 0xC0, 0x04, 0x00, 0x41 };
+    var dest: [4]u8 = .{ 0xFF, 0xFF, 0xFF, 0xFF };
+    var rows_written: u32 = 99;
+    try std.testing.expectError(
+        error.Malformed,
+        decode(std.testing.allocator, &src, &dest, 8, 4, .msb_first, &rows_written),
+    );
+}
+
+test "ccitt_t6.decode: eight zero bytes stay Malformed, not EOFB" {
+    var src = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    var dest: [4]u8 = .{ 0xFF, 0xFF, 0xFF, 0xFF };
+    var rows_written: u32 = 99;
+    const err = decode(std.testing.allocator, &src, &dest, 8, 4, .msb_first, &rows_written);
+    try std.testing.expectError(error.Malformed, err);
 }

@@ -32,7 +32,28 @@ pub const Error = error{
     Bug,                                 // 23 — internal invariant violated
     IfdChainCycle,                       // 24 — a next-IFD or tag 330 link revisits an ancestor
     JpegInTiffPayload,                   // 25 — jpegz failed decoding a Compression=7 strip/tile stream
+    EndOfFacsimileBlock,                 // 26 — CCITT T.6 EOFB before the requested row count, tail is zero-fill
+    LimitExceededIfdDepth,               // 27 — ancestor chain longer than max_ifd_depth
+    LimitExceededBytesVisited,           // 28 — Source reads exceeded max_bytes_visited
 };
+
+/// True for resource caps. EndOfFacsimileBlock is a file claim and stays false.
+pub fn isLimit(err: Error) bool {
+    return switch (err) {
+        error.LimitExceededIfdCount,
+        error.LimitExceededTagCount,
+        error.LimitExceededTagValueBytes,
+        error.LimitExceededStripCount,
+        error.LimitExceededDimension,
+        error.LimitExceededTotalSamples,
+        error.LimitExceededCodecScratch,
+        error.LimitExceededCompressedStripBytes,
+        error.LimitExceededDecompressedStripBytes,
+        error.LimitExceededIfdDepth,
+        error.LimitExceededBytesVisited => true,
+        else => false,
+    };
+}
 
 test "Error type compiles and references resolve" {
     const std = @import("std");

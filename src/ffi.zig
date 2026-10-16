@@ -75,6 +75,9 @@ fn statusFromError(err: errors.Error) i32 {
         error.Bug => 23,
         error.IfdChainCycle => 24,
         error.JpegInTiffPayload => 25,
+        error.EndOfFacsimileBlock => 26,
+        error.LimitExceededIfdDepth => 27,
+        error.LimitExceededBytesVisited => 28,
     };
 }
 
@@ -105,6 +108,9 @@ const status_names = [_][:0]const u8{
     "Bug",
     "IfdChainCycle",
     "JpegInTiffPayload",
+    "EndOfFacsimileBlock",
+    "LimitExceededIfdDepth",
+    "LimitExceededBytesVisited",
 };
 
 export fn tiffz_status_name(status: i32) callconv(.c) [*:0]const u8 {
@@ -166,6 +172,50 @@ export fn tiffz_validate(decoder: ?*Handle) callconv(.c) i32 {
 export fn tiffz_ifd_count(decoder: ?*const Handle) callconv(.c) usize {
     const h = decoder orelse return 0;
     return h.decoder.ifdCount();
+}
+
+export fn tiffz_status_is_limit(status: i32) callconv(.c) i32 {
+    return switch (status) {
+        11...19, 27, 28 => 1,
+        else => 0,
+    };
+}
+
+export fn tiffz_limit_progress(
+    decoder: ?*const Handle,
+    out_offset: ?*u64,
+    out_ifd_index: ?*u64,
+    out_bytes: ?*u64,
+) callconv(.c) i32 {
+    const h = decoder orelse return 1;
+    const progress = h.decoder.limit_progress orelse return 1;
+    if (out_offset) |p| p.* = progress.offset;
+    if (out_ifd_index) |p| p.* = progress.ifd_index;
+    if (out_bytes) |p| p.* = progress.bytes;
+    return 0;
+}
+
+export fn tiffz_facsimile_rows(decoder: ?*const Handle, out_rows: ?*u32) callconv(.c) i32 {
+    const h = decoder orelse return 1;
+    const rows = h.decoder.facsimile_rows orelse return 1;
+    if (out_rows) |p| p.* = rows;
+    return 0;
+}
+
+export fn tiffz_discrepancy(
+    decoder: ?*const Handle,
+    out_class: ?*i32,
+    out_offset: ?*u64,
+    out_offset_known: ?*i32,
+    out_type: ?*[*:0]const u8,
+) callconv(.c) i32 {
+    const h = decoder orelse return 1;
+    const found = h.decoder.discrepancy orelse return 1;
+    if (out_class) |p| p.* = @intFromEnum(found.class);
+    if (out_offset_known) |p| p.* = if (found.offset != null) 1 else 0;
+    if (out_offset) |p| p.* = found.offset orelse 0;
+    if (out_type) |p| p.* = found.type_name.ptr;
+    return 0;
 }
 
 export fn tiffz_last_error_message(decoder: ?*const Handle) callconv(.c) [*:0]const u8 {
@@ -242,6 +292,9 @@ test "statusFromError covers every Error variant in declaration order" {
         error.Bug,
         error.IfdChainCycle,
         error.JpegInTiffPayload,
+        error.EndOfFacsimileBlock,
+        error.LimitExceededIfdDepth,
+        error.LimitExceededBytesVisited,
     };
     for (values, 1..) |err, i| {
         try std.testing.expectEqual(@as(i32, @intCast(i)), statusFromError(err));
@@ -288,6 +341,54 @@ test "tiffz_validate: a dimension cap is status 15, not Malformed" {
     const verdict = tiffz_validate(dec.?);
     try std.testing.expectEqual(@as(i32, 15), verdict);
     try std.testing.expect(verdict != 2);
+    var offset: u64 = 0;
+    var ifd_index: u64 = 99;
+    var visited: u64 = 0;
+    try std.testing.expectEqual(@as(i32, 0), tiffz_limit_progress(dec.?, &offset, &ifd_index, &visited));
+    try std.testing.expectEqual(@as(i32, 1), tiffz_discrepancy(dec.?, null, null, null, null));
+    try std.testing.expect(visited > 0);
+    try std.testing.expectEqual(@as(u64, 0), ifd_index);
+}
+
+test "limit statuses are exactly the LimitExceeded errors, and EOFB is not one" {
+    const values = [_]errors.Error{
+        error.InvalidArgument,
+        error.Malformed,
+        error.UnsupportedCompression,
+        error.UnsupportedPhotometric,
+        error.UnsupportedPredictor,
+        error.UnsupportedBitDepth,
+        error.UnsupportedTagType,
+        error.SourceSeekTooFarBack,
+        error.SourceShortRead,
+        error.SourceTooShort,
+        error.LimitExceededIfdCount,
+        error.LimitExceededTagCount,
+        error.LimitExceededTagValueBytes,
+        error.LimitExceededStripCount,
+        error.LimitExceededDimension,
+        error.LimitExceededTotalSamples,
+        error.LimitExceededCodecScratch,
+        error.LimitExceededCompressedStripBytes,
+        error.LimitExceededDecompressedStripBytes,
+        error.DestTooSmall,
+        error.OutOfMemory,
+        error.Io,
+        error.Bug,
+        error.IfdChainCycle,
+        error.JpegInTiffPayload,
+        error.EndOfFacsimileBlock,
+        error.LimitExceededIfdDepth,
+        error.LimitExceededBytesVisited,
+    };
+    for (values) |err| {
+        const status = statusFromError(err);
+        const limit = std.mem.startsWith(u8, @errorName(err), "LimitExceeded");
+        try std.testing.expectEqual(limit, tiffz_status_is_limit(status) == 1);
+    }
+    try std.testing.expectEqual(@as(i32, 26), statusFromError(error.EndOfFacsimileBlock));
+    try std.testing.expectEqual(@as(i32, 27), statusFromError(error.LimitExceededIfdDepth));
+    try std.testing.expectEqual(@as(i32, 28), statusFromError(error.LimitExceededBytesVisited));
 }
 
 test "tiffz_open_from_buffer + validate accepts a clean RGB TIFF" {

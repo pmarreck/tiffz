@@ -218,7 +218,7 @@ pub const Ifd = struct {
         const elem_offset = value_offset + @as(u64, index) * @as(u64, elem_bytes);
         var buf: [8]u8 = undefined;
         if (elem_bytes > buf.len) return error.UnsupportedTagType;
-        const got = source.readAt(buf[0..elem_bytes], elem_offset) catch return error.Io;
+        const got = source.readAt(buf[0..elem_bytes], elem_offset) catch |err| return @import("source.zig").preserveReadError(err);
         if (got < elem_bytes) return error.SourceShortRead;
         return switch (entry.field_type) {
             .short => @as(u64, header_mod.readU16(buf[0..2], endian)),
@@ -265,7 +265,7 @@ pub const Ifd = struct {
             .classic => header_mod.readU32(entry.raw_value_or_offset[0..4], endian),
             .big => header_mod.readU64(&entry.raw_value_or_offset, endian),
         };
-        const n = source.readAt(dest, offset) catch return error.Io;
+        const n = source.readAt(dest, offset) catch |err| return @import("source.zig").preserveReadError(err);
         if (n < dest.len) return error.SourceShortRead;
     }
 
@@ -322,7 +322,7 @@ pub fn parse(
     };
 
     var count_buf: [8]u8 = undefined;
-    const got = source.readAt(count_buf[0..count_bytes], offset) catch return error.Io;
+    const got = source.readAt(count_buf[0..count_bytes], offset) catch |err| return @import("source.zig").preserveReadError(err);
     if (got < count_bytes) return error.SourceTooShort;
     const entry_count_u64: u64 = switch (offset_width) {
         .classic => header_mod.readU16(count_buf[0..2], endian),
@@ -345,7 +345,7 @@ pub fn parse(
     defer allocator.free(entries_buf);
 
     if (entries_bytes_total > 0) {
-        const e_got = source.readAt(entries_buf, offset + count_bytes) catch return error.Io;
+        const e_got = source.readAt(entries_buf, offset + count_bytes) catch |err| return @import("source.zig").preserveReadError(err);
         if (e_got < entries_bytes_total) return error.SourceShortRead;
     }
 
@@ -379,7 +379,7 @@ pub fn parse(
     const next_bytes: usize = offset_width.pointerBytes();
     var next_buf: [8]u8 = undefined;
     const next_offset_pos = offset + count_bytes + entries_bytes_total;
-    const n_got = source.readAt(next_buf[0..next_bytes], next_offset_pos) catch return error.Io;
+    const n_got = source.readAt(next_buf[0..next_bytes], next_offset_pos) catch |err| return @import("source.zig").preserveReadError(err);
     const next_offset: u64 = if (n_got < next_bytes) 0 else switch (offset_width) {
         .classic => @as(u64, header_mod.readU32(next_buf[0..4], endian)),
         .big => header_mod.readU64(next_buf[0..8], endian),
@@ -460,7 +460,7 @@ pub fn parse(
     for (schedule) |slot| {
         const buf = allocator.alloc(u8, slot.total_bytes) catch return error.OutOfMemory;
         errdefer allocator.free(buf);
-        const vg = source.readAt(buf, slot.value_offset) catch return error.Io;
+        const vg = source.readAt(buf, slot.value_offset) catch |err| return @import("source.zig").preserveReadError(err);
         if (vg < buf.len) return error.SourceShortRead;
         ifd.cached_values[slot.entry_index] = buf;
     }

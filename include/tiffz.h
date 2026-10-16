@@ -46,6 +46,9 @@ typedef int32_t tiffz_status_t;
 #define TIFFZ_BUG 23
 #define TIFFZ_IFD_CHAIN_CYCLE 24
 #define TIFFZ_JPEG_IN_TIFF_PAYLOAD 25
+#define TIFFZ_END_OF_FACSIMILE_BLOCK 26
+#define TIFFZ_LIMIT_EXCEEDED_IFD_DEPTH 27
+#define TIFFZ_LIMIT_EXCEEDED_BYTES_VISITED 28
 
 const char *tiffz_status_name(tiffz_status_t status);
 
@@ -65,6 +68,31 @@ tiffz_status_t tiffz_validate(tiffz_decoder_t *decoder);
 size_t tiffz_ifd_count(const tiffz_decoder_t *decoder);
 
 const char *tiffz_last_error_message(const tiffz_decoder_t *decoder);
+
+/* 1 when `status` is a resource cap (11-19, 27, 28). EOFB (26) is not. */
+int tiffz_status_is_limit(tiffz_status_t status);
+
+/* 0 when a limit recorded where it stopped. Otherwise 1. */
+int tiffz_limit_progress(
+    const tiffz_decoder_t *decoder,
+    uint64_t *offset,
+    uint64_t *ifd_index,
+    uint64_t *bytes);
+
+/* 0 when EndOfFacsimileBlock recorded how many rows were fully decoded. */
+int tiffz_facsimile_rows(const tiffz_decoder_t *decoder, uint32_t *out_rows);
+
+/* 0 when validation recorded a file discrepancy. Class is 1 warning,
+   2 error, 3 known_failure. This library does not emit known_failure;
+   admission belongs to the consumer. *out_offset_known is 1 when
+   *out_offset is a real file position. A resource cap is not a
+   discrepancy. out_type is a static NUL-terminated name. */
+int tiffz_discrepancy(
+    const tiffz_decoder_t *decoder,
+    int32_t *out_class,
+    uint64_t *out_offset,
+    int *out_offset_known,
+    const char **out_type);
 
 typedef int32_t tiffz_source_decoder_t;
 #define TIFFZ_SOURCE_UNKNOWN ((tiffz_source_decoder_t)0)

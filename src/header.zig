@@ -34,7 +34,7 @@ pub fn parse(source: Source) errors.Error!Header {
     // Read 8 bytes minimum; we'll try to grab the BigTIFF tail too,
     // but tolerate short reads on classic TIFF where bytes 8-15
     // legitimately don't exist or are part of the IFD payload.
-    const n = source.readAt(buf[0..], 0) catch return error.Io;
+    const n = source.readAt(buf[0..], 0) catch |err| return @import("source.zig").preserveReadError(err);
     if (n < 8) return error.SourceTooShort;
 
     const endian: Endian = if (buf[0] == 'I' and buf[1] == 'I')

@@ -196,8 +196,7 @@ static void write_payload_hex(FILE *out, const uint8_t *p, size_t n) {
 }
 
 static int is_resource_limit(tiffz_status_t status) {
-	return status >= TIFFZ_LIMIT_EXCEEDED_IFD_COUNT &&
-		status <= TIFFZ_LIMIT_EXCEEDED_DECOMPRESSED_STRIP_BYTES;
+	return tiffz_status_is_limit(status) != 0;
 }
 
 static const char *report_word(int ok, tiffz_status_t status) {
@@ -219,7 +218,8 @@ static void write_json(
 	int ok,
 	tiffz_status_t status,
 	size_t ifds,
-	const FindingList *list) {
+	const FindingList *list,
+	tiffz_decoder_t *dec) {
 	size_t i;
 	fputs("{\"status\":", stdout);
 	json_escape(stdout, report_word(ok, status));
@@ -245,7 +245,45 @@ static void write_json(
 		}
 		fputc('}', stdout);
 	}
-	fputs("]}\n", stdout);
+	fputc(']', stdout);
+	if (dec != NULL) {
+		uint64_t limit_offset = 0;
+		uint64_t limit_ifd = 0;
+		uint64_t limit_bytes = 0;
+		uint32_t rows_decoded = 0;
+		if (tiffz_limit_progress(dec, &limit_offset, &limit_ifd, &limit_bytes) == 0) {
+			fprintf(stdout,
+				",\"limit_offset\":%llu,\"limit_ifd\":%llu,\"limit_bytes\":%llu",
+				(unsigned long long)limit_offset,
+				(unsigned long long)limit_ifd,
+				(unsigned long long)limit_bytes);
+		}
+		if (tiffz_facsimile_rows(dec, &rows_decoded) == 0) {
+			fprintf(stdout, ",\"rows_decoded\":%u", rows_decoded);
+		}
+		{
+			int32_t class_id = 0;
+			uint64_t disc_offset = 0;
+			int offset_known = 0;
+			const char *disc_type = NULL;
+			if (tiffz_discrepancy(dec, &class_id, &disc_offset, &offset_known, &disc_type) == 0
+				&& disc_type != NULL) {
+				const char *class_name = "error";
+				if (class_id == 1)
+					class_name = "warning";
+				else if (class_id == 3)
+					class_name = "known_failure";
+				fputs(",\"discrepancy\":{\"class\":", stdout);
+				json_escape(stdout, class_name);
+				fputs(",\"type\":", stdout);
+				json_escape(stdout, disc_type);
+				if (offset_known)
+					fprintf(stdout, ",\"offset\":%llu", (unsigned long long)disc_offset);
+				fputc('}', stdout);
+			}
+		}
+	}
+	fputs("}\n", stdout);
 }
 
 static int read_all_fp(FILE *fp, uint8_t **out_buf, size_t *out_len) {
@@ -460,7 +498,7 @@ static int validate_one(const char *path, int json) {
 	if (read_rc == -2) {
 		if (json) {
 			FindingList empty = {0};
-			write_json(path, 0, TIFFZ_IO, 0, &empty);
+			write_json(path, 0, TIFFZ_IO, 0, &empty, NULL);
 		} else {
 			fprintf(stderr, "tiffz: cannot open '%s': No such file or directory\n", path);
 		}
@@ -469,7 +507,7 @@ static int validate_one(const char *path, int json) {
 	if (read_rc != 0) {
 		if (json) {
 			FindingList empty = {0};
-			write_json(path, 0, TIFFZ_IO, 0, &empty);
+			write_json(path, 0, TIFFZ_IO, 0, &empty, NULL);
 		} else {
 			fprintf(stderr, "tiffz: failed to read '%s'\n", path);
 		}
@@ -480,7 +518,7 @@ static int validate_one(const char *path, int json) {
 	if (dec == NULL) {
 		if (json) {
 			FindingList empty = {0};
-			write_json(path, 0, status, 0, &empty);
+			write_json(path, 0, status, 0, &empty, NULL);
 		} else {
 			fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, tiffz_status_name(status));
 		}
@@ -494,7 +532,7 @@ static int validate_one(const char *path, int json) {
 	ok = (status == TIFFZ_OK);
 
 	if (json) {
-		write_json(path, ok, status, ifds, &findings);
+		write_json(path, ok, status, ifds, &findings, dec);
 	} else if (ok) {
 		fprintf(stderr, "ok  %s\n", path);
 	} else {

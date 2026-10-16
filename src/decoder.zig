@@ -41,6 +41,32 @@ const SubIfdJob = struct {
     parent: usize,
 };
 
+/// Where a resource cap fired. Offset is a file byte, ifd_index is the
+/// directory being entered, and bytes is how many Source bytes had been read.
+pub const LimitProgress = struct {
+    offset: u64,
+    ifd_index: u64,
+    bytes: u64,
+};
+
+/// How a discrepancy is reported. `known_failure` is reserved for an
+/// admitted pattern. This library does not admit patterns; the consumer
+/// registry does. A resource cap is not a discrepancy.
+pub const ReportClass = enum(i32) {
+    warning = 1,
+    @"error" = 2,
+    known_failure = 3,
+};
+
+/// One validation record. The decoded samples are not the result.
+/// `offset` is a real file position when known, and is never a
+/// fabricated zero. `type_name` is a static error or finding name.
+pub const Discrepancy = struct {
+    class: ReportClass,
+    offset: ?u64,
+    type_name: [:0]const u8,
+};
+
 pub const Decoder = struct {
     allocator: Allocator,
     source: Source,
@@ -85,6 +111,18 @@ pub const Decoder = struct {
     lzw_missing_eod_fired: bool = false,
     /// One-shot warning for tile geometry whose chunks use strip tag arrays.
     tiled_via_strip_tags_fired: bool = false,
+    /// Counts Source bytes for max_bytes_visited. Owned by this decoder.
+    budget: *parser.source.ByteBudget,
+    /// Filled when a LimitExceeded error is returned. Absent otherwise.
+    limit_progress: ?LimitProgress = null,
+    /// First file discrepancy. An error replaces a warning. A later
+    /// error does not replace the first error. Limits never land here.
+    discrepancy: ?Discrepancy = null,
+    /// File offset of the chunk currently being checked. Null when the
+    /// offset array itself could not be read.
+    active_chunk_offset: ?u64 = null,
+    /// Rows fully decoded before CCITT T.6 EOFB. Absent unless that outcome fired.
+    facsimile_rows: ?u32 = null,
 
     pub fn open(allocator: Allocator, source: Source) errors.Error!Decoder {
         return openWithLimits(allocator, source, .{});
@@ -95,7 +133,14 @@ pub const Decoder = struct {
         source: Source,
         limits: Limits,
     ) errors.Error!Decoder {
-        const h = try header_mod.parse(source);
+        if (limits.max_ifd_depth < 1) return error.LimitExceededIfdDepth;
+
+        const budget = allocator.create(parser.source.ByteBudget) catch return error.OutOfMemory;
+        budget.* = .{ .inner = source, .max_bytes = limits.max_bytes_visited };
+        errdefer allocator.destroy(budget);
+        const metered = budget.source();
+
+        const h = try header_mod.parse(metered);
         const offset_width: ifd_mod.OffsetWidth = if (h.bigtiff) .big else .classic;
 
         var ifds: std.ArrayListUnmanaged(Ifd) = .empty;
@@ -107,7 +152,7 @@ pub const Decoder = struct {
         var ifd_parent: std.ArrayListUnmanaged(?usize) = .empty;
         errdefer ifd_parent.deinit(allocator);
 
-        var ifd0 = try ifd_mod.parse(allocator, source, h.endian, h.ifd0_offset, limits, offset_width);
+        var ifd0 = try ifd_mod.parse(allocator, metered, h.endian, h.ifd0_offset, limits, offset_width);
         errdefer ifd0.deinit();
         ifds.append(allocator, ifd0) catch return error.OutOfMemory;
         ifd_offsets.append(allocator, h.ifd0_offset) catch return error.OutOfMemory;
@@ -115,7 +160,8 @@ pub const Decoder = struct {
 
         return .{
             .allocator = allocator,
-            .source = source,
+            .source = metered,
+            .budget = budget,
             .limits = limits,
             .endian = h.endian,
             .bigtiff = h.bigtiff,
@@ -332,6 +378,7 @@ pub const Decoder = struct {
         self.ifd_offsets.deinit(self.allocator);
         self.ifd_parent.deinit(self.allocator);
         self.pending_subifds.deinit(self.allocator);
+        self.allocator.destroy(self.budget);
     }
 
     pub fn ifdCount(self: *const Decoder) usize {
@@ -353,26 +400,97 @@ pub const Decoder = struct {
             // A next pointer that revisits a parsed IFD does not terminate.
             // TIFF 6.0 ends the chain with zero. Linear scan is enough:
             // max_ifds caps the list.
-            if (self.offsetAlreadyMaterialized(self.next_ifd_offset)) return error.IfdChainCycle;
+            if (self.offsetAlreadyMaterialized(self.next_ifd_offset)) {
+                self.noteDiscrepancy(.@"error", self.next_ifd_offset, "IfdChainCycle");
+                return error.IfdChainCycle;
+            }
             const chain_parent: ?usize = self.ifds.items.len - 1;
             try self.materializeLinkedIfd(self.next_ifd_offset, chain_parent);
         }
         return &self.ifds.items[index];
     }
 
+    /// Depth of a directory whose parent index is `parent`. IFD0 (no parent) is 1.
+    fn linkedDepth(self: *const Decoder, parent: ?usize) u32 {
+        var depth: u32 = 1;
+        var cursor = parent;
+        var guard: usize = 0;
+        while (cursor) |idx| {
+            depth += 1;
+            guard += 1;
+            if (guard > self.ifd_parent.items.len) break;
+            if (idx >= self.ifd_parent.items.len) break;
+            cursor = self.ifd_parent.items[idx];
+        }
+        return depth;
+    }
+
+    fn progressIfdIndex(self: *const Decoder) u64 {
+        if (self.ifds.items.len == 0) return 0;
+        return @intCast(self.ifds.items.len - 1);
+    }
+
+    /// Record the first limit site. A later backfill must not overwrite it.
+    fn noteLimit(self: *Decoder, err: errors.Error, offset: u64, ifd_index: u64) errors.Error {
+        if (self.limit_progress == null) {
+            self.limit_progress = .{
+                .offset = offset,
+                .ifd_index = ifd_index,
+                .bytes = self.budget.bytes,
+            };
+        }
+        return err;
+    }
+
+    /// Record a validation discrepancy. The first error wins. An error
+    /// replaces a warning. A warning does not replace an error. Limits
+    /// are reach and are not recorded here.
+    fn noteDiscrepancy(self: *Decoder, class: ReportClass, offset: ?u64, type_name: [:0]const u8) void {
+        if (self.discrepancy) |existing| {
+            if (existing.class == .@"error") return;
+            if (class != .@"error") return;
+        }
+        self.discrepancy = .{
+            .class = class,
+            .offset = offset,
+            .type_name = type_name,
+        };
+    }
+
+    fn noteFileClaim(self: *Decoder, err: errors.Error, offset: ?u64) void {
+        if (errors.isLimit(err)) return;
+        self.noteDiscrepancy(.@"error", offset, @errorName(err));
+    }
+
+    fn ifdFileOffset(self: *const Decoder, ifd_index: usize) ?u64 {
+        if (ifd_index >= self.ifd_offsets.items.len) return null;
+        return self.ifd_offsets.items[ifd_index];
+    }
+
+    fn chunkFileOffset(self: *Decoder, dir: *const Ifd, layout: ChunkLayout, chunk_index: u32) ?u64 {
+        return dir.arrayElementU64(layout.offsets_tag, chunk_index, self.endian, self.source) catch null;
+    }
+
     /// Parse one IFD and remember its next-link and parent. Findings for
     /// that page fire here, before the caller decodes strips.
     fn materializeLinkedIfd(self: *Decoder, offset: u64, parent: ?usize) errors.Error!void {
-        if (self.ifds.items.len >= self.limits.max_ifds) return error.LimitExceededIfdCount;
+        const prospective: u64 = @intCast(self.ifds.items.len);
+        if (self.ifds.items.len >= self.limits.max_ifds) return self.noteLimit(error.LimitExceededIfdCount, offset, prospective);
+        const depth = linkedDepth(self, parent);
+        if (depth > self.limits.max_ifd_depth) return self.noteLimit(error.LimitExceededIfdDepth, offset, prospective);
         const offset_width: ifd_mod.OffsetWidth = if (self.bigtiff) .big else .classic;
-        var parsed = try ifd_mod.parse(
+        var parsed = ifd_mod.parse(
             self.allocator,
             self.source,
             self.endian,
             offset,
             self.limits,
             offset_width,
-        );
+        ) catch |err| {
+            if (errors.isLimit(err)) return self.noteLimit(err, self.budget.last_offset, prospective);
+            self.noteFileClaim(err, offset);
+            return err;
+        };
         errdefer parsed.deinit();
         const next_offset = parsed.next_offset;
         self.ifds.append(self.allocator, parsed) catch return error.OutOfMemory;
@@ -418,7 +536,10 @@ pub const Decoder = struct {
         while (self.pending_subifd_read < self.pending_subifds.items.len) {
             const job = self.pending_subifds.items[self.pending_subifd_read];
             self.pending_subifd_read += 1;
-            if (self.offsetIsAncestor(job.parent, job.offset)) return error.IfdChainCycle;
+            if (self.offsetIsAncestor(job.parent, job.offset)) {
+                self.noteDiscrepancy(.@"error", job.offset, "IfdChainCycle");
+                return error.IfdChainCycle;
+            }
             if (self.offsetAlreadyMaterialized(job.offset)) continue;
             return job;
         }
@@ -512,6 +633,13 @@ pub const Decoder = struct {
     /// caller as-is so validate's `routeError` can sort them into
     /// FAIL vs WARN buckets per its taxonomy.
     pub fn validateAllStripsAndTiles(self: *Decoder, workspace: *Workspace) errors.Error!void {
+        self.validatePages(workspace) catch |err| {
+            if (errors.isLimit(err)) return self.noteLimit(err, self.budget.last_offset, self.progressIfdIndex());
+            return err;
+        };
+    }
+
+    fn validatePages(self: *Decoder, workspace: *Workspace) errors.Error!void {
         const max_dest_bytes: usize = self.limits.max_decompressed_strip_bytes;
         const initial: usize = @min(@as(usize, 1024 * 1024), max_dest_bytes);
         var dest_buf = self.allocator.alloc(u8, initial) catch return error.OutOfMemory;
@@ -526,19 +654,29 @@ pub const Decoder = struct {
         while (true) : (probe += 1) {
             _ = self.ifd(probe) catch |err| switch (err) {
                 error.InvalidArgument => break,
-                else => return err,
+                else => {
+                    self.noteFileClaim(err, null);
+                    return err;
+                },
             };
         }
 
         var ifd_index: usize = 0;
         while (ifd_index < self.ifdCount()) : (ifd_index += 1) {
-            const dir = try self.ifd(ifd_index);
+            const dir = self.ifd(ifd_index) catch |err| {
+                self.noteFileClaim(err, self.ifdFileOffset(ifd_index));
+                return err;
+            };
             // No strip/tile arrays. A JPEGInterchangeFormat thumbnail (CR2
             // IFD1) is still a known page with nothing for this walk to
             // decode. Any other main-chain IFD in that shape is not an
             // image page: validate must not report it as fully checked.
-            const layout = (try self.chunkLayout(dir)) orelse {
+            const layout = (self.chunkLayout(dir) catch |err| {
+                self.noteFileClaim(err, self.ifdFileOffset(ifd_index));
+                return err;
+            }) orelse {
                 if (dir.get(tags.jpeg_interchange_format) != null) continue;
+                self.noteFileClaim(error.Malformed, self.ifdFileOffset(ifd_index));
                 return error.Malformed;
             };
             // Partial-coverage skip (Peter's 2026-08-27 ruling; finding code 16,
@@ -561,11 +699,16 @@ pub const Decoder = struct {
             if (layout.tolerated_tiled_tags and !self.tiled_via_strip_tags_fired) {
                 self.tiled_via_strip_tags_fired = true;
                 self.emit(.tiled_geometry_via_strip_tags_tolerated, &.{});
+                self.noteDiscrepancy(.warning, self.ifdFileOffset(ifd_index), "tiled_geometry_via_strip_tags_tolerated");
             }
 
             var chunk_index: u32 = 0;
             while (chunk_index < layout.count) : (chunk_index += 1) {
-                const ext = try self.expectedChunkBytes(dir, layout.kind, chunk_index, layout.count);
+                self.active_chunk_offset = self.chunkFileOffset(dir, layout, chunk_index);
+                const ext = self.expectedChunkBytes(dir, layout.kind, chunk_index, layout.count) catch |err| {
+                    self.noteFileClaim(err, self.active_chunk_offset);
+                    return err;
+                };
                 const written = self.runWithGrowingDest(
                     &dest_buf,
                     max_dest_bytes,
@@ -575,6 +718,7 @@ pub const Decoder = struct {
                     workspace,
                 ) catch |err| {
                     if (err == error.SourceTooShort) {
+                        const eod_before = self.lzw_missing_eod_fired;
                         if (try self.validateMissingLzwEod(
                             dir,
                             ifd_index,
@@ -583,13 +727,23 @@ pub const Decoder = struct {
                             ext,
                             workspace,
                         )) |compat_written| {
-                            try self.acceptDecodedExtent(ext, compat_written);
+                            if (!eod_before and self.lzw_missing_eod_fired) {
+                                self.noteDiscrepancy(.warning, self.active_chunk_offset, "lzw_missing_eod_tolerated");
+                            }
+                            self.acceptDecodedExtent(ext, compat_written) catch |extent_err| {
+                                self.noteFileClaim(extent_err, self.active_chunk_offset);
+                                return extent_err;
+                            };
                             continue;
                         }
                     }
+                    self.noteFileClaim(err, self.active_chunk_offset);
                     return err;
                 };
-                try self.acceptDecodedExtent(ext, written);
+                self.acceptDecodedExtent(ext, written) catch |err| {
+                    self.noteFileClaim(err, self.active_chunk_offset);
+                    return err;
+                };
             }
         }
     }
@@ -667,7 +821,19 @@ pub const Decoder = struct {
             // "final strip padded by N bytes". `written > ext.min` is guaranteed above;
             // saturate the (bounded) difference into u32 defensively.
             const excess: u32 = std.math.cast(u32, written - ext.min) orelse std.math.maxInt(u32);
-            self.emitU32(.final_strip_padding_tolerated, excess);
+            var buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &buf, excess, .little);
+            self.emitDetailed(
+                .tiffz,
+                @intFromEnum(findings_mod.InfoFinding.final_strip_padding_tolerated),
+                null,
+                .valid,
+                self.active_chunk_offset,
+                null,
+                self.active_chunk_offset != null,
+                &buf,
+            );
+            self.noteDiscrepancy(.warning, self.active_chunk_offset, "final_strip_padding_tolerated");
         }
     }
 
@@ -692,7 +858,7 @@ pub const Decoder = struct {
         }
         const byte_count: usize = @intCast(byte_count_u64);
         const compressed = workspace.ensureScratch(byte_count) catch return error.OutOfMemory;
-        const got = self.source.readAt(compressed, offset) catch return error.Io;
+        const got = self.source.readAt(compressed, offset) catch |err| return parser.source.preserveReadError(err);
         if (got < byte_count) return error.SourceShortRead;
 
         const src = compressed[0..byte_count];
@@ -710,7 +876,16 @@ pub const Decoder = struct {
         _ = try self.readPredictorMeta(ifd_index);
         if (!self.lzw_missing_eod_fired) {
             self.lzw_missing_eod_fired = true;
-            self.emit(.lzw_missing_eod_tolerated, &.{});
+            self.emitDetailed(
+                .tiffz,
+                @intFromEnum(findings_mod.InfoFinding.lzw_missing_eod_tolerated),
+                null,
+                .valid,
+                self.active_chunk_offset,
+                null,
+                self.active_chunk_offset != null,
+                &.{},
+            );
         }
         return expected;
     }
@@ -1112,7 +1287,7 @@ pub const Decoder = struct {
                 // PackBits: read compressed strip bytes into workspace
                 // scratch, then expand into dest.
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
-                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
                 const written = compressions_packbits.decode(scratch, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
@@ -1125,7 +1300,7 @@ pub const Decoder = struct {
                 // This wrapper owns only TIFF's legacy-warning and public
                 // error vocabulary; it contains no bit or dictionary logic.
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
-                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
                 const written = self.decodeLzw(scratch, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
@@ -1148,9 +1323,10 @@ pub const Decoder = struct {
                 };
 
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
-                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
 
+                var rows_done: u32 = 0;
                 const written = compressions_ccitt_t6.decode(
                     self.allocator,
                     scratch,
@@ -1158,7 +1334,11 @@ pub const Decoder = struct {
                     ext.width,
                     ext.rows,
                     fill,
-                ) catch |e| break :blk e;
+                    &rows_done,
+                ) catch |e| {
+                    if (e == error.EndOfFacsimileBlock) self.facsimile_rows = rows_done;
+                    break :blk e;
+                };
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -1182,7 +1362,7 @@ pub const Decoder = struct {
                 };
 
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
-                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
 
                 const written = compressions_ccitt_t4.decode(
@@ -1204,7 +1384,7 @@ pub const Decoder = struct {
                 // per TIFF Technical Note 2; AdobeDeflate is just a
                 // separate registration.
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
-                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
                 const written = compressions_deflate.decode(scratch, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
@@ -1217,7 +1397,7 @@ pub const Decoder = struct {
                 // extension). Each strip/tile is an independent ZSTD
                 // frame.
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
-                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
                 const written = compressions_zstd.decode(scratch[0..byte_count], dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
@@ -1258,7 +1438,7 @@ pub const Decoder = struct {
                     workspace.ensureScratch(scratch_len) catch break :blk error.OutOfMemory;
 
                 const src_buf = workspace.ensureScratch2(byte_count) catch break :blk error.OutOfMemory;
-                const got = self.source.readAt(src_buf, offset) catch break :blk error.Io;
+                const got = self.source.readAt(src_buf, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
 
                 const written = compressions_lerc.decode(
@@ -1293,7 +1473,7 @@ pub const Decoder = struct {
 
                 // Read strip bytes into scratch.
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
-                const got = self.source.readAt(scratch, offset) catch break :blk error.Io;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
 
                 // Read JPEGTables tag (347) if present — TIFF Tech Note 2
@@ -2104,6 +2284,87 @@ test "SubIFD: an intact uncompressed child decodes to its byte and validates" {
     try std.testing.expectEqual(@as(usize, 2), dec.ifdCount());
     try std.testing.expectError(error.InvalidArgument, dec.ifd(2));
     try dec.validateAllStripsAndTiles(&ws);
+}
+
+test "SubIFD depth cap: one level keeps the parent and refuses the child" {
+    var storage: [192]u8 = undefined;
+    const n = writeGrayParentAndChild(&storage, 1);
+    var handle = BufferHandle.init(storage[0..n]);
+    var limits = Limits.default;
+    limits.max_ifd_depth = 1;
+    var dec = try Decoder.openWithLimits(std.testing.allocator, Source.fromBuffer(&handle), limits);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.LimitExceededIfdDepth, dec.validateAllStripsAndTiles(&ws));
+    try std.testing.expect(dec.discrepancy == null);
+    const progress = dec.limit_progress orelse return error.Bug;
+    try std.testing.expectEqual(@as(u64, 99), progress.offset);
+    try std.testing.expectEqual(@as(u64, 1), progress.ifd_index);
+    try std.testing.expect(progress.bytes > 0);
+    var dest: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), try dec.decodeStrip(0, 0, &dest, &ws));
+    try std.testing.expectEqual(@as(u8, 0x5A), dest[0]);
+}
+
+test "bytes-visited cap: the next read after open is a limit, with progress" {
+    var storage: [192]u8 = undefined;
+    const n = writeGrayParentAndChild(&storage, 1);
+    var handle = BufferHandle.init(storage[0..n]);
+    var probe = try Decoder.open(std.testing.allocator, Source.fromBuffer(&handle));
+    const opened = probe.budget.bytes;
+    probe.deinit();
+
+    var limits = Limits.default;
+    limits.max_bytes_visited = opened;
+    var dec = try Decoder.openWithLimits(std.testing.allocator, Source.fromBuffer(&handle), limits);
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.LimitExceededBytesVisited, dec.validateAllStripsAndTiles(&ws));
+    try std.testing.expect(dec.discrepancy == null);
+    const progress = dec.limit_progress orelse return error.Bug;
+    try std.testing.expectEqual(opened, progress.bytes);
+    try std.testing.expectEqual(@as(u64, 99), progress.offset);
+    try std.testing.expectEqual(@as(u64, 1), progress.ifd_index);
+}
+
+test "depth cap of zero refuses to open" {
+    var storage: [192]u8 = undefined;
+    const n = writeGrayParentAndChild(&storage, 1);
+    var handle = BufferHandle.init(storage[0..n]);
+    var limits = Limits.default;
+    limits.max_ifd_depth = 0;
+    try std.testing.expectError(
+        error.LimitExceededIfdDepth,
+        Decoder.openWithLimits(std.testing.allocator, Source.fromBuffer(&handle), limits),
+    );
+}
+
+test "CCITT T.6 early EOFB surfaces EndOfFacsimileBlock and the row count" {
+    var storage: [128]u8 = undefined;
+    const payload = [_]u8{ 0xC0, 0x04, 0x00, 0x40 };
+    const n = writeGrayStrip(&storage, 8, 4, payload.len);
+    const bits_at = 10 + 2 * 12 + 8;
+    const comp_at = 10 + 3 * 12 + 8;
+    std.mem.writeInt(u16, storage[bits_at..][0..2], 1, .little);
+    std.mem.writeInt(u16, storage[comp_at..][0..2], 4, .little);
+    const strip_at: usize = 8 + 2 + 6 * 12 + 4;
+    @memcpy(storage[strip_at..][0..payload.len], &payload);
+
+    var handle = BufferHandle.init(storage[0..n]);
+    var dec = try Decoder.open(std.testing.allocator, Source.fromBuffer(&handle));
+    defer dec.deinit();
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    var dest: [4]u8 = undefined;
+    try std.testing.expectError(error.EndOfFacsimileBlock, dec.decodeStrip(0, 0, &dest, &ws));
+    try std.testing.expectEqual(@as(?u32, 2), dec.facsimile_rows);
+    try std.testing.expectError(error.EndOfFacsimileBlock, dec.validateAllStripsAndTiles(&ws));
+    const found = dec.discrepancy orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(ReportClass.@"error", found.class);
+    try std.testing.expectEqualStrings("EndOfFacsimileBlock", found.type_name);
+    try std.testing.expectEqual(@as(?u64, strip_at), found.offset);
 }
 
 test "SubIFD: a short uncompressed child is Malformed" {
