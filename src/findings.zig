@@ -73,8 +73,9 @@ pub const InfoFinding = enum(u32) {
     /// Deflate/Zstd post-filter distinction (LercParameters bit 1)
     /// is deliberately not surfaced as a separate finding.
     lerc_compression = 12,
-    /// A final strip decoded beyond its logical row extent but no farther
-    /// than one full RowsPerStrip chunk. Accept with a caller-routed warning.
+    /// Trailing stored bytes past the logical sample grid. A short final
+    /// strip may reach one full RowsPerStrip chunk. A complete chunk may
+    /// carry one further row. Accept with a caller-routed warning.
     final_strip_padding_tolerated = 13,
     /// An LZW stream reached a clean physical EOF without EOD after producing
     /// exactly the bounded TIFF extent. Accept with a caller-routed warning.

@@ -1594,8 +1594,11 @@ const ExpectedExtent = struct {
     warn_if_above_min: bool = false,
 };
 
-/// Bound a short final strip between its logical rows and one full declared
-/// RowsPerStrip chunk. This classifier never permits bytes beyond that maximum.
+/// Bound a strip between its logical rows and the stored padding TIFF allows.
+/// A short final strip may reach one full RowsPerStrip chunk. A complete
+/// chunk may carry one further row of trailing bytes: StripByteCounts is
+/// the stored length, and the sample grid stays `min`. Bytes past that row
+/// stay Malformed.
 fn boundedFinalStripExtent(
     bytes_per_row: usize,
     logical_rows: usize,
@@ -1604,12 +1607,18 @@ fn boundedFinalStripExtent(
 ) errors.Error!ExpectedExtent {
     if (logical_rows > full_rows) return error.Malformed;
     const min = try checkedMul(bytes_per_row, logical_rows);
-    const max = try checkedMul(bytes_per_row, full_rows);
-    if (max > max_bytes) return error.LimitExceededDecompressedStripBytes;
+    const full = try checkedMul(bytes_per_row, full_rows);
+    if (logical_rows == full_rows) {
+        if (full_rows == std.math.maxInt(usize)) return error.Malformed;
+        const max = try checkedMul(bytes_per_row, full_rows + 1);
+        if (max > max_bytes) return error.LimitExceededDecompressedStripBytes;
+        return .{ .min = min, .max = max, .warn_if_above_min = true };
+    }
+    if (full > max_bytes) return error.LimitExceededDecompressedStripBytes;
     return .{
         .min = min,
-        .max = max,
-        .warn_if_above_min = logical_rows < full_rows,
+        .max = full,
+        .warn_if_above_min = true,
     };
 }
 
@@ -2497,6 +2506,68 @@ test "subsampledYCbCrExtent: vertical-only 1:2 final strip pads vertically" {
     const ext = try subsampledYCbCrExtent(100, 5, 8, 1, 2, 1, 1 << 30);
     try std.testing.expectEqual(@as(usize, 1200), ext.min);
     try std.testing.expectEqual(@as(usize, 1600), ext.max);
+}
+
+test "complete strip tolerates at most one trailing row past the sample grid" {
+    // RowsPerStrip equals the image, so the sample grid has no short-strip
+    // slack. TIFF 6.0 records StripByteCounts as the stored length. Up to
+    // one extra row of trailing bytes is padding. One byte past that row
+    // is still a damaged extent.
+    const ext = try boundedFinalStripExtent(2, 2, 2, 64 * 1024);
+    try std.testing.expectEqual(@as(usize, 4), ext.min);
+    try std.testing.expectEqual(@as(usize, 6), ext.max);
+    try std.testing.expect(ext.warn_if_above_min);
+
+    const members = [_]struct { written: usize, accepted: bool, warns: bool }{
+        .{ .written = 3, .accepted = false, .warns = false },
+        .{ .written = 4, .accepted = true, .warns = false },
+        .{ .written = 5, .accepted = true, .warns = true },
+        .{ .written = 6, .accepted = true, .warns = true },
+        .{ .written = 7, .accepted = false, .warns = false },
+    };
+    for (members) |member| {
+        const accepted = member.written >= ext.min and member.written <= ext.max;
+        try std.testing.expectEqual(member.accepted, accepted);
+        try std.testing.expectEqual(member.warns, accepted and member.written > ext.min);
+    }
+}
+
+test "uncompressed complete strip: 1 trailing byte warns, one row plus a byte is Malformed" {
+    // 2×2 gray is 4 sample bytes, one row is 2 bytes. The stored lengths
+    // 5 and 6 stay inside that row. 7 does not. This is the Nikon NRW
+    // shape: a full SubIFD strip whose byte count is past the sample grid
+    // by less than a row.
+    const cases = [_]struct { stored: usize, malformed: bool, excess: u32 }{
+        .{ .stored = 4, .malformed = false, .excess = 0 },
+        .{ .stored = 5, .malformed = false, .excess = 1 },
+        .{ .stored = 6, .malformed = false, .excess = 2 },
+        .{ .stored = 7, .malformed = true, .excess = 0 },
+    };
+    for (cases) |case| {
+        var storage: [128]u8 = undefined;
+        const n = writeGrayStrip(&storage, 2, 2, case.stored);
+        var handle = BufferHandle.init(storage[0..n]);
+        const src = Source.fromBuffer(&handle);
+        var dec = try Decoder.open(std.testing.allocator, src);
+        defer dec.deinit();
+        var ws = Workspace.init(std.testing.allocator);
+        defer ws.deinit();
+        if (case.malformed) {
+            try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&ws));
+            try std.testing.expect(dec.discrepancy != null);
+            try std.testing.expectEqual(ReportClass.@"error", dec.discrepancy.?.class);
+        } else {
+            try dec.validateAllStripsAndTiles(&ws);
+            if (case.excess == 0) {
+                try std.testing.expect(dec.discrepancy == null);
+            } else {
+                const found = dec.discrepancy orelse return error.TestUnexpectedResult;
+                try std.testing.expectEqual(ReportClass.warning, found.class);
+                try std.testing.expectEqualStrings("final_strip_padding_tolerated", found.type_name);
+                try std.testing.expectEqual(@as(?u64, 86), found.offset);
+            }
+        }
+    }
 }
 
 test "boundedFinalStripExtent classifies logical exact padded and beyond-max lengths" {

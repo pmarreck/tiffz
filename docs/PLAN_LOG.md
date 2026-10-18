@@ -48,3 +48,8 @@ until the next retire.
 - [x] [Done] Integrate published jpegz `f1a255a` (origin `e9564e4f`) into the local SubIFD commits. `./test` passed on that tree. lercz stays `a88c39b` (done 2026-10-14 15:14 EDT).
 - [x] [Done] Record that statuses 11-19 and finding 16 are reach, and that IfdChainCycle, Malformed, and a supported codec error stay file claims (done 2026-10-14 14:43 EDT).
 - [x] [Done] Walk tag 330 after the next-IFD chain: an intact child decodes, a short child is Malformed, count 0 adds no page, a past-EOF offset is SourceTooShort, a shared child is one page, and an ancestor pointer is IfdChainCycle (done 2026-10-10 21:08 EDT).
+
+## Retired 2026-10-18
+
+- [x] [Done] Report each validation discrepancy as a warning, an error, or a known failure, with a byte offset and a type. Decoded samples are not the result (done 2026-10-15 23:35 EDT).
+- [x] [Done] Run ./corruption-coverage on the known-good corpus. The 13:11 EDT run used the fixed 16-bit shotgun and is not validate-mutation-v3 (done 2026-10-15 13:11 EDT).

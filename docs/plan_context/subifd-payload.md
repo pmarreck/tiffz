@@ -25,7 +25,9 @@ Depth and bytes visited are separate from directory count. `max_ifd_depth` defau
 
 `LimitExceededIfdCount` still means directory count, not depth. Status 26 is `EndOfFacsimileBlock`, a file claim, and `tiffz_status_is_limit` is 0 for it. Do not renumber.
 
-Validate's shim still maps 11-19 to FAIL and finding 16 to WARN. That routing is theirs to fix. This library does not emit `KNOWN_DEFECT`, `mktp`, or `full`.
+Validate's candidate chain routes statuses 11-19 and finding 16 as reach. An older checkout mapped 11-19 to FAIL and finding 16 to WARN. This library does not emit `KNOWN_DEFECT`, `mktp`, or `full`.
+
+A complete strip, including a tag 330 child whose rows equal RowsPerStrip, may store up to one extra row past the sample grid. That excess is finding 13 (`final_strip_padding_tolerated`), a warning at the strip offset. The sample grid stays the minimum. One byte past that row stays `Malformed`. Short final strips still stop at one full RowsPerStrip chunk, as before.
 
 ## Progress on a limit
 
