@@ -8,6 +8,7 @@ Open work and the latest completions. Older narrative:
 
 ## Done
 
+- [x] Repin jpegz to tip 1998721 (flake-only follow-up of bc01093, jp2z a7cc185) and lercz to 39703ee. Published a7204fdb, then 1998721 the same night (done 2026-10-19 00:20 EDT).
 - [x] Repin jpegz to bc01093 (jp2z a7cc185) and lercz to 39703ee in one commit. Freshness gate green without ALLOW_STALE (done 2026-10-18 23:25 EDT).
 
 - [x] validate confirmed finding 13 on the real P7100 NRW under be1e8cbc: ok, warning at 163840, excess 448. Grid is 15,081,024 bytes, so the earlier 64 was a misquoted grid (done 2026-10-18 22:35 EDT).
