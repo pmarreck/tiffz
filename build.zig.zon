@@ -17,8 +17,8 @@
         // Compression=7 (JPEG-in-TIFF) at M9.5 and lossless JPEG for
         // DNG raw at M8.
         .jpegz = .{
-            .url = "git+https://github.com/pmarreck/jpegz#85455ebc1fa284d65581c6501cb641b3ac965997",
-            .hash = "jpegz-0.1.0-staw4HATEwC0XcJnIkmt6EbZ1qkGp4rbLrT2QLOMznWT",
+            .url = "git+https://github.com/pmarreck/jpegz#bc0109338af9c56f56fffe1eb75cf31ff63ec8b1",
+            .hash = "jpegz-0.1.0-staw4HATEwAAM4b3kZQWaqoxAMLo0LkmLMw6P4KSo_-b",
         },
         // zstdz — Peter's fork of facebook/zstd packaged as a Zig
         // build with the C library vendored. Provides the codec for
@@ -32,8 +32,8 @@
         // Compression=34887 (LERC, GDAL/libtiff extension) with the
         // optional Deflate/Zstd post-filter carried in LercParameters.
         .lercz = .{
-            .url = "git+https://github.com/pmarreck/lercz#a88c39b7697e3a579c8a84445a5ca0145bbe59fa",
-            .hash = "lercz-4.2.0-y1r8kc2CBgBez9hD_Evo5kg3RH-MaMLLGi3GkOcKFcjz",
+            .url = "git+https://github.com/pmarreck/lercz#39703ee5aeb3829899d63a15888f715dad054832",
+            .hash = "lercz-4.2.0-y1r8kVeDBgAX7_zXzP0_lrFFH18R9_nfbm_-o8YP3o-E",
         },
     },
     .paths = .{

@@ -5,8 +5,14 @@ Open work and the latest completions. Older narrative:
 
 ## Now
 
+
 ## Done
 
+- [x] Repin jpegz to bc01093 (jp2z a7cc185) and lercz to 39703ee in one commit. Freshness gate green without ALLOW_STALE (done 2026-10-18 23:25 EDT).
+
+- [x] validate confirmed finding 13 on the real P7100 NRW under be1e8cbc: ok, warning at 163840, excess 448. Grid is 15,081,024 bytes, so the earlier 64 was a misquoted grid (done 2026-10-18 22:35 EDT).
+
+- [x] Confirm Mechatron Prime CI on be1e8cbc: PASS, 10m 29s, 2026-10-18 14:32Z. 35536193 never built alone, and be1e8cbc contains it (done 2026-10-18 22:25 EDT).
 - [x] Treat up to one trailing row past a complete strip as finding 13, not Malformed. The Nikon NRW SubIFD is that shape (done 2026-10-18 10:21 EDT).
 - [x] Answer validate: the NRW excess is finding 13. jp2z a7cc185 is not in jpegz 85455eb. lercz 39703ee is documentation and stays unpinned (done 2026-10-18 10:21 EDT).
 
