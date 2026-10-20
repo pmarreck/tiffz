@@ -5,6 +5,8 @@ Open work and the latest completions. Older narrative:
 
 ## Now
 
+- [ ] Diagnose CI FAIL on 18f27c19: Zig compiler_rt sub-compile hit LLVM "failed to parse x86_64-unknown-linux5.10.0-musl" in checks.test. The same drv (lww6ppxq) passed 5 of 5 local builds including 4 --rebuild runs; disk was not full. Re-run CI on the next commit; if it repeats, send the log to Mechatron Prime. Hold the rawz/validate notice until CI is green.
+
 
 ## Done
 
