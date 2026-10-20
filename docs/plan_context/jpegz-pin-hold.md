@@ -1,5 +1,7 @@
 # jpegz pin hold
 
+Moved 2026-10-20 to jpegz `860654d19f43e76c70ca084ee96df481fcaf959e` (`jpegz-0.1.0-staw4GpwEwC4WKF47FL1ts63Dv0jgyHzI5qabwLRdQlp`). This is a codec change: valid multi-scan sequential JPEGs no longer FAIL, and sequential Huffman entropy faults carry typed codes with exact offsets, including new code 62 `entropy_padding_not_ones`. tiffz classifies jpegz findings by severity, so 62 at FAIL is corrupt with no tiffz mapping change. zigDeps hash `sha256-mhVejkNA5nGUmObbfI3w2c8QXuIFOpzOSRTaQTSf8/8=`. `./test` passed.
+
 Moved 2026-10-19 to jpegz tip `1998721bb1ad1e77843e7d52396396d5fad150c3`, which adds only flake-file changes on top of `bc01093` (same package hash, same tiffz zigDeps hash). tiffz's freshness check compares revisions, so it flagged `bc01093` once the tip moved. `./test` passed.
 
 Moved 2026-10-18 to published yolo `bc0109338af9c56f56fffe1eb75cf31ff63ec8b1` ("Pin jp2z a7cc185", administrative only; Mechatron Prime passed it in 1m 57s). `zig fetch` returned `jpegz-0.1.0-staw4HATEwAAM4b3kZQWaqoxAMLo0LkmLMw6P4KSo_-b`. jp2z inside it is `a7cc185ca16a0c06a08a2d995295814d6347fb6d`. lercz moved in the same commit to `39703ee5aeb3829899d63a15888f715dad054832` (`lercz-4.2.0-y1r8kVeDBgAX7_zXzP0_lrFFH18R9_nfbm_-o8YP3o-E`), a documentation-only change, so that one release clears validate's freshness gate. tiffz's zigDeps hash is now `sha256-JQgPZZSn6u8xHZgaJ5xlz07yVvHNt1VcEqH1vyd/DCM=`, read from a real mismatch. `./test` passed with the freshness gate green and no `ALLOW_STALE`.
