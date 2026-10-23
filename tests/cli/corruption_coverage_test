@@ -180,7 +180,7 @@ while [ "$i" -lt "$count" ]; do
 		any_noop=1
 	else
 		out="$tmpdir/cr-${profile}-r${r}-fake.tiff"
-		cp -- "$seed" "$out"
+		{ printf 'X'; tail -c +2 -- "$seed"; } >"$out"
 		printf '%s\n' "$out"
 		printf '{"report":1,"item":%d,"round":%d,"status":"applied","noop":null,"emitted":true,"record":{"profile":{"name":"%s"}}}\n' \
 			"$i" "$r" "$profile" >>"$report"
@@ -237,6 +237,27 @@ printf '{"status":"fake","path":"%s","error":%d,"ifds":0,"findings":%s}\n' "$pat
 exit "$code"
 EOF
 chmod +x "$bindir/corruption-reader" "$bindir/tiffz"
+cat >"$bindir/tiffdump" <<'EOF'
+#!/usr/bin/env bash
+# Fake libtiff tiffdump: describes the 3-byte seed per FAKE_LAYOUT.
+set -u
+case "${FAKE_LAYOUT:-compressed}" in
+	uncompressed-all) comp=1 off=0 cnt=3 ;;
+	uncompressed-tail) comp=1 off=2 cnt=1 ;;
+	compressed) comp=8 off=0 cnt=3 ;;
+	broken)
+		printf '%s: Not a TIFF file\n' "$1" >&2
+		exit 1
+		;;
+esac
+printf '%s:\nMagic: 0x4949 <little-endian> Version: 0x2a <ClassicTIFF>\n' "$1"
+printf 'Directory 0: offset 8 (0x8) next 0 (0)\n'
+printf 'Compression (259) SHORT (3) 1<%s>\n' "$comp"
+printf 'StripOffsets (273) LONG (4) 1<%s>\n' "$off"
+printf 'StripByteCounts (279) LONG (4) 1<%s>\n' "$cnt"
+EOF
+chmod +x "$bindir/tiffdump"
+export PATH="$bindir:$PATH"
 
 seedfile="$sandbox/seeds"
 printf '%s\n' "$sandbox/seed-a.tiff" >"$seedfile"
@@ -309,6 +330,145 @@ assert_contains "a new non-reach finding is a detection" "$subject_out" \
 	"sniper decisive=4 detect=4 accept=0 reach=0 noop=0 crash=0 harness=0"
 assert_contains "finding 16 alone is reach" "$subject_out" \
 	"bolter decisive=0 detect=0 accept=0 reach=4 noop=0 crash=0 harness=0 rate=na"
+
+# --- ceilings: an oracle independent of tiffz --------------------------
+#
+# The fake tiffdump describes the one seed ("ok\n", 3 bytes). The fake
+# reader always rewrites byte 0. A change confined to uncompressed sample
+# bytes is undetectable by any validator, so it lowers the ceiling, and a
+# detection of it is a false alarm.
+
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-all run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--master 42 --trials 8 --margin 0.20
+assert_contains "layout line for an all-sample seed" "$subject_out" \
+	"layout $sandbox/seed-a.tiff class=uncompressed free_bytes=3 bytes=3"
+assert_contains "a change inside sample bytes lowers the ceiling" "$subject_out" \
+	"class sniper uncompressed decisive=8 detect=8 free=8 ceiling=0.000000 open_rate=na false_alarm=8"
+assert_contains "an empty class still prints" "$subject_out" \
+	"class sniper compressed decisive=0 detect=0 free=0 ceiling=na open_rate=na false_alarm=0"
+
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--tiffdump "$bindir/tiffdump" \
+	--seeds-file "$seedfile" \
+	--master 42 --trials 8 --margin 0.20
+assert_contains "layout line counts only sample bytes" "$subject_out" \
+	"layout $sandbox/seed-a.tiff class=uncompressed free_bytes=1 bytes=3"
+assert_contains "a change outside sample bytes stays detectable" "$subject_out" \
+	"class sniper uncompressed decisive=8 detect=8 free=0 ceiling=1.000000 open_rate=1.000000 false_alarm=0"
+
+FAKE_MODE=mixed FAKE_LAYOUT=compressed run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--master 42 --trials 8 --margin 0.20
+assert_contains "compressed seeds have no free sample bytes" "$subject_out" \
+	"layout $sandbox/seed-a.tiff class=compressed free_bytes=0 bytes=3"
+assert_contains "compressed misses count against the open rate" "$subject_out" \
+	"class shotgun compressed decisive=8 detect=0 free=0 ceiling=1.000000 open_rate=0.000000 false_alarm=0"
+
+FAKE_LAYOUT=broken run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--master 42 --trials 8 --margin 0.20
+assert_equal "a seed tiffdump cannot read stops the measurement" 2 "$subject_status"
+assert_contains "the unreadable seed is named" "$subject_err" "seed-a.tiff"
+
+# --- floors: a regression gate over a pinned, deterministic campaign ------
+
+floors="$sandbox/floors"
+cat >"$floors" <<'EOF'
+# comment lines and blank lines are ignored
+
+master=42 trials=8
+sniper uncompressed 8
+sniper compressed 0
+bolter uncompressed 0
+bolter compressed 0
+shotgun uncompressed 0
+shotgun compressed 0
+nuke uncompressed 0
+nuke compressed 0
+EOF
+
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--floors "$floors"
+assert_equal "floors met exits 0" 0 "$subject_status"
+assert_contains "floors take master from the file" "$subject_out" "master=42"
+assert_contains "floors take trials from the file" "$subject_out" "trials=8"
+assert_contains "sniper trial line" "$subject_out" "floor sniper decisive=8 trials=8 ok"
+assert_contains "sniper class floor line" "$subject_out" \
+	"floor sniper uncompressed detect=8 min=8 false_alarm=0 ok"
+assert_contains "nuke compressed floor line" "$subject_out" \
+	"floor nuke compressed detect=0 min=0 false_alarm=0 ok"
+
+FAKE_MODE=finding FAKE_LAYOUT=uncompressed-tail run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--floors "$floors"
+assert_equal "a short profile fails the floors" 1 "$subject_status"
+assert_contains "bolter all reach is short of its trials" "$subject_out" \
+	"floor bolter decisive=0 trials=8 short"
+
+sed 's/^shotgun uncompressed 0$/shotgun uncompressed 1/' "$floors" >"$floors.high"
+FAKE_MODE=mixed FAKE_LAYOUT=uncompressed-tail run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--floors "$floors.high"
+assert_equal "detections below a floor fail" 1 "$subject_status"
+assert_contains "shotgun below its floor" "$subject_out" \
+	"floor shotgun uncompressed detect=0 min=1 false_alarm=0 below"
+assert_contains "sniper still meets its floor" "$subject_out" \
+	"floor sniper uncompressed detect=8 min=8 false_alarm=0 ok"
+
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-all run_subject \
+	--tiffz "$bindir/tiffz" \
+	--corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" \
+	--floors "$floors"
+assert_equal "a false alarm fails the floors" 1 "$subject_status"
+assert_contains "the false alarm is named" "$subject_out" \
+	"floor sniper uncompressed detect=8 min=8 false_alarm=8 false_alarm"
+
+run_subject --floors "$floors" --trials 9 \
+	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile"
+assert_equal "trials that disagree with the floors file are a usage error" 2 "$subject_status"
+assert_contains "the disagreement is named" "$subject_err" "trials"
+
+run_subject --floors "$floors" --master 7 \
+	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile"
+assert_equal "a master that disagrees with the floors file is a usage error" 2 "$subject_status"
+
+grep -v '^nuke compressed' "$floors" >"$floors.partial"
+run_subject --floors "$floors.partial" \
+	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile"
+assert_equal "a floors file missing a profile and class is a usage error" 2 "$subject_status"
+assert_contains "the missing pair is named" "$subject_err" "nuke compressed"
+
+sed 's/^sniper uncompressed 8$/sniper uncompressed eight/' "$floors" >"$floors.bad"
+run_subject --floors "$floors.bad" \
+	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile"
+assert_equal "a non-numeric floor is a usage error" 2 "$subject_status"
+
+sed 's/^sniper compressed 0$/sniper lossless 0/' "$floors" >"$floors.class"
+run_subject --floors "$floors.class" \
+	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile"
+assert_equal "an unknown class is a usage error" 2 "$subject_status"
 
 if [ "$failures" -eq 0 ]; then
 	printf 'corruption-coverage contract passed\n'

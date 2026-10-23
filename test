@@ -54,6 +54,9 @@ run_subtest "libjxlz private-seed control" \
 run_subtest "corruption-coverage scorer" \
     tests/cli/corruption_coverage_test
 
+run_subtest "corruption detection floors (corruption-reader campaign, sandboxed via nix)" \
+    nix build ".#checks.${SYSTEM}.corruption-coverage" --print-out-paths --no-link
+
 if [[ "$failures" -gt 0 ]]; then
     printf '\n%d test suite(s) failed.\n' "$failures" >&2
     exit "$failures"

@@ -8,7 +8,7 @@ live in `TERMINOLOGY.md`.
 ## Purpose and users
 
 tiffz is validate's TIFF deep-verification library: a spec-driven
-reader (and eventually writer) that reports whether a TIFF, BigTIFF, or
+reader (with a minimal writer) that reports whether a TIFF, BigTIFF, or
 public DNG/TIFF-EP file is structurally sound, which portions were
 actually decoded, and which deviations were tolerated.
 
@@ -36,8 +36,14 @@ Proprietary camera RAW is not tiffz's product. See Scope.
   source identity and four-way verdict.
 - Bounded-memory validation of large TIFFs (multi-GB scans) via
   `Source`. The whole file need not sit decoded in RAM.
-- A writer path eventually. No current work or date. Not a reason to
-  delay the reader/validator.
+- A minimal writer, in scope since 2026-10-23 by BDFN's decision:
+  strip-based baseline TIFF with 8-bit gray, RGB or RGBA samples,
+  uncompressed or Deflate/LZW. Its output must pass tiffz's own
+  validation and an independent reader (libtiff). The C CLI converts
+  PNG and BMP to TIFF through it, and TIFF to PNG and BMP through the
+  decoder. Tiles, 16-bit samples, BigTIFF output and multi-page
+  writing stay deferred. The writer must not delay the
+  reader/validator.
 
 ## Scope
 
@@ -126,8 +132,8 @@ parser.
 
 ## Open questions
 
-- TIFF writer: accepted as eventual (SPEC §0). No date, no
-  `intents/` file, no current PLAN item.
+- TIFF writer beyond the minimal 2026-10-23 scope (tiles, 16-bit,
+  BigTIFF, multi-page): accepted as eventual (SPEC §0), no date.
 - JPEG2000-in-TIFF and other undispatched codecs: unsupported, not
   blocked. No owner decision yet.
 - SPEC.md still reads as a 2026-05 starting brief in places

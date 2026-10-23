@@ -21,9 +21,14 @@
       url = "git+ssh://git@github.com/pmarreck/libjxlz?ref=yolo&rev=93b29e86281ea4ba9c681f4879318c87e8a800a4";
       flake = false;
     };
+    # Deterministic corruption generator for checks.corruption-coverage.
+    # Pinned so the measured detection floors stay reproducible.
+    corruption-reader = {
+      url = "git+ssh://git@github.com/pmarreck/corruption_reader?ref=yolo&rev=a7ea9957d6acae34aded4ef7bc7e25e5f121dc7a";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, zig-overlay, libjxlz-src }:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay, libjxlz-src, corruption-reader }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -423,6 +428,29 @@
             echo "fuzz passed" > $out/result
           '';
         };
+        # Corruption detection gate: a deterministic corruption-reader
+        # campaign over the known-good seed corpus, scored by the packaged
+        # CLI against tests/corruption_coverage_floors. libtiff tiffdump maps
+        # each seed independently of tiffz; see docs/corruption_coverage.md.
+        checks.corruption-coverage = pkgs.runCommand "tiffz-corruption-coverage" {
+          nativeBuildInputs = [ pkgs.bash pkgs.gawk pkgs.diffutils ];
+        } ''
+          cd ${self}
+          bash ./corruption-coverage \
+            --floors tests/corruption_coverage_floors \
+            --tiffz ${tiffzPkg}/bin/tiffz \
+            --tiffdump ${pkgs.libtiff.bin}/bin/tiffdump \
+            --corruption-reader ${corruption-reader.packages.${system}.default}/bin/corruption-reader \
+            >"$TMPDIR/report" 2>"$TMPDIR/err" && status=0 || status=$?
+          cat "$TMPDIR/report"
+          if [ "$status" -ne 0 ]; then
+            grep -v '^progress ' "$TMPDIR/err" >&2
+            exit 1
+          fi
+          mkdir -p $out
+          cp "$TMPDIR/report" $out/report
+        '';
+
         # devShell — provides Zig + the full TIFF fixture-generation toolchain
         # per SPEC.md Appendix A.
         devShells.default = pkgs.mkShell {
