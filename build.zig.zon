@@ -17,8 +17,8 @@
         // Compression=7 (JPEG-in-TIFF) at M9.5 and lossless JPEG for
         // DNG raw at M8.
         .jpegz = .{
-            .url = "git+https://github.com/pmarreck/jpegz#860654d19f43e76c70ca084ee96df481fcaf959e",
-            .hash = "jpegz-0.1.0-staw4GpwEwC4WKF47FL1ts63Dv0jgyHzI5qabwLRdQlp",
+            .url = "git+https://github.com/pmarreck/jpegz#8fd246dcad8b2797782338276c28954614c920eb",
+            .hash = "jpegz-0.1.0-staw4KCnEwAjb-0cULoRpKEJzhh4NjF_dEs6JcNzBOKO",
         },
         // zstdz — Peter's fork of facebook/zstd packaged as a Zig
         // build with the C library vendored. Provides the codec for

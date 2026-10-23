@@ -5,9 +5,7 @@ Open work and the latest completions. Older narrative:
 
 ## Now
 
-- [ ] Repin jpegz to 8fd246d (code 63 `entropy_padding_zero_bits` WARN, on top of ca500f9 and 698c2c3; jpegz noted it on yolo 2026-10-23 18:26 EDT, CI pending). Neither change needs a tiffz mapping change, since jpegz WARN maps to valid. Do it right after the coverage commit so the two flake.lock changes stay separate, then notify rawz and validate.
-
-Order (BDFN, 2026-10-23): coverage gate, then build-layout conformance, then writer and conversion CLI. The jpegz repin above goes first now that code 63 has landed.
+Order (BDFN, 2026-10-23): coverage gate, then build-layout conformance, then writer and conversion CLI.
 
 - [ ] Conform to the cross-platform-project-build-arch convention (skill and its verification-and-migration reference). Gaps seen 2026-10-23: no `bin/<PF>/` entrypoint, products land in unnamespaced `zig-out/` and `result`, not `zig-out/<PF>/[<VARIANT>/]<profile>/` and `.nix-out/<PF>/<profile>`, no `./run`, `./build` has no `--backend=direct`, its header still cites Zig 0.15.2, and `corruption-coverage` looks for the retired `bin/linux/$arch` layout. Prove it with the reference's PATH selection, publication-failure and header-inspection scenarios, not directory names.
 - [ ] C CLI conversion both ways through the C FFI, for PNG and BMP (BDFN, 2026-10-23). Today `dump` writes TIFF to PNG. Add TIFF to BMP, plus PNG and BMP to TIFF, through a minimal Zig-core writer: strip-based, 8-bit gray/RGB/RGBA, uncompressed or Deflate/LZW, with new FFI entry points (scope recorded in INTENT.md). Round-trip tests both ways. Writer output must pass `tiffz validate` and libtiff.
@@ -15,6 +13,7 @@ Order (BDFN, 2026-10-23): coverage gate, then build-layout conformance, then wri
 
 ## Done
 
+- [x] Repin jpegz to 8fd246d: code 63 `entropy_padding_zero_bits` WARN, plus ca500f9 (lenient decoding past end-of-scan padding faults) and 698c2c3. jpegz's own pins unchanged. No tiffz mapping change, since jpegz WARN maps to valid and 62 stays FAIL (done 2026-10-23 19:10 EDT).
 - [x] Corruption detection coverage as a gate in `./test` (`checks.<system>.corruption-coverage`, Mechatron Prime target): corruption-reader pinned as a flake input (a7ea995, its own nixpkgs so the binary matches the measured one), master 42, 385 decisive trials per profile, ~100 s. libtiff `tiffdump` maps each seed independently of tiffz, so every case is classed uncompressed or compressed and free or open, with a per-class ceiling and false-alarm count. Floors are per profile and class, and a false alarm fails the gate. Determinism confirmed by an identical rerun, and a raised floor fails on real data. Documented in docs/corruption_coverage.md, with uncompressed and compressed ceilings and per-codec integrity checks. Full `./test` green in 311 s; Nix check reproduced every floor exactly (done 2026-10-23 18:50 EDT).
 
 - [x] CI on 18f27c19 failed once in Zig compiler_rt ("LLVM failed to parse x86_64-unknown-linux5.10.0-musl"). The same drv passed 5/5 locally and CI passed d3b993c7. Treated as a nondeterministic toolchain or runner fault; watch for a repeat. rawz and validate told d3b993c7 (done 2026-10-20 14:00 EDT).
