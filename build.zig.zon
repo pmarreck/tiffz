@@ -32,8 +32,8 @@
         // Compression=34887 (LERC, GDAL/libtiff extension) with the
         // optional Deflate/Zstd post-filter carried in LercParameters.
         .lercz = .{
-            .url = "git+https://github.com/pmarreck/lercz#39703ee5aeb3829899d63a15888f715dad054832",
-            .hash = "lercz-4.2.0-y1r8kVeDBgAX7_zXzP0_lrFFH18R9_nfbm_-o8YP3o-E",
+            .url = "git+https://github.com/pmarreck/lercz#9c9a84f1c3e463c2c85b432e3558cfa236140bf7",
+            .hash = "lercz-4.2.0-y1r8kVQSCQDy9CWrAgBffLP7ypUZpf5heNGP2xLy1_nz",
         },
     },
     .paths = .{

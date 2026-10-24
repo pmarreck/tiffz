@@ -1,26 +1,32 @@
 # PLAN
-  - Verified 2026-10-23 20:25 EDT: real `./build` (ALLOW_STALE for the lercz item) published `bin/linux-amd64/tiffz` -> `.nix-out/linux-amd64/musl/ReleaseFast`, header linux-amd64 static, `--about` PF=linux-amd64 VARIANT=musl; the direct backend built and passed `zig build test` natively (VARIANT=gnu). Not exercised: macOS and Windows hosts, and cross targets. Remaining: the shared PATH cutover to `bin/<PF>` (dotfiles owner), then drop the legacy `result` and `zig-out/bin` links.
 
 Open work and the latest completions. Older narrative:
 `docs/plan_context/legacy-plan-2026-09-29.md`. Purpose: `INTENT.md`.
 
 ## Now
 
-- [ ] Repin lercz 39703ee to 9c9a84f (forward-only Lerc2 validation parser, C CLI, rejects a checksum-skipped version mutation). The freshness gate flagged it 2026-10-23 20:15 EDT. Check whether LERC findings or the compressed coverage floors move, and update floors only with the measured reason.
-
 Order (BDFN, 2026-10-23): coverage gate, then build-layout conformance, then writer and conversion CLI.
 
-- [ ] Conform to the cross-platform-project-build-arch convention (skill and its verification-and-migration reference). Gaps seen 2026-10-23: no `bin/<PF>/` entrypoint, products land in unnamespaced `zig-out/` and `result`, not `zig-out/<PF>/[<VARIANT>/]<profile>/` and `.nix-out/<PF>/<profile>`, no `./run`, `./build` has no `--backend=direct`, its header still cites Zig 0.15.2, and `corruption-coverage` looks for the retired `bin/linux/$arch` layout. Prove it with the reference's PATH selection, publication-failure and header-inspection scenarios, not directory names.
+- [ ] Shared PATH cutover to `bin/<PF>` (dotfiles owner), then drop the legacy `result` and `zig-out/bin/tiffz` links from `./build`'s publish().
+- [ ] C CLI conversion both ways through the C FFI, for PNG and BMP (BDFN, 2026-10-23). Today `dump` writes TIFF to PNG. Add TIFF to BMP, plus PNG and BMP to TIFF, through a minimal Zig-core writer: strip-based, 8-bit gray/RGB/RGBA, uncompressed or Deflate/LZW, with new FFI entry points (scope recorded in INTENT.md). Round-trip tests both ways. Writer output must pass `tiffz validate` and libtiff.
+  - [ ] `src/writer.zig` encode(): little-endian baseline TIFF, one IFD, strips of about 8 KiB, gray8 (MinIsBlack), RGB8, RGBA8 (ExtraSamples = unassociated alpha), compression none. Round-trips through tiffz's own decoder.
+  - [ ] Deflate (zlib, compression 8) and TIFF LZW (compression 5, MSB-first, early change, Clear at 4094). lzwz only decodes, so the encoder lives in the writer; lzwz's decoder is a second-implementation check.
+  - [ ] FFI `tiffz_encode(pixels, len, width, height, channels, compression, &out, &out_len)`, freed with `tiffz_free`, plus header docs.
+  - [ ] CLI `convert IN -o OUT [--to tiff|png|bmp] [--compression none|lzw|deflate] [--ifd N]`. Input format sniffed from magic bytes, output from `--to` or the extension; `-`/@stdin/@stdout. C-side BMP writer, and PNG and BMP readers (8-bit gray, gray+alpha, RGB, RGBA, palette; non-interlaced PNG; 24/32-bit uncompressed BMP). Anything else is a clear error.
+  - [ ] Independent oracles: libtiff `tiffinfo` accepts every written TIFF and `tiff2rgba` pixels match the source; ImageMagick decodes our PNG and BMP output and produces the PNG/BMP inputs. Run as a Nix check from `./test`.
+
+
+## Done
+
+- [x] Repin lercz to 9c9a84f: forward-only Lerc2 validation parser, C CLI, and a Lerc2 version-byte mutation (outside the Fletcher checksum) now fails instead of decoding wrong pixels. Coverage counts unchanged on the 385-trial campaign, so floors stay (done 2026-10-23 21:10 EDT).
+- [x] Conform to the cross-platform-project-build-arch convention (skill and its verification-and-migration reference). Gaps seen 2026-10-23: no `bin/<PF>/` entrypoint, products land in unnamespaced `zig-out/` and `result`, not `zig-out/<PF>/[<VARIANT>/]<profile>/` and `.nix-out/<PF>/<profile>`, no `./run`, `./build` has no `--backend=direct`, its header still cites Zig 0.15.2, and `corruption-coverage` looks for the retired `bin/linux/$arch` layout. Prove it with the reference's PATH selection, publication-failure and header-inspection scenarios, not directory names.
   Rollout (skill order): stage the new layout first and keep the legacy `zig-out/bin` and `result` publication, since the shared shell PATH still admits them. The PATH cutover is the dotfiles owner's step; drop the legacy mirror after it.
   - [x] `tools/pf`: uname to PF classifier, rejecting unsupported pairs (classifier test over a set).
   - [x] `--about` reports `PF=` and `VARIANT=` from the compile target, via build.zig macros.
   - [x] `tools/inspect-binary`: ELF/Mach-O/PE header to PF, an oracle independent of build flags.
   - [x] `./build`: Nix default to `.nix-out/<PF>/[<VARIANT>/]<profile>`, `--backend=direct` to `zig-out/<PF>/[<VARIANT>/]<profile>`, header-checked atomic publish of `bin/<PF>/tiffz`. A failed build or a wrong header keeps the previous link. Tested in a disposable project with a stub nix, as the read-only `checks.<system>.build-layout` Nix check.
-  - [x] `./run`, `.envrc` PATH via `bin/<PF>`, corruption-coverage lookup, CLI test binary path from a build option, and an updated build header.
-- [ ] C CLI conversion both ways through the C FFI, for PNG and BMP (BDFN, 2026-10-23). Today `dump` writes TIFF to PNG. Add TIFF to BMP, plus PNG and BMP to TIFF, through a minimal Zig-core writer: strip-based, 8-bit gray/RGB/RGBA, uncompressed or Deflate/LZW, with new FFI entry points (scope recorded in INTENT.md). Round-trip tests both ways. Writer output must pass `tiffz validate` and libtiff.
-
-
-## Done
+  - [x] `./run`, `.envrc` PATH via `bin/<PF>`, corruption-coverage lookup, CLI test binary path from a build option, and an updated build header. (done 2026-10-23 21:00 EDT, 07b2ac24)
+  - Verified 2026-10-23 20:25 EDT: real `./build` (ALLOW_STALE for the lercz item) published `bin/linux-amd64/tiffz` -> `.nix-out/linux-amd64/musl/ReleaseFast`, header linux-amd64 static, `--about` PF=linux-amd64 VARIANT=musl; the direct backend built and passed `zig build test` natively (VARIANT=gnu). Not exercised: macOS and Windows hosts, and cross targets. Remaining: the shared PATH cutover to `bin/<PF>` (dotfiles owner), then drop the legacy `result` and `zig-out/bin` links.
 
 - [x] Repin jpegz to 8fd246d: code 63 `entropy_padding_zero_bits` WARN, plus ca500f9 (lenient decoding past end-of-scan padding faults) and 698c2c3. jpegz's own pins unchanged. No tiffz mapping change, since jpegz WARN maps to valid and 62 stays FAIL (done 2026-10-23 19:10 EDT).
 - [x] Corruption detection coverage as a gate in `./test` (`checks.<system>.corruption-coverage`, Mechatron Prime target): corruption-reader pinned as a flake input (a7ea995, its own nixpkgs so the binary matches the measured one), master 42, 385 decisive trials per profile, ~100 s. libtiff `tiffdump` maps each seed independently of tiffz, so every case is classed uncompressed or compressed and free or open, with a per-class ceiling and false-alarm count. Floors are per profile and class, and a false alarm fails the gate. Determinism confirmed by an identical rerun, and a raised floor fails on real data. Documented in docs/corruption_coverage.md, with uncompressed and compressed ceilings and per-codec integrity checks. Full `./test` green in 311 s; Nix check reproduced every floor exactly (done 2026-10-23 18:50 EDT).
