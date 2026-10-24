@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# tools/pf as a classifier over (uname -s, uname -m) pairs: every supported
+# alias maps to its PF, everything else is refused with status 2.
+
+set -u
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+subject="$root/tools/pf"
+failures=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+# os|arch|expected PF, or REJECT
+cases='Linux|x86_64|linux-amd64
+Linux|amd64|linux-amd64
+Linux|aarch64|linux-arm64
+Linux|arm64|linux-arm64
+Darwin|arm64|macos-arm64
+Darwin|aarch64|macos-arm64
+MINGW64_NT-10.0-26100|x86_64|mswin-amd64
+MSYS_NT-10.0-26100|x86_64|mswin-amd64
+CYGWIN_NT-10.0-26100|x86_64|mswin-amd64
+Windows_NT|AMD64|mswin-amd64
+Windows_NT|ARM64|mswin-arm64
+MINGW64_NT-10.0-26100|aarch64|mswin-arm64
+Darwin|x86_64|REJECT
+FreeBSD|amd64|REJECT
+SunOS|i86pc|REJECT
+Linux|i686|REJECT
+Linux|armv7l|REJECT
+Linux|riscv64|REJECT
+|x86_64|REJECT
+Linux||REJECT'
+
+seen=""
+while IFS='|' read -r os arch expected; do
+	out="$("$subject" --os "$os" --arch "$arch" 2>"${TMPDIR:-/tmp}/pf_test.$$.err")"
+	status=$?
+	err="$(cat "${TMPDIR:-/tmp}/pf_test.$$.err")"
+	if [ "$expected" = REJECT ]; then
+		[ "$status" -eq 2 ] || fail "'$os' '$arch' should be refused with status 2, got $status ($out)"
+		[ -z "$out" ] || fail "'$os' '$arch' refusal printed a PF: $out"
+		[[ "$err" == *unsupported* ]] || fail "'$os' '$arch' refusal should explain itself: $err"
+	else
+		[ "$status" -eq 0 ] || fail "'$os' '$arch' exited $status: $err"
+		[ "$out" = "$expected" ] || fail "'$os' '$arch' gave '$out', expected '$expected'"
+		[ -z "$err" ] || fail "'$os' '$arch' wrote stderr: $err"
+		seen="$seen $out"
+	fi
+done <<<"$cases"
+rm -f -- "${TMPDIR:-/tmp}/pf_test.$$.err"
+
+# The accepted set must cover exactly the supported matrix.
+covered="$(printf '%s\n' $seen | sort -u | tr '\n' ' ')"
+[ "$covered" = "linux-amd64 linux-arm64 macos-arm64 mswin-amd64 mswin-arm64 " ] \
+	|| fail "accepted PFs '$covered' differ from the supported matrix"
+
+# With no overrides it classifies the host, matching the explicit form.
+host="$("$subject")" || fail "host classification failed"
+[ "$host" = "$("$subject" --os "$(uname -s)" --arch "$(uname -m)")" ] \
+	|| fail "host default '$host' differs from explicit uname classification"
+
+"$subject" --bogus >/dev/null 2>&1
+[ "$?" -eq 64 ] || fail "unknown option should exit 64"
+
+if [ "$failures" -gt 0 ]; then
+	printf '%d pf check(s) failed\n' "$failures" >&2
+	exit 1
+fi
+printf 'pf classifier passed\n'

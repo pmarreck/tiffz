@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Report the Mecha platform (PF) and linkage encoded in an executable's own
+# header: ELF e_machine and PT_INTERP, Mach-O cputype (thin or universal),
+# or PE machine. Publication uses this as an oracle that does not trust the
+# build command's target flags. Unsupported or unreadable files exit 2.
+#
+# Usage: tools/inspect-binary [--expect PF] FILE
+
+set -u
+
+expect=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--expect) expect="${2-}"; shift 2 || shift ;;
+		-h|--help) printf 'Usage: tools/inspect-binary [--expect PF] FILE\n'; exit 0 ;;
+		--) shift; break ;;
+		-*) printf 'inspect-binary: unknown option: %s\n' "$1" >&2; exit 64 ;;
+		*) break ;;
+	esac
+done
+[ "$#" -eq 1 ] || { printf 'Usage: tools/inspect-binary [--expect PF] FILE\n' >&2; exit 64; }
+file="$1"
+
+refuse() { printf 'inspect-binary: %s: %s\n' "$file" "$1" >&2; exit 2; }
+
+[ -f "$file" ] && [ -r "$file" ] || refuse "not a readable file"
+size="$(wc -c <"$file")"
+
+# bytes OFF N: lowercase hex of N bytes at OFF, or nothing past EOF.
+bytes() { od -An -tx1 -v -j "$1" -N "$2" -- "$file" | tr -d ' \n'; }
+
+# le HEX: little-endian hex byte string to decimal.
+le() {
+	local h="$1" r=""
+	while [ -n "$h" ]; do r="${h:0:2}$r"; h="${h:2}"; done
+	printf '%d' "0x${r:-0}"
+}
+
+need() { [ "$size" -ge "$1" ] || refuse "truncated header"; }
+
+pf="" linkage="dynamic"
+magic="$(bytes 0 4)"
+case "$magic" in
+	7f454c46)
+		need 64
+		[ "$(bytes 4 2)" = 0201 ] || refuse "not a 64-bit little-endian ELF"
+		case "$(bytes 18 2)" in
+			3e00) pf=linux-amd64 ;;
+			b700) pf=linux-arm64 ;;
+			*) refuse "unsupported ELF machine $(bytes 18 2)" ;;
+		esac
+		phoff="$(le "$(bytes 32 8)")"
+		phentsize="$(le "$(bytes 54 2)")"
+		phnum="$(le "$(bytes 56 2)")"
+		need $((phoff + phentsize * phnum))
+		linkage=static
+		i=0
+		while [ "$i" -lt "$phnum" ]; do
+			[ "$(bytes $((phoff + i * phentsize)) 4)" = 03000000 ] && linkage=dynamic
+			i=$((i + 1))
+		done
+		;;
+	cffaedfe)
+		need 8
+		case "$(bytes 4 4)" in
+			0c000001) pf=macos-arm64 ;;
+			*) refuse "unsupported Mach-O cputype $(bytes 4 4)" ;;
+		esac
+		;;
+	cafebabe)
+		need 8
+		n=$((0x$(bytes 4 4)))
+		need $((8 + n * 20))
+		i=0
+		while [ "$i" -lt "$n" ]; do
+			[ "$(bytes $((8 + i * 20)) 4)" = 0100000c ] && pf=macos-arm64
+			i=$((i + 1))
+		done
+		[ -n "$pf" ] || refuse "universal binary has no arm64 slice"
+		;;
+	*)
+		[ "${magic:0:4}" = 4d5a ] || refuse "not an ELF, Mach-O or PE executable"
+		need 64
+		lfanew="$(le "$(bytes 60 4)")"
+		need $((lfanew + 6))
+		[ "$(bytes "$lfanew" 4)" = 50450000 ] || refuse "missing PE signature"
+		case "$(bytes $((lfanew + 4)) 2)" in
+			6486) pf=mswin-amd64 ;;
+			64aa) pf=mswin-arm64 ;;
+			*) refuse "unsupported PE machine $(bytes $((lfanew + 4)) 2)" ;;
+		esac
+		;;
+esac
+
+if [ -n "$expect" ] && [ "$pf" != "$expect" ]; then
+	printf 'inspect-binary: %s: header says %s, expected %s\n' "$file" "$pf" "$expect" >&2
+	exit 1
+fi
+printf 'pf=%s\nlinkage=%s\n' "$pf" "$linkage"

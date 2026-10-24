@@ -69,13 +69,13 @@ pub fn build(b: *std.Build) void {
     const opt_zlib_inc = b.option(
         []const u8,
         "zlib-include",
-        "Path to zlib headers",
-    ) orelse "";
+        "Path to zlib headers (default: $ZLIB_INC from the devShell)",
+    ) orelse b.graph.environ_map.get("ZLIB_INC") orelse "";
     const opt_zlib_lib_path = b.option(
         []const u8,
         "zlib-lib",
-        "Path to zlib library directory",
-    ) orelse "";
+        "Path to zlib library directory (default: $ZLIB_LIB from the devShell)",
+    ) orelse b.graph.environ_map.get("ZLIB_LIB") orelse "";
     if (opt_zlib_inc.len > 0) lib_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) lib_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     // Do not link zlib into the static archive. Nix's musl libz.a would be
@@ -267,10 +267,13 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    const platform = mechaPlatform(target.result);
+    const pf_flag = b.fmt("-DTIFFZ_PF=\"{s}\"", .{platform.pf});
+    const variant_flag = b.fmt("-DTIFFZ_VARIANT=\"{s}\"", .{platform.variant});
     const cli_cflags: []const []const u8 = if (optimize == .Debug)
-        &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic", "-DTIFFZ_DEBUG" }
+        &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic", pf_flag, variant_flag, "-DTIFFZ_DEBUG" }
     else
-        &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic" };
+        &.{ "-std=gnu11", "-Wall", "-Wextra", "-Wpedantic", pf_flag, variant_flag };
     cli.root_module.addCSourceFile(.{
         .file = b.path("cli/main.c"),
         .flags = cli_cflags,
@@ -309,11 +312,16 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
     // --- CLI integration tests (spawn the CLI binary, assert output) ---
+    // The CLI tests run the binary this build installs, never a stale
+    // copy elsewhere (zig-out/bin, PATH).
+    const cli_test_options = b.addOptions();
+    cli_test_options.addOption([]const u8, "cli_path", b.getInstallPath(.bin, cli.out_filename));
     const cli_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/cli/cli_test.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{.{ .name = "cli_test_options", .module = cli_test_options.createModule() }},
         }),
     });
     const run_cli_tests = b.addRunArtifact(cli_tests);
@@ -400,4 +408,32 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_parser_consumer_tests.step);
     test_step.dependOn(&run_dual_module_tests.step);
     test_step.dependOn(&run_jpeg_validation_consumer_tests.step);
+}
+
+/// Mecha platform naming (PF = <OS>-<ARCH>, plus a libc VARIANT on Linux)
+/// for the compile target, baked into the CLI's --about. Targets outside
+/// the supported matrix fail the build instead of mislabelling the binary.
+fn mechaPlatform(t: std.Target) struct { pf: []const u8, variant: []const u8 } {
+    const os: []const u8 = switch (t.os.tag) {
+        .linux => "linux",
+        .macos => "macos",
+        .windows => "mswin",
+        else => @panic("tiffz: unsupported target OS for PF naming"),
+    };
+    const arch: []const u8 = switch (t.cpu.arch) {
+        .x86_64 => "amd64",
+        .aarch64 => "arm64",
+        else => @panic("tiffz: unsupported target architecture for PF naming"),
+    };
+    if (t.os.tag == .macos and t.cpu.arch == .x86_64) @panic("tiffz: macos-amd64 is outside the supported matrix");
+    const variant: []const u8 = if (t.os.tag != .linux) "" else if (t.abi.isMusl()) "musl" else "gnu";
+    const pfs = .{
+        .{ "linux", "amd64", "linux-amd64" }, .{ "linux", "arm64", "linux-arm64" },
+        .{ "macos", "arm64", "macos-arm64" }, .{ "mswin", "amd64", "mswin-amd64" },
+        .{ "mswin", "arm64", "mswin-arm64" },
+    };
+    inline for (pfs) |p| {
+        if (std.mem.eql(u8, os, p[0]) and std.mem.eql(u8, arch, p[1])) return .{ .pf = p[2], .variant = variant };
+    }
+    unreachable;
 }

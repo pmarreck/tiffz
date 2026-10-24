@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# .gitignore as a classifier over build-layout paths: generated products and
+# publication links are ignored; scripts, including portable bin/ commands,
+# stay trackable. Read-only (git check-ignore --no-index).
+
+set -u
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+failures=0
+
+ignored='.nix-out/linux-amd64/musl/ReleaseFast
+.nix-out/macos-arm64/Debug
+bin/linux-amd64/tiffz
+bin/linux-arm64/tiffz
+bin/macos-arm64/tiffz
+bin/mswin-amd64/tiffz.exe
+bin/mswin-arm64/tiffz.exe
+zig-out/linux-amd64/gnu/ReleaseFast/bin/tiffz
+zig-out/bin/tiffz
+result
+.zig-cache/o/x'
+
+tracked='build
+run
+test
+tools/pf
+tools/inspect-binary
+bin/tiffz-portable-script
+bin/README.md
+tests/cli/build_layout_test'
+
+while IFS= read -r path; do
+	git -C "$root" check-ignore --no-index -q -- "$path" \
+		|| { printf 'FAIL: %s should be ignored\n' "$path" >&2; failures=$((failures + 1)); }
+done <<<"$ignored"
+while IFS= read -r path; do
+	if git -C "$root" check-ignore --no-index -q -- "$path"; then
+		printf 'FAIL: %s should stay trackable\n' "$path" >&2
+		failures=$((failures + 1))
+	fi
+done <<<"$tracked"
+
+if [ "$failures" -gt 0 ]; then
+	printf '%d gitignore check(s) failed\n' "$failures" >&2
+	exit 1
+fi
+printf 'gitignore classifier passed\n'

@@ -138,7 +138,8 @@
         # derivation. Pre-fetched zlib dep is staged into the Zig
         # global cache before invoking zig build (the build itself
         # runs offline within the sandbox).
-        tiffzPkg = pkgs.stdenv.mkDerivation {
+        # optimize selects the Zig profile; ./build --debug uses packages.debug.
+        mkTiffz = optimize: pkgs.stdenv.mkDerivation {
           pname = "tiffz";
           version = "0.1.0";
           src = self;
@@ -178,7 +179,7 @@
               # they don't shadow musl headers from pkgsStatic.
               unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
             ''}
-            zig build --prefix $out -Doptimize=ReleaseFast ${zigTargetFlag} \
+            zig build --prefix $out -Doptimize=${optimize} ${zigTargetFlag} \
               -Dlibjpeg-include=${jpegPkgs.libjpeg.dev}/include \
               -Dlibjpeg-lib=${jpegPkgs.libjpeg.out}/lib \
               -Dopenjpeg-include=${jpegPkgs.openjpeg.dev}/include/openjpeg-2.5 \
@@ -190,9 +191,28 @@
           dontInstall = true;
           dontFixup = true;
         };
+        tiffzPkg = mkTiffz "ReleaseFast";
 
       in {
         packages.default = tiffzPkg;
+        packages.debug = mkTiffz "Debug";
+
+        # Platform classifier, executable-header oracle and the ./build and
+        # ./run publication contract, run with the source tree read-only so
+        # the tests cannot touch a checkout's bin/ or Nix links.
+        checks.build-layout = pkgs.runCommand "tiffz-build-layout" {
+          nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep ];
+        } ''
+          cp -r ${self} $TMPDIR/src
+          chmod -R u+w $TMPDIR/src
+          cd $TMPDIR/src
+          patchShebangs build run tools tests/cli >/dev/null
+          for t in pf_test inspect_binary_test build_layout_test; do
+            bash tests/cli/$t || exit 1
+          done
+          mkdir -p $out
+          echo "build layout passed" > $out/result
+        '';
 
         checks.parser-closure = pkgs.stdenv.mkDerivation {
           pname = "tiffz-parser-closure";
@@ -463,6 +483,7 @@
             pkgs.libjpeg     # libjpeg-turbo: baseline / progressive / lossless
             pkgs.openjpeg    # JPEG 2000 (linked by jpegz but unused by tiffz)
             pkgs.brotli      # jpegz→libjxlz @cImport / link (BROTLI_*_DIR)
+            pkgs.zlib        # Deflate (ZLIB_INC / ZLIB_LIB for direct builds)
 
             # TIFF fixture / oracle toolchain (SPEC §4 verification oracles + §A fixture recipes)
             pkgs.libtiff       # tiffcp, tiffinfo, tiff2rgba, tiffmedian, raw2tiff, tiffdump
@@ -494,6 +515,10 @@
           OPENJPEG_INC = "${pkgs.openjpeg.dev}/include/openjpeg-2.5";
           BROTLI_INCLUDE_DIR = "${pkgs.brotli.dev}/include";
           BROTLI_LIB_DIR = "${pkgs.brotli.lib}/lib";
+          # build.zig falls back to these when -Dzlib-include/-Dzlib-lib are
+          # absent, so `./build --backend=direct` links the host zlib.
+          ZLIB_INC = "${pkgs.zlib.dev}/include";
+          ZLIB_LIB = "${pkgs.zlib.out}/lib";
 
           shellHook = ''
             echo "tiffz dev shell"

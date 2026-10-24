@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Build tiffz for this platform (./build, output on stderr), then exec the
+# exact published bin/<PF>/tiffz with every argument passed through.
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+"$ROOT/build" >&2 || exit $?
+PF="$("$ROOT/tools/pf")" || exit 2
+exec "$ROOT/bin/$PF/tiffz" "$@"

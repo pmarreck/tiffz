@@ -51,6 +51,12 @@ run_subtest "sibling dependency freshness gate" \
 run_subtest "libjxlz private-seed control" \
     tests/cli/libjxlz_seed_control
 
+run_subtest ".gitignore build-layout classifier" \
+    tests/cli/gitignore_test
+
+run_subtest "platform classifier, header oracle and ./build publication (sandboxed via nix)" \
+    nix build ".#checks.${SYSTEM}.build-layout" --print-out-paths --no-link
+
 run_subtest "corruption-coverage scorer" \
     tests/cli/corruption_coverage_test
 

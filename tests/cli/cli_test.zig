@@ -5,15 +5,15 @@
 const std = @import("std");
 
 fn cliPath(allocator: std.mem.Allocator) ![]const u8 {
-    // build.zig installs to <build-out>/bin/tiffz. The Zig test
-    // runner runs from the build root, so zig-out/bin/tiffz is the
-    // canonical path. Use dupe to return a regular []u8 — earlier
+    // build.zig passes the exact path it installs the CLI to, so a
+    // stale binary elsewhere can never satisfy these tests. Use dupe to
+    // return a regular []u8 — earlier
     // attempts used `realPathFileAlloc` which returns `[:0]u8`,
     // then implicitly casts to []const u8 — but the debug allocator
     // rejects the free as "Invalid free" because the slice length
     // is short by 1 byte vs the original allocation (the sentinel
     // byte). Sticking to allocator.dupe avoids the mismatch entirely.
-    return allocator.dupe(u8, "zig-out/bin/tiffz");
+    return allocator.dupe(u8, @import("cli_test_options").cli_path);
 }
 
 fn runCli(args: []const []const u8) !std.process.RunResult {
@@ -54,6 +54,47 @@ test "tiffz --about contains tiffz and version" {
 
     try std.testing.expectEqual(@as(?u8, 0), exitedCode(r.term));
     try std.testing.expect(std.mem.indexOf(u8, r.stdout, "tiffz") != null);
+}
+
+/// The Mecha platform the test binary itself was compiled for. The CLI is
+/// built for the same target, so its --about must name this PF.
+fn expectedPf() []const u8 {
+    const t = @import("builtin").target;
+    const os = switch (t.os.tag) {
+        .linux => "linux",
+        .macos => "macos",
+        .windows => "mswin",
+        else => @compileError("unsupported test target OS"),
+    };
+    const arch = switch (t.cpu.arch) {
+        .x86_64 => "amd64",
+        .aarch64 => "arm64",
+        else => @compileError("unsupported test target architecture"),
+    };
+    return os ++ "-" ++ arch;
+}
+
+test "tiffz --about is one line naming PF and, on Linux, the libc VARIANT" {
+    const r = try runCli(&.{"--about"});
+    defer std.testing.allocator.free(r.stdout);
+    defer std.testing.allocator.free(r.stderr);
+
+    try std.testing.expectEqual(@as(?u8, 0), exitedCode(r.term));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.stdout, "\n"));
+    try std.testing.expect(std.mem.endsWith(u8, r.stdout, "\n"));
+    const line = r.stdout[0 .. r.stdout.len - 1];
+    try std.testing.expect(std.mem.indexOf(u8, line, "PF=" ++ comptime expectedPf()) != null);
+
+    const t = @import("builtin").target;
+    if (t.os.tag == .linux) {
+        const variant = if (t.abi.isMusl()) "VARIANT=musl" else "VARIANT=gnu";
+        try std.testing.expect(std.mem.indexOf(u8, line, variant) != null);
+    } else {
+        try std.testing.expect(std.mem.indexOf(u8, line, "VARIANT=") == null);
+    }
+    // The retired OS/ARCH spelling must not linger beside PF.
+    try std.testing.expect(std.mem.indexOf(u8, line, "x86_64") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "aarch64") == null);
 }
 
 test "tiffz --help mentions usage" {

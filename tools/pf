@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Print the Mecha platform name (PF = <OS>-<ARCH>) of the execution host,
+# or of the given uname -s / uname -m values. Unsupported pairs exit 2
+# rather than guessing; WSL reports Linux and so selects linux.
+
+set -u
+
+os="" arch="" have_os=0 have_arch=0
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--os) os="${2-}"; have_os=1; shift 2 || shift ;;
+		--arch) arch="${2-}"; have_arch=1; shift 2 || shift ;;
+		-h|--help)
+			printf 'Usage: tools/pf [--os UNAME_S] [--arch UNAME_M]\n'
+			exit 0
+			;;
+		*) printf 'pf: unknown option: %s\n' "$1" >&2; exit 64 ;;
+	esac
+done
+[ "$have_os" -eq 1 ] || os="$(uname -s)"
+[ "$have_arch" -eq 1 ] || arch="$(uname -m)"
+
+case "$os" in
+	Linux) pf_os=linux ;;
+	Darwin) pf_os=macos ;;
+	MINGW*|MSYS*|CYGWIN*|Windows_NT) pf_os=mswin ;;
+	*) pf_os="" ;;
+esac
+case "$arch" in
+	x86_64|amd64|AMD64) pf_arch=amd64 ;;
+	aarch64|arm64|ARM64) pf_arch=arm64 ;;
+	*) pf_arch="" ;;
+esac
+
+case "$pf_os-$pf_arch" in
+	macos-arm64|linux-amd64|linux-arm64|mswin-amd64|mswin-arm64)
+		printf '%s\n' "$pf_os-$pf_arch"
+		;;
+	*)
+		printf 'pf: unsupported platform: os=%q arch=%q\n' "$os" "$arch" >&2
+		exit 2
+		;;
+esac

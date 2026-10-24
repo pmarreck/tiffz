@@ -11,6 +11,13 @@ zig-out/
 zig-pkg/
 result
 result-*
+.nix-out/
+# Per-platform publication links from ./build (portable bin/ scripts stay tracked)
+/bin/linux-amd64/
+/bin/linux-arm64/
+/bin/macos-arm64/
+/bin/mswin-amd64/
+/bin/mswin-arm64/
 
 # macOS Finder cruft
 .DS_Store

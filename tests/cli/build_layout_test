@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# ./build and ./run layout and publication contract
+# (cross-platform-project-build-arch). Each scenario runs the real scripts in
+# a disposable project copy under TMPDIR whose path contains a space. A stub
+# nix records its argv and fabricates products; stub uname injects platforms.
+# The live checkout, its bin/ and its Nix links are never touched; the
+# build-layout Nix check runs this with the source tree read-only.
+
+set -u
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+failures=0
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-build-layout.XXXXXX")" || exit 1
+
+cleanup() {
+	case "$sandbox" in
+		"${TMPDIR:-/tmp}"/tiffz-build-layout.*) rm -rf -- "$sandbox" ;;
+	esac
+}
+trap cleanup EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+host_pf="$("$root/tools/pf")" || { printf 'host platform unsupported\n' >&2; exit 1; }
+case "$host_pf" in
+	linux-*) nix_v=musl/ direct_v=gnu/ ;;
+	*) nix_v="" direct_v="" ;;
+esac
+
+# Products: a real host executable, and a header-only ELF of the other arch.
+host_product="$(readlink -f -- "$(command -v bash)")"
+case "$host_pf" in
+	*-amd64) foreign_machine='\xb7' ;;
+	*) foreign_machine='\x3e' ;;
+esac
+foreign_product="$sandbox/foreign-elf"
+{
+	printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+	printf "\\x02\\x00${foreign_machine}\\x00\\x01\\x00\\x00\\x00"
+	printf '\x00%.0s' $(seq 1 8)
+	printf '\x40\x00\x00\x00\x00\x00\x00\x00'
+	printf '\x00%.0s' $(seq 1 12)
+	printf '\x40\x00\x38\x00\x01\x00\x40\x00\x00\x00\x00\x00'
+	printf '\x01\x00\x00\x00'
+	printf '\x00%.0s' $(seq 1 52)
+} >"$foreign_product"
+
+stubs="$sandbox/stubs"
+mkdir -p "$stubs"
+bash_path="$(command -v bash)"
+{ printf '#!%s\n' "$bash_path"; cat <<'EOF'
+# Stub nix: log argv, honor FAKE_FAIL, fabricate a product from FAKE_PRODUCT.
+printf 'nix' >>"$FAKE_LOG"; printf ' %q' "$@" >>"$FAKE_LOG"; printf '\n' >>"$FAKE_LOG"
+if [ -n "${FAKE_FAIL:-}" ]; then printf 'stub nix: forced failure\n' >&2; exit 1; fi
+fabricate() {
+	mkdir -p "$1/bin" && cp -f -- "$FAKE_PRODUCT" "$1/bin/tiffz" && chmod +x "$1/bin/tiffz"
+}
+case "$1" in
+	build)
+		link="" attr=""
+		while [ "$#" -gt 0 ]; do
+			case "$1" in
+				--out-link) link="$2"; shift ;;
+				.#*) attr="${1#.#}" ;;
+			esac
+			shift
+		done
+		[ -n "$link" ] || { printf 'stub nix: no --out-link\n' >&2; exit 3; }
+		store="$FAKE_STORE/$(date +%s%N)-$attr"
+		fabricate "$store" || exit 1
+		mkdir -p "$(dirname -- "$link")" && ln -sfn -- "$store" "$link"
+		printf '%s\n' "$store"
+		;;
+	develop)
+		prefix=""
+		while [ "$#" -gt 0 ]; do
+			[ "$1" = --prefix ] && prefix="$2"
+			shift
+		done
+		[ -n "$prefix" ] || { printf 'stub nix: no --prefix\n' >&2; exit 3; }
+		fabricate "$prefix"
+		;;
+	*) printf 'stub nix: unexpected %s\n' "$1" >&2; exit 3 ;;
+esac
+EOF
+} >"$stubs/nix"
+chmod +x "$stubs/nix"
+
+# mkproj NAME: a fresh disposable project with the real scripts.
+mkproj() {
+	local proj="$sandbox/$1 project"
+	mkdir -p "$proj/tools" || return 1
+	cp -- "$root/build" "$root/run" "$proj/" || return 1
+	cp -- "$root/tools/pf" "$root/tools/inspect-binary" "$proj/tools/" || return 1
+	printf '#!%s\nprintf "freshness\\n" >>"$FAKE_LOG"\n' "$bash_path" \
+		>"$proj/tools/check_dependency_freshness"
+	chmod +x "$proj/tools/check_dependency_freshness"
+	printf '%s' "$proj"
+}
+
+export FAKE_STORE="$sandbox/store" FAKE_LOG="$sandbox/log"
+mkdir -p "$FAKE_STORE"
+export PATH="$stubs:$PATH"
+
+# run_in PROJ ARGS...: run a script there, capturing out/err/status.
+run_in() {
+	local proj="$1"; shift
+	: >"$FAKE_LOG"
+	(cd "$proj" && "$@") >"$sandbox/out" 2>"$sandbox/err"
+	status=$?
+	out="$(cat "$sandbox/out")"
+	err="$(cat "$sandbox/err")"
+}
+
+link_of() { readlink -- "$1" 2>/dev/null; }
+
+# --- Nix backend, default profile ---
+p="$(mkproj nix)" || exit 1
+FAKE_PRODUCT="$host_product" run_in "$p" ./build
+[ "$status" -eq 0 ] || fail "nix build exited $status: $err"
+nix_link=".nix-out/$host_pf/${nix_v}ReleaseFast"
+[ -L "$p/$nix_link" ] || fail "missing Nix output link $nix_link"
+grep -q -- "build .#default" "$FAKE_LOG" || fail "nix build .#default not invoked: $(cat "$FAKE_LOG")"
+grep -q -- "--out-link $nix_link" "$FAKE_LOG" || fail "out-link not $nix_link: $(cat "$FAKE_LOG")"
+grep -q '^freshness$' "$FAKE_LOG" || fail "dependency freshness gate skipped"
+pub="$p/bin/$host_pf/tiffz"
+[ -L "$pub" ] || fail "bin/$host_pf/tiffz not published"
+case "$(link_of "$pub")" in
+	/*) fail "published link is absolute: $(link_of "$pub")" ;;
+esac
+[ "$pub" -ef "$p/$nix_link/bin/tiffz" ] || fail "published link does not resolve to the Nix product"
+[ ! -e "$p/zig-out/bin" ] || [ -L "$p/zig-out/bin/tiffz" ] || fail "legacy zig-out/bin/tiffz is a copy, not a link"
+first_target="$(link_of "$pub")"
+
+# Legacy compatibility while the shared PATH still admits result/bin and
+# zig-out/bin: both resolve to the published host command.
+[ "$p/result/bin/tiffz" -ef "$pub" ] || fail "legacy result/bin/tiffz does not follow the publication"
+[ "$p/zig-out/bin/tiffz" -ef "$pub" ] || fail "legacy zig-out/bin/tiffz does not follow the publication"
+
+# --- Debug profile coexists with ReleaseFast ---
+FAKE_PRODUCT="$host_product" run_in "$p" ./build --debug
+[ "$status" -eq 0 ] || fail "debug build exited $status: $err"
+grep -q -- "build .#debug" "$FAKE_LOG" || fail "nix build .#debug not invoked: $(cat "$FAKE_LOG")"
+[ -L "$p/.nix-out/$host_pf/${nix_v}Debug" ] || fail "missing Debug output link"
+[ -L "$p/$nix_link" ] || fail "Debug build removed the ReleaseFast link"
+[ "$pub" -ef "$p/.nix-out/$host_pf/${nix_v}Debug/bin/tiffz" ] || fail "Debug build not published"
+
+# --- Direct backend ---
+FAKE_PRODUCT="$host_product" run_in "$p" ./build --backend=direct
+[ "$status" -eq 0 ] || fail "direct build exited $status: $err"
+direct_prefix="zig-out/$host_pf/${direct_v}ReleaseFast"
+grep -q -- "develop -c zig build" "$FAKE_LOG" || fail "direct backend did not run zig build in the devShell"
+grep -q -- "--prefix $direct_prefix" "$FAKE_LOG" || fail "direct prefix not $direct_prefix: $(cat "$FAKE_LOG")"
+grep -q -- "-Doptimize=ReleaseFast" "$FAKE_LOG" || fail "direct build not ReleaseFast"
+grep -q -- "build .#" "$FAKE_LOG" && fail "direct backend also invoked nix build"
+[ "$pub" -ef "$p/$direct_prefix/bin/tiffz" ] || fail "direct product not published"
+[ -L "$p/$nix_link" ] || fail "direct build disturbed the Nix output link"
+
+# --- --test runs zig build test in the devShell and publishes nothing ---
+before="$(link_of "$pub")"
+FAKE_PRODUCT="$foreign_product" run_in "$p" ./build --test
+[ "$status" -eq 0 ] || fail "--test exited $status: $err"
+grep -q -- "develop -c zig build test --prefix $direct_prefix" "$FAKE_LOG" \
+	|| fail "--test did not run zig build test under $direct_prefix: $(cat "$FAKE_LOG")"
+[ "$(link_of "$pub")" = "$before" ] || fail "--test changed the publication"
+
+# --- Back to Nix; then a failing build keeps that publication ---
+FAKE_PRODUCT="$host_product" run_in "$p" ./build
+before="$(link_of "$pub")"
+[ "$before" = "$first_target" ] || fail "republish chose '$before', expected '$first_target'"
+FAKE_FAIL=1 FAKE_PRODUCT="$host_product" run_in "$p" ./build --debug
+[ "$status" -ne 0 ] || fail "failed nix build reported success"
+[ "$(link_of "$pub")" = "$before" ] || fail "failed build changed the publication"
+[ "$pub" -ef "$p/$nix_link/bin/tiffz" ] || fail "publication broken after failed build"
+
+# --- A product whose header names another platform is refused ---
+FAKE_PRODUCT="$foreign_product" run_in "$p" ./build --backend=direct
+[ "$status" -ne 0 ] || fail "foreign-architecture product was accepted"
+[[ "$err" == *"expected $host_pf"* ]] || fail "refusal should name the expected PF: $err"
+[ "$(link_of "$pub")" = "$before" ] || fail "foreign product replaced the publication"
+
+# --- Concurrent publications leave one complete, valid link ---
+(cd "$p" && FAKE_PRODUCT="$host_product" ./build --debug) >/dev/null 2>&1 &
+pid_a=$!
+(cd "$p" && FAKE_PRODUCT="$host_product" ./build) >/dev/null 2>&1 &
+pid_b=$!
+wait "$pid_a"; wait "$pid_b"
+[ -x "$pub" ] && [ -L "$pub" ] || fail "concurrent publication left no valid link"
+leftovers="$(find "$p/bin/$host_pf" -mindepth 1 ! -name tiffz | head -1)"
+[ -z "$leftovers" ] || fail "publication left temporary files: $leftovers"
+
+# --- ./run builds, then execs the published command with argv intact ---
+q="$(mkproj run)" || exit 1
+FAKE_PRODUCT="$host_product" run_in "$q" ./run -c 'printf "<%s>" "$@"; exit 7' argv0 "a b" ""
+[ "$status" -eq 7 ] || fail "./run did not propagate the exit status (got $status): $err"
+[ "$out" = "<a b><>" ] || fail "./run mangled arguments: $out"
+[ -L "$q/bin/$host_pf/tiffz" ] || fail "./run did not publish before launching"
+FAKE_FAIL=1 FAKE_PRODUCT="$host_product" run_in "$q" ./run -c 'echo ran'
+[ "$status" -ne 0 ] || fail "./run launched after a failed build"
+[ "$out" != ran ] || fail "./run executed a command after build failure"
+
+# --- Unsupported platforms are refused before any build ---
+for pair in "Darwin x86_64" "FreeBSD amd64" "Linux riscv64"; do
+	set -- $pair
+	u="$sandbox/uname-$1-$2"
+	mkdir -p "$u"
+	printf '#!/bin/sh\ncase "$1" in -s) echo %s ;; -m) echo %s ;; *) echo %s ;; esac\n' "$1" "$2" "$1" >"$u/uname"
+	chmod +x "$u/uname"
+	r="$(mkproj "unsupported-$1-$2")" || exit 1
+	PATH="$u:$PATH" FAKE_PRODUCT="$host_product" run_in "$r" ./build
+	[ "$status" -eq 2 ] || fail "$pair should be refused with status 2, got $status"
+	grep -q '^nix' "$FAKE_LOG" && fail "$pair reached nix"
+	[ ! -e "$r/bin" ] || fail "$pair created bin/"
+done
+set --
+
+# --- .envrc admits only bin/<PF> for the host, never raw outputs ---
+# direnv's `use` and `PATH_add` are stubbed to record what gets admitted.
+envrc_admits() {
+	(
+		cd "$1" || exit 1
+		use() { :; }
+		PATH_add() { printf '%s\n' "$1"; }
+		# shellcheck disable=SC1091
+		. ./.envrc
+	) 2>/dev/null
+}
+e="$(mkproj envrc)" || exit 1
+cp -- "$root/.envrc" "$e/.envrc"
+[ "$(envrc_admits "$e")" = "bin/$host_pf" ] || fail ".envrc admitted '$(envrc_admits "$e")', expected bin/$host_pf"
+for pair in "Darwin arm64 bin/macos-arm64" "Linux aarch64 bin/linux-arm64" "Darwin x86_64 " "FreeBSD amd64 "; do
+	set -- $pair
+	u="$sandbox/envrc-uname-$1-$2"
+	mkdir -p "$u"
+	printf '#!/bin/sh\ncase "$1" in -s) echo %s ;; -m) echo %s ;; *) echo %s ;; esac\n' "$1" "$2" "$1" >"$u/uname"
+	chmod +x "$u/uname"
+	got="$(PATH="$u:$PATH" envrc_admits "$e")"
+	[ "$got" = "${3-}" ] || fail ".envrc on $1 $2 admitted '$got', expected '${3-}'"
+done
+set --
+
+# --- Usage errors ---
+run_in "$p" ./build --backend=gradle
+[ "$status" -eq 2 ] || fail "unknown backend should exit 2, got $status"
+run_in "$p" ./build --nonsense
+[ "$status" -eq 2 ] || fail "unknown option should exit 2, got $status"
+run_in "$p" ./build --help
+[ "$status" -eq 0 ] && [[ "$out" == *"--backend=direct"* ]] || fail "--help should document --backend=direct"
+
+if [ "$failures" -gt 0 ]; then
+	printf '%d build-layout check(s) failed\n' "$failures" >&2
+	exit 1
+fi
+printf 'build layout contract passed\n'

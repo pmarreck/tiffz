@@ -470,6 +470,26 @@ run_subject --floors "$floors.class" \
 	--seeds-file "$seedfile"
 assert_equal "an unknown class is a usage error" 2 "$subject_status"
 
+# --- default tiffz lookup: bin/<PF>/tiffz, never the retired zig-out/bin --
+
+lookup="$sandbox/lookup project"
+pf="$("$root/tools/pf")"
+mkdir -p "$lookup/tools" "$lookup/bin/$pf" "$lookup/zig-out/bin"
+cp -- "$subject" "$lookup/corruption-coverage"
+cp -- "$root/tools/pf" "$lookup/tools/pf"
+cp -- "$bindir/tiffz" "$lookup/bin/$pf/tiffz"
+printf '#!/bin/sh\nexit 99\n' >"$lookup/zig-out/bin/tiffz"
+chmod +x "$lookup/zig-out/bin/tiffz"
+lookup_args=(--corruption-reader "$bindir/corruption-reader" --seeds-file "$seedfile" --trials 1)
+TIFFZ="" "$lookup/corruption-coverage" "${lookup_args[@]}" >"$sandbox/out" 2>"$sandbox/err"
+assert_contains "default tiffz is bin/<PF>/tiffz" "$(cat "$sandbox/out")" \
+	"tiffz=$lookup/bin/$pf/tiffz"
+mv -- "$lookup/bin/$pf/tiffz" "$lookup/bin/$pf/tiffz.moved"
+TIFFZ="" "$lookup/corruption-coverage" "${lookup_args[@]}" >"$sandbox/out" 2>"$sandbox/err"
+assert_contains "without a publication, tiffz comes from PATH" "$(cat "$sandbox/out")" \
+	"tiffz=$bindir/tiffz"
+assert_not_contains "the retired zig-out/bin is never used" "$(cat "$sandbox/out")" "zig-out/bin"
+
 if [ "$failures" -eq 0 ]; then
 	printf 'corruption-coverage contract passed\n'
 	exit 0

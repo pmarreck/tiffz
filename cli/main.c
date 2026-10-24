@@ -9,22 +9,12 @@
 
 #include "tiffz.h"
 
-#if defined(__aarch64__) || defined(_M_ARM64)
-#define TIFFZ_ARCH "aarch64"
-#elif defined(__x86_64__) || defined(_M_X64)
-#define TIFFZ_ARCH "x86_64"
-#else
-#define TIFFZ_ARCH "unknown"
+/* build.zig defines these from the resolved compile target. */
+#ifndef TIFFZ_PF
+#error "TIFFZ_PF must be defined by the build (e.g. -DTIFFZ_PF=\"linux-amd64\")"
 #endif
-
-#if defined(__APPLE__)
-#define TIFFZ_OS "macos"
-#elif defined(__linux__)
-#define TIFFZ_OS "linux"
-#elif defined(_WIN32)
-#define TIFFZ_OS "windows"
-#else
-#define TIFFZ_OS "unknown"
+#ifndef TIFFZ_VARIANT
+#define TIFFZ_VARIANT ""
 #endif
 
 #define EXIT_OK 0
@@ -61,8 +51,12 @@ static void announce_debug(void) {
 }
 
 static int print_about(void) {
-	printf("tiffz %s — pure-Zig spec-complete TIFF reader (%s/%s)\n",
-	       tiffz_version(), TIFFZ_OS, TIFFZ_ARCH);
+	if (TIFFZ_VARIANT[0] != '\0')
+		printf("tiffz %s — pure-Zig spec-complete TIFF reader PF=%s VARIANT=%s\n",
+		       tiffz_version(), TIFFZ_PF, TIFFZ_VARIANT);
+	else
+		printf("tiffz %s — pure-Zig spec-complete TIFF reader PF=%s\n",
+		       tiffz_version(), TIFFZ_PF);
 	return EXIT_OK;
 }
 

@@ -1,37 +1,48 @@
 #!/usr/bin/env bash
-# Build tiffz via nix build (sandboxed, deterministic).
+# Build tiffz for the current platform and publish bin/<PF>/tiffz.
 #
-# Per CLAUDE.md, we don't use `nix develop -c zig build` for native
-# macOS builds — Zig 0.15.2's bundled libSystem stubs don't always
-# cover newer macOS versions, and the sandboxed Nix path avoids host
-# OS detection issues entirely. Cross-compilation (e.g. -Dtarget=...)
-# still works through `nix develop -c zig build` because Zig uses
-# its own sysroot for non-native targets.
+# Layout (cross-platform-project-build-arch):
+#   .nix-out/<PF>/[<VARIANT>/]<profile>   Nix output link (GC root), default
+#   zig-out/<PF>/[<VARIANT>/]<profile>/   direct zig build install prefix
+#   bin/<PF>/tiffz                        relative link to the last good build
+# PF comes from tools/pf. Linux Nix builds target musl (static), direct
+# devShell builds target the host glibc, so their VARIANTs differ.
 #
-# Usage:
-#   ./build              # ReleaseFast native build (default)
-#   ./build --debug      # Debug build (loudly announces itself)
-#   ./build --test       # Build the unit + CLI test binaries
-#   ./build --help       # Show modes and dependency freshness controls
+# Publication happens only after the build succeeds and the product's own
+# header (tools/inspect-binary) names this PF; the link is swapped by rename,
+# so a failed or foreign build leaves the previous command in place.
+#
+# Native equivalent without this script, inside `nix develop`:
+#   zig build --prefix zig-out/<PF>/[<VARIANT>/]ReleaseFast -Doptimize=ReleaseFast
 
 set -u
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT" || exit 1
 
-mode="release"
+profile="ReleaseFast"
+backend="nix"
+action="build"
 for arg in "$@"; do
-    case "$arg" in
-        --debug) mode="debug" ;;
-        --test)  mode="test" ;;
+	case "$arg" in
+		--debug) profile="Debug" ;;
+		--test) action="test"; backend="direct" ;;
+		--backend=nix|--backend=direct) backend="${arg#--backend=}" ;;
 		-h|--help)
 			cat <<'EOF'
-Usage: ./build [--debug|--test]
+Usage: ./build [--debug] [--backend=nix|--backend=direct] [--test]
 
-  (default)  ReleaseFast build through nix build .#default
-  --debug    Debug build through the Nix development shell
-  --test     Build and run Zig unit and CLI tests
-  -h, --help Show this help
+  (default)         ReleaseFast through `nix build .#default`, linked at
+                    .nix-out/<PF>/[<VARIANT>/]ReleaseFast
+  --debug           Debug profile (the binary announces DEBUG BUILD)
+  --backend=nix     Sandboxed Nix package build (default)
+  --backend=direct  `zig build` in the Nix devShell, installed under
+                    zig-out/<PF>/[<VARIANT>/]<profile>
+  --test            Run `zig build test` in the devShell; publishes nothing
+  -h, --help        Show this help
+
+A successful build whose header matches this platform is published as
+bin/<PF>/tiffz (PF from tools/pf, e.g. linux-amd64).
 
 Sibling dependency freshness:
   Before every build, pinned pmarreck dependencies must match the selected
@@ -52,36 +63,62 @@ Sibling dependency freshness:
 EOF
 			exit 0
 			;;
-        *) printf 'unknown arg: %s\n' "$arg" >&2; exit 2 ;;
-    esac
+		*) printf 'build: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+	esac
 done
+
+PF="$("$ROOT/tools/pf")" || exit 2
+case "$PF" in
+	linux-*) nix_variant="musl/" direct_variant="gnu/" ;;
+	*) nix_variant="" direct_variant="" ;;
+esac
 
 "$ROOT/tools/check_dependency_freshness" \
 	--manifest "$ROOT/build.zig.zon" \
 	--repo-root "$ROOT" \
 	--branch-map "$ROOT/.dependency-heads" || exit $?
 
-case "$mode" in
-    release)
-        nix build .#default --print-out-paths
-        # Mirror artifacts to the conventional zig-out/ path so other
-        # tooling (and .envrc PATH_add) can find them.
-        if [[ -L result ]]; then
-            mkdir -p zig-out/bin zig-out/lib zig-out/include
-            cp -fR result/bin/. zig-out/bin/ 2>/dev/null || true
-            cp -fR result/lib/. zig-out/lib/ 2>/dev/null || true
-            cp -fR result/include/. zig-out/include/ 2>/dev/null || true
-            chmod -R u+w zig-out
-        fi
-        ;;
-    debug)
-        # Debug builds must announce themselves — see CLAUDE.md
-        # "Debug builds of CLI tooling should loudly note that in
-        # yellow to stderr". The Zig core checks comptime mode at
-        # CLI startup; this build path just sets it.
-        nix develop -c zig build -Doptimize=Debug
-        ;;
-    test)
-        nix develop -c zig build test
-        ;;
+# publish PRODUCT_DIR: verify PRODUCT_DIR/bin/tiffz, then atomically point
+# bin/<PF>/tiffz at it with a relative link.
+publish() {
+	local exe="$1/bin/tiffz" dir="bin/$PF" tmp
+	if [ ! -f "$exe" ] || [ ! -x "$exe" ]; then
+		printf 'build: no executable at %s; publication unchanged\n' "$exe" >&2
+		return 1
+	fi
+	"$ROOT/tools/inspect-binary" --expect "$PF" "$exe" >/dev/null || {
+		printf 'build: %s does not match %s; publication unchanged\n' "$exe" "$PF" >&2
+		return 1
+	}
+	mkdir -p "$dir" || return 1
+	tmp="$dir/.tiffz.publish.$$"
+	ln -s "../../$exe" "$tmp" || return 1
+	mv -f "$tmp" "$dir/tiffz" || { rm -f -- "$tmp"; return 1; }
+
+	# LEGACY: the shared shell PATH still admits zig-out/bin and result/bin.
+	# Keep both following the publication until that PATH cutover, then drop.
+	mkdir -p zig-out/bin || return 1
+	tmp="zig-out/bin/.tiffz.publish.$$"
+	ln -s "../../$dir/tiffz" "$tmp" && mv -f "$tmp" zig-out/bin/tiffz
+}
+
+case "$action-$backend" in
+	build-nix)
+		attr="default"
+		[ "$profile" = Debug ] && attr="debug"
+		out_link=".nix-out/$PF/$nix_variant$profile"
+		mkdir -p "$(dirname -- "$out_link")" || exit 1
+		nix build ".#$attr" --print-out-paths --out-link "$out_link" || exit 1
+		publish "$out_link" || exit 1
+		ln -sfn "$out_link" result # LEGACY, see publish()
+		;;
+	build-direct)
+		prefix="zig-out/$PF/$direct_variant$profile"
+		nix develop -c zig build --prefix "$prefix" -Doptimize="$profile" || exit 1
+		publish "$prefix" || exit 1
+		;;
+	test-direct)
+		prefix="zig-out/$PF/$direct_variant$profile"
+		nix develop -c zig build test --prefix "$prefix" -Doptimize="$profile" || exit 1
+		;;
 esac

@@ -262,9 +262,11 @@ json_field() {
 }
 
 resolve_tools() {
+	local pf
+	pf="$("$root/tools/pf" 2>/dev/null)" || pf=""
 	if [ -z "$tiffz_bin" ]; then
-		if [ -x "$root/zig-out/bin/tiffz" ]; then
-			tiffz_bin="$root/zig-out/bin/tiffz"
+		if [ -n "$pf" ] && [ -x "$root/bin/$pf/tiffz" ]; then
+			tiffz_bin="$root/bin/$pf/tiffz"
 		elif command -v tiffz >/dev/null 2>&1; then
 			tiffz_bin="$(command -v tiffz)"
 		else
@@ -275,13 +277,15 @@ resolve_tools() {
 		die "tiffz is not executable: $tiffz_bin"
 	fi
 	if [ -z "$cr_bin" ]; then
-		local arch bundled
-		arch="$(uname -m)"
-		bundled="$root/../corruption_reader/bin/linux/$arch/corruption-reader"
+		# The sibling checkout's bin/<PF>/, then its pre-PF bin/linux/<arch>/
+		# layout until corruption_reader migrates.
+		local sibling="$root/../corruption_reader/bin"
 		if command -v corruption-reader >/dev/null 2>&1; then
 			cr_bin="$(command -v corruption-reader)"
-		elif [ -x "$bundled" ]; then
-			cr_bin="$bundled"
+		elif [ -n "$pf" ] && [ -x "$sibling/$pf/corruption-reader" ]; then
+			cr_bin="$sibling/$pf/corruption-reader"
+		elif [ -x "$sibling/linux/$(uname -m)/corruption-reader" ]; then
+			cr_bin="$sibling/linux/$(uname -m)/corruption-reader"
 		else
 			die "corruption-reader not found; pass --corruption-reader"
 		fi

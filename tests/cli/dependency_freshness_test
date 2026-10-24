@@ -311,6 +311,7 @@ assert_contains './build help documents the explicit branch map' "$out" '.depend
 integration_root="$sandbox/build-integration"
 mkdir -p "$integration_root/tools" "$integration_root/bin"
 cp "$root/build" "$integration_root/build"
+cp "$root/tools/pf" "$integration_root/tools/pf"
 cat > "$integration_root/tools/check_dependency_freshness" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CHECKER_LOG"
@@ -327,7 +328,7 @@ checker_log="$sandbox/checker.log"
 : > "$checker_log"
 : > "$nix_log"
 capture env PATH="$integration_root/bin:$PATH" CHECKER_LOG="$checker_log" CHECKER_RC=1 NIX_LOG="$nix_log" \
-	"$integration_root/build" --debug
+	"$integration_root/build" --test
 assert_equal './build propagates a failed freshness check' 1 "$rc"
 assert_contains './build invokes the checker with its manifest' "$(<"$checker_log")" 'build.zig.zon'
 assert_contains './build passes its explicit branch map' "$(<"$checker_log")" '.dependency-heads'
@@ -336,8 +337,8 @@ assert_equal './build never reaches Nix after a failed check' '' "$(<"$nix_log")
 : > "$checker_log"
 : > "$nix_log"
 capture env PATH="$integration_root/bin:$PATH" CHECKER_LOG="$checker_log" CHECKER_RC=0 NIX_LOG="$nix_log" \
-	"$integration_root/build" --debug
+	"$integration_root/build" --test
 assert_equal './build continues after a passing freshness check' 0 "$rc"
-assert_contains './build reaches Nix after a passing check' "$(<"$nix_log")" 'develop -c zig build -Doptimize=Debug'
+assert_contains './build reaches Nix after a passing check' "$(<"$nix_log")" 'develop -c zig build test'
 
 exit "$failures"

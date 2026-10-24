@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# tools/inspect-binary reads executable headers (ELF, Mach-O, PE) and reports
+# the PF and linkage they encode, independently of any build flags. Fixtures
+# are hand-assembled headers; one real host executable anchors the oracle.
+
+set -u
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+subject="$root/tools/inspect-binary"
+failures=0
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-inspect-binary.XXXXXX")" || exit 1
+
+cleanup() {
+	case "$sandbox" in
+		"${TMPDIR:-/tmp}"/tiffz-inspect-binary.*) rm -rf -- "$sandbox" ;;
+	esac
+}
+trap cleanup EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+# hex FILE HEXBYTES...: write raw bytes.
+hex() {
+	local file="$1"; shift
+	local out="" b
+	for b in "$@"; do out="$out\\x$b"; done
+	printf "$out" >"$file"
+}
+
+zeros() { local n="$1" s=""; while [ "$n" -gt 0 ]; do s="$s 00"; n=$((n - 1)); done; printf '%s' "$s"; }
+
+# 64-bit little-endian ELF: 64-byte header, then one 56-byte program header
+# at offset 64 whose p_type is $2 (03 = PT_INTERP, 01 = PT_LOAD).
+elf64() {
+	local machine_lo="$1" ptype="$2"
+	# shellcheck disable=SC2046
+	hex "$3" 7f 45 4c 46 02 01 01 00 $(zeros 8) \
+		02 00 "$machine_lo" 00 01 00 00 00 $(zeros 8) \
+		40 00 00 00 00 00 00 00 $(zeros 8) \
+		00 00 00 00 40 00 38 00 01 00 40 00 00 00 00 00 \
+		"$ptype" 00 00 00 $(zeros 52)
+}
+
+elf64 3e 01 "$sandbox/elf-amd64-static"
+elf64 b7 03 "$sandbox/elf-arm64-dynamic"
+elf64 f3 01 "$sandbox/elf-riscv"
+# 32-bit ELF class.
+hex "$sandbox/elf32" 7f 45 4c 46 01 01 01 00 $(zeros 8) 02 00 03 00 $(zeros 44)
+# ELF magic but nothing else.
+hex "$sandbox/elf-truncated" 7f 45 4c 46 02 01
+# Thin Mach-O 64: magic cffaedfe, cputype arm64 (0x0100000c) / x86_64 (0x01000007).
+hex "$sandbox/macho-arm64" cf fa ed fe 0c 00 00 01 $(zeros 24)
+hex "$sandbox/macho-x86_64" cf fa ed fe 07 00 00 01 $(zeros 24)
+# Universal binary (big-endian cafebabe), two slices: x86_64 then arm64.
+hex "$sandbox/macho-universal" ca fe ba be 00 00 00 02 \
+	01 00 00 07 $(zeros 16) 01 00 00 0c $(zeros 16)
+# PE: MZ stub with e_lfanew = 0x40, then "PE\0\0" and the machine field.
+pe() {
+	hex "$2" 4d 5a $(zeros 58) 40 00 00 00 50 45 00 00 $1 $(zeros 18)
+}
+pe "64 86" "$sandbox/pe-amd64"
+pe "64 aa" "$sandbox/pe-arm64"
+pe "4c 01" "$sandbox/pe-i386"
+printf '#!/bin/sh\necho hi\n' >"$sandbox/script"
+: >"$sandbox/empty"
+
+# file|expected stdout (two lines joined by ;), or REJECT
+cases='elf-amd64-static|pf=linux-amd64;linkage=static
+elf-arm64-dynamic|pf=linux-arm64;linkage=dynamic
+macho-arm64|pf=macos-arm64;linkage=dynamic
+macho-universal|pf=macos-arm64;linkage=dynamic
+pe-amd64|pf=mswin-amd64;linkage=dynamic
+pe-arm64|pf=mswin-arm64;linkage=dynamic
+elf-riscv|REJECT
+elf32|REJECT
+elf-truncated|REJECT
+macho-x86_64|REJECT
+pe-i386|REJECT
+script|REJECT
+empty|REJECT
+missing|REJECT'
+
+while IFS='|' read -r name expected; do
+	out="$("$subject" "$sandbox/$name" 2>"$sandbox/err")"
+	status=$?
+	err="$(cat "$sandbox/err")"
+	if [ "$expected" = REJECT ]; then
+		[ "$status" -eq 2 ] || fail "$name should be refused with status 2, got $status ($out)"
+		[ -z "$out" ] || fail "$name refusal printed: $out"
+		[ -n "$err" ] || fail "$name refusal gave no reason"
+	else
+		[ "$status" -eq 0 ] || fail "$name exited $status: $err"
+		[ "${out//$'\n'/;}" = "$expected" ] || fail "$name gave '${out//$'\n'/;}', expected '$expected'"
+	fi
+done <<<"$cases"
+
+# A real executable on this host must classify as the host PF.
+real="$(readlink -f -- "$(command -v bash)")"
+out="$("$subject" "$real" 2>&1)"
+[ "$(printf '%s\n' "$out" | sed -n 's/^pf=//p')" = "$("$root/tools/pf")" ] \
+	|| fail "host bash classified as '$out', host PF is $("$root/tools/pf")"
+
+# --expect PF turns a mismatch into status 1 with no stdout.
+"$subject" --expect linux-amd64 "$sandbox/elf-amd64-static" >/dev/null 2>&1
+[ "$?" -eq 0 ] || fail "--expect matching PF should succeed"
+out="$("$subject" --expect linux-amd64 "$sandbox/elf-arm64-dynamic" 2>"$sandbox/err")"
+[ "$?" -eq 1 ] || fail "--expect mismatched PF should exit 1"
+[ -z "$out" ] || fail "--expect mismatch printed stdout: $out"
+[[ "$(cat "$sandbox/err")" == *linux-arm64* ]] || fail "--expect mismatch should name the actual PF"
+
+if [ "$failures" -gt 0 ]; then
+	printf '%d inspect-binary check(s) failed\n' "$failures" >&2
+	exit 1
+fi
+printf 'inspect-binary passed\n'
