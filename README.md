@@ -193,6 +193,13 @@ Any consumer (validate / image tools / GUI) ──► C FFI ──► tiffz Zig 
 - **C CLI** (`cli/main.c` → `tiffz` executable) — dogfoods the
   FFI. `validate` walks every strip/tile (exit 0 on valid-with-WARN,
   including finding 16). `dump` writes one IFD as 8-bit RGBA PNG.
+  `convert IN -o OUT [--to tiff|png|bmp] [--compression none|lzw|deflate]`
+  converts between TIFF, PNG and BMP. The input format comes from its magic
+  bytes, the output from `--to` or the extension. TIFF output uses the core's
+  minimal writer (`src/writer.zig`, FFI `tiffz_encode`): one strip-based IFD,
+  8-bit gray, RGB or RGBA, Deflate by default because its Adler-32 makes
+  corruption detectable. The PNG and BMP codecs (`cli/image_io.c`) are CLI
+  adapters; associated alpha is divided out first (`tiffz_decode_rgba_straight`).
   All I/O happens here.
 
 ### Dependencies

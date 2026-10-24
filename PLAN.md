@@ -8,15 +8,16 @@ Open work and the latest completions. Older narrative:
 Order (BDFN, 2026-10-23): coverage gate, then build-layout conformance, then writer and conversion CLI.
 
 - [ ] Shared PATH cutover to `bin/<PF>` (dotfiles owner), then drop the legacy `result` and `zig-out/bin/tiffz` links from `./build`'s publish().
-- [ ] C CLI conversion both ways through the C FFI, for PNG and BMP (BDFN, 2026-10-23). Today `dump` writes TIFF to PNG. Add TIFF to BMP, plus PNG and BMP to TIFF, through a minimal Zig-core writer: strip-based, 8-bit gray/RGB/RGBA, uncompressed or Deflate/LZW, with new FFI entry points (scope recorded in INTENT.md). Round-trip tests both ways. Writer output must pass `tiffz validate` and libtiff.
-  - [ ] `src/writer.zig` encode(): little-endian baseline TIFF, one IFD, strips of about 8 KiB, gray8 (MinIsBlack), RGB8, RGBA8 (ExtraSamples = unassociated alpha), compression none. Round-trips through tiffz's own decoder.
-  - [ ] Deflate (zlib, compression 8) and TIFF LZW (compression 5, MSB-first, early change, Clear at 4094). lzwz only decodes, so the encoder lives in the writer; lzwz's decoder is a second-implementation check.
-  - [ ] FFI `tiffz_encode(pixels, len, width, height, channels, compression, &out, &out_len)`, freed with `tiffz_free`, plus header docs.
-  - [ ] CLI `convert IN -o OUT [--to tiff|png|bmp] [--compression none|lzw|deflate] [--ifd N]`. Input format sniffed from magic bytes, output from `--to` or the extension; `-`/@stdin/@stdout. C-side BMP writer, and PNG and BMP readers (8-bit gray, gray+alpha, RGB, RGBA, palette; non-interlaced PNG; 24/32-bit uncompressed BMP). Anything else is a clear error.
-  - [ ] Independent oracles: libtiff `tiffinfo` accepts every written TIFF and `tiff2rgba` pixels match the source; ImageMagick decodes our PNG and BMP output and produces the PNG/BMP inputs. Run as a Nix check from `./test`.
-
 
 ## Done
+
+- [x] C CLI conversion both ways through the C FFI, for PNG and BMP (BDFN, 2026-10-23). Today `dump` writes TIFF to PNG. Add TIFF to BMP, plus PNG and BMP to TIFF, through a minimal Zig-core writer: strip-based, 8-bit gray/RGB/RGBA, uncompressed or Deflate/LZW, with new FFI entry points (scope recorded in INTENT.md). Round-trip tests both ways. Writer output must pass `tiffz validate` and libtiff.
+  - [x] `src/writer.zig` encode(): little-endian baseline TIFF, one IFD, strips of about 8 KiB, gray8 (MinIsBlack), RGB8, RGBA8 (ExtraSamples = unassociated alpha), compression none. Round-trips through tiffz's own decoder.
+  - [x] Deflate (zlib, compression 8) and TIFF LZW (compression 5, MSB-first, early change, Clear at 4094). lzwz only decodes, so the encoder lives in the writer; lzwz's decoder is a second-implementation check.
+  - [x] FFI `tiffz_encode(pixels, len, width, height, channels, compression, &out, &out_len)`, freed with `tiffz_free`, plus header docs.
+  - [x] CLI `convert IN -o OUT [--to tiff|png|bmp] [--compression none|lzw|deflate] [--ifd N]`. Input format sniffed from magic bytes, output from `--to` or the extension; `-`/@stdin/@stdout. C-side BMP writer, and PNG and BMP readers (8-bit gray, gray+alpha, RGB, RGBA, palette; non-interlaced PNG; 24/32-bit uncompressed BMP). Anything else is a clear error.
+  - [x] Independent oracles: libtiff `tiffinfo -D` reads every written TIFF without complaint and tiffz `validate` accepts it; ImageMagick builds the PNG/BMP inputs from deterministic bytes, and its RGBA renderings of input and output must match byte for byte. `checks.<system>.convert`, run from `./test`.
+  - [x] Associated (premultiplied) alpha, as in libtiff's strike.tif: `tiffz_decode_rgba` keeps the stored values (matching TIFFReadRGBAImage and the existing oracles), and the new `tiffz_decode_rgba_straight` divides alpha out for convert. Fully transparent pixels become 0, and invalid premultiplied colors saturate. (done 2026-10-24 00:30 EDT)
 
 - [x] Repin lercz to 9c9a84f: forward-only Lerc2 validation parser, C CLI, and a Lerc2 version-byte mutation (outside the Fletcher checksum) now fails instead of decoding wrong pixels. Coverage counts unchanged on the 385-trial campaign, so floors stay (done 2026-10-23 21:10 EDT).
 - [x] Conform to the cross-platform-project-build-arch convention (skill and its verification-and-migration reference). Gaps seen 2026-10-23: no `bin/<PF>/` entrypoint, products land in unnamespaced `zig-out/` and `result`, not `zig-out/<PF>/[<VARIANT>/]<profile>/` and `.nix-out/<PF>/<profile>`, no `./run`, `./build` has no `--backend=direct`, its header still cites Zig 0.15.2, and `corruption-coverage` looks for the retired `bin/linux/$arch` layout. Prove it with the reference's PATH selection, publication-failure and header-inspection scenarios, not directory names.

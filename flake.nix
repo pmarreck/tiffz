@@ -448,6 +448,24 @@
             echo "fuzz passed" > $out/result
           '';
         };
+        # `tiffz convert` against independent oracles: ImageMagick builds the
+        # PNG/BMP inputs and renders inputs and outputs for pixel comparison;
+        # libtiff's tiffinfo must read every TIFF the writer produces.
+        checks.convert = pkgs.runCommand "tiffz-convert" {
+          nativeBuildInputs = [
+            pkgs.bash pkgs.coreutils pkgs.gawk pkgs.diffutils pkgs.gnugrep
+            pkgs.imagemagick pkgs.libtiff.bin
+          ];
+        } ''
+          cp -r ${self} $TMPDIR/src
+          chmod -R u+w $TMPDIR/src
+          cd $TMPDIR/src
+          patchShebangs tests/cli >/dev/null
+          bash tests/cli/convert_test ${tiffzPkg}/bin/tiffz
+          mkdir -p $out
+          echo "convert passed" > $out/result
+        '';
+
         # Corruption detection gate: a deterministic corruption-reader
         # campaign over the known-good seed corpus, scored by the packaged
         # CLI against tests/corruption_coverage_floors. libtiff tiffdump maps

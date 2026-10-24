@@ -44,6 +44,7 @@ pub const geotiff = @import("geotiff.zig");
 pub const decoder = @import("decoder.zig");
 pub const rgba = @import("rgba.zig");
 pub const version = @import("version.zig");
+pub const writer = @import("writer.zig");
 pub const ffi = @import("ffi.zig");
 
 // Re-export the core public types at the top level for ergonomic

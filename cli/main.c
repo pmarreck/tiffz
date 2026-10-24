@@ -8,6 +8,7 @@
 #include <zlib.h>
 
 #include "tiffz.h"
+#include "image_io.h"
 
 /* build.zig defines these from the resolved compile target. */
 #ifndef TIFFZ_PF
@@ -71,6 +72,7 @@ static int print_help(void) {
 		"\n"
 		"USAGE:\n"
 		"    tiffz [OPTIONS] [validate] FILE...\n"
+		"    tiffz convert INPUT -o OUTPUT [--to FORMAT] [--compression C]\n"
 		"    tiffz --about | --version | --help\n"
 		"\n"
 		"FILE may be a path, - , or @stdin.\n"
@@ -78,11 +80,16 @@ static int print_help(void) {
 		"VERBS:\n"
 		"    validate         Decode every strip/tile; report findings (default)\n"
 		"    dump             Decode one IFD to 8-bit RGBA PNG\n"
+		"    convert          Convert between TIFF, PNG and BMP (8-bit samples)\n"
 		"\n"
 		"OPTIONS:\n"
 		"    --json           Write a JSON report to stdout (validate)\n"
-		"    -o, --output PATH  PNG destination for dump (- or @stdout for stdout)\n"
-		"    --ifd N          IFD index to dump (default 0)\n"
+		"    -o, --output PATH  Destination for dump or convert (- or @stdout)\n"
+		"    --ifd N          TIFF IFD index to dump or convert (default 0)\n"
+		"    --to FORMAT      convert output: tiff, png or bmp (default: from -o's\n"
+		"                     extension; required for stdout)\n"
+		"    --compression C  TIFF output: none, lzw or deflate (default deflate,\n"
+		"                     whose Adler-32 lets readers detect corruption)\n"
 		"    --simple, --ascii, --no-ansi, --no-color\n"
 		"                     Suppress ANSI color (reserved; English CLI)\n"
 		"    --version, -v    Print version and exit\n"
@@ -326,84 +333,6 @@ static int read_path(const char *path, uint8_t **out_buf, size_t *out_len) {
 	return rc;
 }
 
-static void wr_be32(FILE *fp, uint32_t v) {
-	uint8_t b[4] = {
-		(uint8_t)(v >> 24), (uint8_t)(v >> 16),
-		(uint8_t)(v >> 8), (uint8_t)v,
-	};
-	fwrite(b, 1, 4, fp);
-}
-
-static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uLong n) {
-	uint32_t crc;
-	wr_be32(fp, (uint32_t)n);
-	if (fwrite(type, 1, 4, fp) != 4)
-		return -1;
-	if (n > 0 && fwrite(data, 1, n, fp) != n)
-		return -1;
-	crc = (uint32_t)crc32(0L, (const Bytef *)type, 4);
-	if (n > 0)
-		crc = (uint32_t)crc32(crc, data, n);
-	wr_be32(fp, crc);
-	return 0;
-}
-
-static int write_rgba_png(FILE *fp, const uint8_t *rgba, uint32_t width, uint32_t height) {
-	static const uint8_t sig[8] = { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a };
-	uint8_t ihdr[13];
-	size_t row_bytes = (size_t)width * 4;
-	size_t raw_len = (size_t)height * (1 + row_bytes);
-	uint8_t *raw = NULL;
-	uLongf comp_len;
-	uint8_t *comp = NULL;
-	uint32_t y;
-	int rc = -1;
-
-	if (fwrite(sig, 1, 8, fp) != 8)
-		return -1;
-
-	ihdr[0] = (uint8_t)(width >> 24);
-	ihdr[1] = (uint8_t)(width >> 16);
-	ihdr[2] = (uint8_t)(width >> 8);
-	ihdr[3] = (uint8_t)width;
-	ihdr[4] = (uint8_t)(height >> 24);
-	ihdr[5] = (uint8_t)(height >> 16);
-	ihdr[6] = (uint8_t)(height >> 8);
-	ihdr[7] = (uint8_t)height;
-	ihdr[8] = 8;  /* bit depth */
-	ihdr[9] = 6;  /* RGBA */
-	ihdr[10] = 0;
-	ihdr[11] = 0;
-	ihdr[12] = 0;
-	if (write_png_chunk(fp, "IHDR", ihdr, 13) != 0)
-		return -1;
-
-	raw = malloc(raw_len);
-	if (raw == NULL)
-		return -1;
-	for (y = 0; y < height; y++) {
-		raw[(size_t)y * (1 + row_bytes)] = 0; /* filter None */
-		memcpy(raw + (size_t)y * (1 + row_bytes) + 1, rgba + (size_t)y * row_bytes, row_bytes);
-	}
-	comp_len = compressBound((uLong)raw_len);
-	comp = malloc(comp_len);
-	if (comp == NULL) {
-		free(raw);
-		return -1;
-	}
-	if (compress(comp, &comp_len, raw, (uLong)raw_len) != Z_OK) {
-		free(comp);
-		free(raw);
-		return -1;
-	}
-	if (write_png_chunk(fp, "IDAT", comp, comp_len) == 0 &&
-	    write_png_chunk(fp, "IEND", NULL, 0) == 0)
-		rc = 0;
-	free(comp);
-	free(raw);
-	return rc;
-}
-
 static int is_stdout_name(const char *path) {
 	return path == NULL || strcmp(path, "-") == 0 || strcmp(path, "@stdout") == 0;
 }
@@ -462,19 +391,205 @@ static int dump_one(const char *path, const char *out_path, size_t ifd_index) {
 		}
 		close_out = 1;
 	}
-	if (write_rgba_png(out, pixels, width, height) != 0) {
-		fprintf(stderr, "tiffz: failed to write PNG\n");
-		rc = EXIT_IO;
-	} else {
+	{
+		image_t img = { pixels, width, height, 4 };
+		uint8_t *png = NULL;
+		size_t png_len = 0;
+		if (png_encode(&img, &png, &png_len) != 0 || fwrite(png, 1, png_len, out) != png_len) {
+			fprintf(stderr, "tiffz: failed to write PNG\n");
+			rc = EXIT_IO;
+			free(png);
+			goto done;
+		}
+		free(png);
+	}
+	{
 		if (!is_stdout_name(out_path))
 			fprintf(stderr, "wrote  %s  (%ux%u)\n", out_path, width, height);
 		rc = EXIT_OK;
 	}
+done:
 	if (close_out)
 		fclose(out);
 	tiffz_free(pixels, pix_len);
 	tiffz_close(dec);
 	free(buf);
+	return rc;
+}
+
+typedef enum { FMT_NONE, FMT_TIFF, FMT_PNG, FMT_BMP } format_t;
+
+static const char *format_name(format_t f) {
+	return f == FMT_TIFF ? "TIFF" : f == FMT_PNG ? "PNG" : f == FMT_BMP ? "BMP" : "?";
+}
+
+static format_t parse_format(const char *s) {
+	if (strcmp(s, "tiff") == 0 || strcmp(s, "tif") == 0)
+		return FMT_TIFF;
+	if (strcmp(s, "png") == 0)
+		return FMT_PNG;
+	if (strcmp(s, "bmp") == 0)
+		return FMT_BMP;
+	return FMT_NONE;
+}
+
+/* Output format from the path's extension, ignoring case. */
+static format_t format_from_extension(const char *path) {
+	const char *dot = strrchr(path, '.');
+	char ext[8];
+	size_t i;
+	if (dot == NULL || strchr(dot, '/') != NULL || strlen(dot + 1) >= sizeof(ext))
+		return FMT_NONE;
+	for (i = 0; dot[1 + i] != '\0'; i++)
+		ext[i] = (char)((dot[1 + i] >= 'A' && dot[1 + i] <= 'Z') ? dot[1 + i] + 32 : dot[1 + i]);
+	ext[i] = '\0';
+	return parse_format(ext);
+}
+
+/* Input format from magic bytes; the extension is never trusted. */
+static format_t sniff_format(const uint8_t *b, size_t n) {
+	if (n >= 8 && memcmp(b, "\x89PNG\r\n\x1a\n", 8) == 0)
+		return FMT_PNG;
+	if (n >= 2 && b[0] == 'B' && b[1] == 'M')
+		return FMT_BMP;
+	if (n >= 4 && (memcmp(b, "II*\0", 4) == 0 || memcmp(b, "MM\0*", 4) == 0 ||
+	               memcmp(b, "II+\0", 4) == 0 || memcmp(b, "MM\0+", 4) == 0))
+		return FMT_TIFF;
+	return FMT_NONE;
+}
+
+/* Decode a TIFF IFD through the FFI into an image with spare channels
+ * dropped. Returns an exit code. */
+static int decode_tiff(const char *path, const uint8_t *buf, size_t len, size_t ifd_index, image_t *img) {
+	tiffz_status_t status = TIFFZ_OK;
+	tiffz_decoder_t *dec = tiffz_open_from_buffer(buf, len, &status);
+	uint8_t *pixels = NULL;
+	uint32_t width = 0, height = 0;
+	size_t n;
+	if (dec == NULL) {
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, tiffz_status_name(status));
+		return exit_for_status(status);
+	}
+	status = tiffz_decode_rgba_straight(dec, ifd_index, &pixels, &width, &height);
+	if (status != TIFFZ_OK) {
+		const char *msg = tiffz_last_error_message(dec);
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path,
+			(msg != NULL && msg[0] != '\0') ? msg : tiffz_status_name(status));
+		tiffz_close(dec);
+		return exit_for_status(status);
+	}
+	n = (size_t)width * height * 4;
+	img->pixels = malloc(n);
+	if (img->pixels == NULL) {
+		tiffz_free(pixels, n);
+		tiffz_close(dec);
+		fputs("tiffz: out of memory\n", stderr);
+		return EXIT_IO;
+	}
+	memcpy(img->pixels, pixels, n);
+	img->width = width;
+	img->height = height;
+	img->channels = 4;
+	tiffz_free(pixels, n);
+	tiffz_close(dec);
+	image_reduce(img);
+	return EXIT_OK;
+}
+
+/* Read any supported input, convert it in memory, and write the output
+ * only after encoding succeeds, so a refused conversion leaves no file. */
+static int convert_one(const char *path, const char *out_path, format_t to, uint32_t compression, size_t ifd_index) {
+	uint8_t *buf = NULL, *encoded = NULL;
+	size_t len = 0, encoded_len = 0;
+	image_t img = { NULL, 0, 0, 0 };
+	char err[256];
+	format_t from;
+	int read_rc, rc = EXIT_OK;
+	int to_stdout = is_stdout_name(out_path);
+
+	if (to == FMT_NONE && !to_stdout)
+		to = format_from_extension(out_path);
+	if (to == FMT_NONE) {
+		fprintf(stderr, "tiffz: cannot tell the output format of '%s'; pass --to tiff, png or bmp\n",
+			to_stdout ? "stdout" : out_path);
+		return EXIT_USAGE;
+	}
+
+	read_rc = read_path(path, &buf, &len);
+	if (read_rc == -2) {
+		fprintf(stderr, "tiffz: cannot open '%s': No such file or directory\n", path);
+		return EXIT_IO;
+	}
+	if (read_rc != 0) {
+		fprintf(stderr, "tiffz: failed to read '%s'\n", path);
+		return EXIT_IO;
+	}
+	from = sniff_format(buf, len);
+	if (from == FMT_TIFF) {
+		rc = decode_tiff(path, buf, len, ifd_index, &img);
+	} else if (from == FMT_PNG || from == FMT_BMP) {
+		int drc = from == FMT_PNG ? png_decode(buf, len, &img, err, sizeof(err))
+		                          : bmp_decode(buf, len, &img, err, sizeof(err));
+		if (drc != 0) {
+			fprintf(stderr, "invalid  %s  (%s)\n", path, err);
+			rc = EXIT_INVALID;
+		} else {
+			image_reduce(&img);
+		}
+	} else {
+		fprintf(stderr, "invalid  %s  (unrecognized input format; expected TIFF, PNG or BMP)\n", path);
+		rc = EXIT_INVALID;
+	}
+	free(buf);
+	if (rc != EXIT_OK) {
+		image_free(&img);
+		return rc;
+	}
+
+	if (to == FMT_TIFF) {
+		size_t n = (size_t)img.width * img.height * (size_t)img.channels;
+		tiffz_status_t status = tiffz_encode(img.pixels, n, img.width, img.height,
+			(uint32_t)img.channels, compression, &encoded, &encoded_len);
+		if (status != TIFFZ_OK) {
+			fprintf(stderr, "tiffz: cannot encode TIFF (%s)\n", tiffz_status_name(status));
+			image_free(&img);
+			return exit_for_status(status);
+		}
+	} else if ((to == FMT_PNG ? png_encode(&img, &encoded, &encoded_len)
+	                          : bmp_encode(&img, &encoded, &encoded_len)) != 0) {
+		fprintf(stderr, "tiffz: cannot encode %s\n", format_name(to));
+		image_free(&img);
+		return EXIT_IO;
+	}
+
+	if (to_stdout) {
+		if (fwrite(encoded, 1, encoded_len, stdout) != encoded_len || fflush(stdout) != 0) {
+			fputs("tiffz: failed to write stdout\n", stderr);
+			rc = EXIT_IO;
+		}
+	} else {
+		FILE *out = fopen(out_path, "wb");
+		if (out == NULL) {
+			fprintf(stderr, "tiffz: cannot write '%s'\n", out_path);
+			rc = EXIT_IO;
+		} else {
+			if (fwrite(encoded, 1, encoded_len, out) != encoded_len)
+				rc = EXIT_IO;
+			if (fclose(out) != 0)
+				rc = EXIT_IO;
+			if (rc != EXIT_OK) {
+				fprintf(stderr, "tiffz: failed to write '%s'\n", out_path);
+				remove(out_path);
+			} else {
+				fprintf(stderr, "wrote  %s  (%ux%u %s)\n", out_path, img.width, img.height, format_name(to));
+			}
+		}
+	}
+	if (to == FMT_TIFF)
+		tiffz_free(encoded, encoded_len);
+	else
+		free(encoded);
+	image_free(&img);
 	return rc;
 }
 
@@ -555,6 +670,8 @@ int main(int argc, char **argv) {
 	const char *verb = NULL;
 	const char *out_path = NULL;
 	size_t ifd_index = 0;
+	format_t to = FMT_NONE;
+	uint32_t compression = TIFFZ_COMPRESSION_DEFLATE;
 	char **files = NULL;
 	int nfiles = 0;
 	int worst = EXIT_OK;
@@ -617,6 +734,30 @@ int main(int argc, char **argv) {
 				ifd_index = (size_t)strtoul(argv[++i], NULL, 10);
 				continue;
 			}
+			if (is_exact(arg, "--to", NULL)) {
+				if (i + 1 >= argc || (to = parse_format(argv[i + 1])) == FMT_NONE) {
+					fputs("tiffz: --to takes tiff, png or bmp\n", stderr);
+					free(files);
+					return EXIT_USAGE;
+				}
+				i++;
+				continue;
+			}
+			if (is_exact(arg, "--compression", NULL)) {
+				const char *c = i + 1 < argc ? argv[++i] : "";
+				if (strcmp(c, "none") == 0)
+					compression = TIFFZ_COMPRESSION_NONE;
+				else if (strcmp(c, "lzw") == 0)
+					compression = TIFFZ_COMPRESSION_LZW;
+				else if (strcmp(c, "deflate") == 0)
+					compression = TIFFZ_COMPRESSION_DEFLATE;
+				else {
+					fputs("tiffz: --compression takes none, lzw or deflate\n", stderr);
+					free(files);
+					return EXIT_USAGE;
+				}
+				continue;
+			}
 			if (arg[0] == '-' && arg[1] != '\0' && !is_stdin_name(arg)) {
 				fprintf(stderr, "tiffz: unknown argument '%s' (try --help)\n", arg);
 				free(files);
@@ -631,6 +772,10 @@ int main(int argc, char **argv) {
 			verb = "dump";
 			continue;
 		}
+		if (verb == NULL && strcmp(arg, "convert") == 0) {
+			verb = "convert";
+			continue;
+		}
 		files[nfiles++] = argv[i];
 	}
 
@@ -642,6 +787,21 @@ int main(int argc, char **argv) {
 		}
 		free(files);
 		return print_help();
+	}
+
+	if (verb != NULL && strcmp(verb, "convert") == 0) {
+		int rc;
+		if (nfiles != 1) {
+			fputs("tiffz: convert takes exactly one INPUT\n", stderr);
+			rc = EXIT_USAGE;
+		} else if (out_path == NULL) {
+			fputs("tiffz: convert requires -o OUTPUT (- or @stdout with --to)\n", stderr);
+			rc = EXIT_USAGE;
+		} else {
+			rc = convert_one(files[0], out_path, to, compression, ifd_index);
+		}
+		free(files);
+		return rc;
 	}
 
 	for (i = 0; i < nfiles; i++) {

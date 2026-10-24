@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# `tiffz convert` against oracles tiffz does not contain: ImageMagick builds
+# the PNG/BMP inputs from deterministic raw bytes and renders every input and
+# output to 8-bit RGBA for comparison; libtiff's tiffinfo must read every
+# TIFF tiffz writes without complaint. tiffz's own validate must accept them.
+#
+# Usage: tests/cli/convert_test PATH_TO_TIFFZ
+# Needs magick, tiffinfo, tiffdump and gawk on PATH.
+
+set -u
+
+tiffz="${1:?usage: convert_test PATH_TO_TIFFZ}"
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+failures=0
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-convert.XXXXXX")" || exit 1
+work="$sandbox/with space"
+mkdir -p "$work" || exit 1
+
+cleanup() {
+	case "$sandbox" in
+		"${TMPDIR:-/tmp}"/tiffz-convert.*) rm -rf -- "$sandbox" ;;
+	esac
+}
+trap cleanup EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+for tool in magick tiffinfo tiffdump gawk cmp; do
+	command -v "$tool" >/dev/null 2>&1 || { printf 'convert_test: %s is required\n' "$tool" >&2; exit 1; }
+done
+
+# raw FILE COUNT SEED LEVELS: COUNT deterministic bytes; LEVELS>0 limits the
+# alphabet (so palettes stay small), 0 means any byte.
+raw() {
+	LC_ALL=C gawk -v n="$2" -v seed="$3" -v levels="$4" 'BEGIN {
+		srand(seed)
+		for (i = 0; i < n; i++) {
+			v = levels > 0 ? int(rand() * levels) * int(255 / (levels - 1 > 0 ? levels - 1 : 1)) : int(rand() * 256)
+			printf "%c", v
+		}
+	}' >"$1"
+}
+
+# rgba FILE OUT: ImageMagick's 8-bit RGBA rendering of an image. The color
+# of a fully transparent pixel is invisible and undefined (strike.tif stores
+# one as premultiplied 0,0,1,0), so it is normalized to black on both sides.
+rgba() { magick "$1" -background black -alpha background -depth 8 "rgba:$2"; }
+
+# run ARGS...: invoke tiffz, capturing status, stdout and stderr.
+run() {
+	"$tiffz" "$@" >"$sandbox/out" 2>"$sandbox/err"
+	status=$?
+	err="$(cat "$sandbox/err")"
+}
+
+# same_pixels LABEL A B: equal ImageMagick RGBA renderings.
+same_pixels() {
+	rgba "$2" "$sandbox/a.rgba" && rgba "$3" "$sandbox/b.rgba" || { fail "$1: ImageMagick could not read an image"; return; }
+	cmp -s "$sandbox/a.rgba" "$sandbox/b.rgba" || fail "$1: pixels differ"
+}
+
+# tiff_ok LABEL FILE COMPRESSION_WORD: libtiff and tiffz both accept it.
+tiff_ok() {
+	local info
+	info="$(tiffinfo -D "$2" 2>"$sandbox/tiffinfo.err" >/dev/null; tiffinfo "$2" 2>/dev/null)"
+	[ -s "$sandbox/tiffinfo.err" ] && fail "$1: tiffinfo complained: $(cat "$sandbox/tiffinfo.err")"
+	[[ "$info" == *"Compression Scheme: $3"* ]] || fail "$1: expected compression $3, tiffinfo says: $(printf '%s' "$info" | grep Compression)"
+	"$tiffz" validate "$2" >/dev/null 2>&1 || fail "$1: tiffz validate rejected its own output"
+}
+
+w=37 h=23
+
+# --- PNG and BMP inputs to TIFF, every compression ---
+raw "$work/gray.raw" $((w * h)) 1 0
+raw "$work/rgb.raw" $((w * h * 3)) 2 0
+raw "$work/rgba.raw" $((w * h * 4)) 3 0
+raw "$work/pal.raw" $((w * h * 3)) 4 3
+magick -size ${w}x$h -depth 8 "gray:$work/gray.raw" -define png:color-type=0 "$work/gray.png"
+magick -size ${w}x$h -depth 8 "rgba:$work/rgba.raw" -colorspace Gray -define png:color-type=4 "$work/graya.png"
+magick -size ${w}x$h -depth 8 "rgb:$work/rgb.raw" -define png:color-type=2 "$work/rgb.png"
+magick -size ${w}x$h -depth 8 "rgba:$work/rgba.raw" -define png:color-type=6 "$work/rgba.png"
+magick -size ${w}x$h -depth 8 "rgb:$work/pal.raw" "PNG8:$work/pal.png"
+magick -size ${w}x$h -depth 8 "rgb:$work/rgb.raw" "BMP3:$work/rgb24.bmp"
+magick -size ${w}x$h -depth 8 "rgba:$work/rgba.raw" -define bmp:format=bmp4 "$work/rgba32.bmp"
+
+for src in gray.png graya.png rgb.png rgba.png pal.png rgb24.bmp rgba32.bmp; do
+	for comp in none:None lzw:LZW deflate:AdobeDeflate; do
+		out="$work/${src%.*}-${comp%%:*}.tif"
+		run convert "$work/$src" -o "$out" --compression "${comp%%:*}"
+		[ "$status" -eq 0 ] || { fail "$src -> tiff (${comp%%:*}) exited $status: $err"; continue; }
+		tiff_ok "$src -> tiff (${comp%%:*})" "$out" "${comp#*:}"
+		same_pixels "$src -> tiff (${comp%%:*})" "$work/$src" "$out"
+	done
+done
+
+# Default TIFF compression is Deflate (zlib's Adler-32 makes corruption detectable).
+run convert "$work/rgb.png" -o "$work/default.tif"
+[ "$status" -eq 0 ] && tiff_ok "default compression" "$work/default.tif" AdobeDeflate
+
+# Gray stays one channel and RGB stays three, without inventing alpha.
+spp() { tiffdump "$1" 2>/dev/null | awk '/^SamplesPerPixel/ { sub(/.*</, ""); sub(/>.*/, ""); print }'; }
+[ "$(spp "$work/gray-none.tif")" = 1 ] || fail "gray PNG should give a 1-sample TIFF, got $(spp "$work/gray-none.tif")"
+[ "$(spp "$work/rgb-none.tif")" = 3 ] || fail "RGB PNG should give a 3-sample TIFF, got $(spp "$work/rgb-none.tif")"
+[ "$(spp "$work/rgba-none.tif")" = 4 ] || fail "RGBA PNG should give a 4-sample TIFF, got $(spp "$work/rgba-none.tif")"
+
+# --- TIFF inputs to PNG, BMP and TIFF ---
+for fx in uncompressed/minisblack-1c-8b.tiff uncompressed/rgb-3c-8b.tiff uncompressed/palette-1c-8b.tiff \
+	lzw/strike.tif deflate/deflate-last-strip.tiff; do
+	name="$(basename "$fx")"
+	for to in png bmp tif; do
+		out="$work/${name%.*}.$to"
+		run convert "$root/tests/fixtures/$fx" -o "$out"
+		[ "$status" -eq 0 ] || { fail "$fx -> $to exited $status: $err"; continue; }
+		same_pixels "$fx -> $to" "$root/tests/fixtures/$fx" "$out"
+		[ "$to" = tif ] && tiff_ok "$fx -> tif" "$out" AdobeDeflate
+	done
+done
+
+# A round trip PNG -> TIFF -> PNG -> BMP -> TIFF keeps every pixel.
+run convert "$work/rgba.png" -o "$work/rt1.tif" --compression lzw
+run convert "$work/rt1.tif" -o "$work/rt2.png"
+run convert "$work/rt2.png" -o "$work/rt3.bmp"
+run convert "$work/rt3.bmp" -o "$work/rt4.tif"
+same_pixels "four-step round trip" "$work/rgba.png" "$work/rt4.tif"
+
+# --- stdin, stdout and --to ---
+"$tiffz" convert - --to tiff -o - <"$work/rgb.png" >"$work/piped.tif" 2>"$sandbox/err"
+[ "$?" -eq 0 ] || fail "stdin to stdout exited nonzero: $(cat "$sandbox/err")"
+same_pixels "stdin to stdout" "$work/rgb.png" "$work/piped.tif"
+"$tiffz" convert @stdin --to bmp -o @stdout <"$work/rgb24.bmp" >"$work/piped.bmp" 2>"$sandbox/err"
+same_pixels "@stdin to @stdout" "$work/rgb24.bmp" "$work/piped.bmp"
+run convert "$work/rgb.png" --to png -o "$work/forced.tif"
+[ "$status" -eq 0 ] && [ "$(head -c 4 "$work/forced.tif" | od -An -tx1 | tr -d ' ')" = 89504e47 ] \
+	|| fail "--to png should override the .tif extension"
+run convert "$work/rgb.png" -o "$work/UPPER.TIFF"
+[ "$status" -eq 0 ] || fail "extension matching should ignore case: $err"
+
+# --- refusals ---
+expect_refusal() {
+	local label="$1" want="$2" needle="$3"; shift 3
+	run "$@"
+	[ "$status" -eq "$want" ] || fail "$label: expected exit $want, got $status ($err)"
+	[[ "$err" == *"$needle"* ]] || fail "$label: stderr should mention '$needle': $err"
+}
+magick -size ${w}x$h -depth 8 "rgb:$work/rgb.raw" -interlace PNG "$work/interlaced.png"
+magick -size ${w}x$h -depth 8 "rgb:$work/rgb.raw" -depth 16 -define png:bit-depth=16 "$work/deep.png"
+printf 'not an image\n' >"$work/text.txt"
+: >"$work/empty.png"
+expect_refusal "interlaced PNG" 1 "interlaced" convert "$work/interlaced.png" -o "$work/x.tif"
+expect_refusal "16-bit PNG" 1 "bit depth" convert "$work/deep.png" -o "$work/x.tif"
+expect_refusal "unknown input" 1 "unrecognized input" convert "$work/text.txt" -o "$work/x.tif"
+expect_refusal "empty input" 1 "unrecognized input" convert "$work/empty.png" -o "$work/x.tif"
+expect_refusal "unknown output extension" 2 "--to" convert "$work/rgb.png" -o "$work/x.jpg"
+expect_refusal "stdout without --to" 2 "--to" convert "$work/rgb.png" -o -
+expect_refusal "missing -o" 2 "-o" convert "$work/rgb.png"
+expect_refusal "bad --compression" 2 "--compression" convert "$work/rgb.png" -o "$work/x.tif" --compression jpeg
+expect_refusal "bad --to" 2 "--to" convert "$work/rgb.png" -o "$work/x.tif" --to gif
+expect_refusal "missing input" 3 "cannot open" convert "$work/absent.png" -o "$work/x.tif"
+[ ! -e "$work/x.tif" ] || fail "a refused conversion left an output file"
+
+# A truncated PNG (IDAT cut short) is refused, not padded.
+head -c $(( $(wc -c <"$work/rgb.png") - 30 )) "$work/rgb.png" >"$work/cut.png"
+expect_refusal "truncated PNG" 1 "PNG" convert "$work/cut.png" -o "$work/x.tif"
+[ ! -e "$work/x.tif" ] || fail "a truncated PNG produced output"
+
+if [ "$failures" -gt 0 ]; then
+	printf '%d convert check(s) failed\n' "$failures" >&2
+	exit 1
+fi
+printf 'convert oracle checks passed\n'

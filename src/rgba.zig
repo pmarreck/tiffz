@@ -39,6 +39,37 @@ fn scalarU32(dir: *const Ifd, tag: u16, endian: parser.header.Endian) ?u32 {
     };
 }
 
+/// Like decodeIfdToRgba, but with straight (unassociated) alpha, the form
+/// PNG, BMP and the writer expect. When the IFD's ExtraSamples is 1
+/// (associated, premultiplied alpha) each color is divided by alpha with
+/// rounding; fully transparent pixels become 0. Otherwise the pixels are
+/// exactly decodeIfdToRgba's.
+pub fn decodeIfdToStraightRgba(
+    allocator: Allocator,
+    dec: *Decoder,
+    workspace: *Workspace,
+    ifd_index: usize,
+) errors.Error!RgbaImage {
+    const img = try decodeIfdToRgba(allocator, dec, workspace, ifd_index);
+    const dir = dec.ifd(ifd_index) catch |err| {
+        allocator.free(img.pixels);
+        return err;
+    };
+    if (scalarU16(dir, tags.extra_samples, dec.endian) == 1) unpremultiply(img.pixels);
+    return img;
+}
+
+fn unpremultiply(px: []u8) void {
+    var i: usize = 0;
+    while (i < px.len) : (i += 4) {
+        const a: u32 = px[i + 3];
+        if (a == 255) continue;
+        for (px[i .. i + 3]) |*c| {
+            c.* = if (a == 0) 0 else @intCast(@min(255, (@as(u32, c.*) * 255 + a / 2) / a));
+        }
+    }
+}
+
 /// Decode IFD `ifd_index` to 8-bit RGBA (width × height × 4). Caller frees
 /// `pixels` with the same allocator.
 pub fn decodeIfdToRgba(

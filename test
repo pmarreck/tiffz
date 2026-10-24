@@ -57,6 +57,9 @@ run_subtest ".gitignore build-layout classifier" \
 run_subtest "platform classifier, header oracle and ./build publication (sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.build-layout" --print-out-paths --no-link
 
+run_subtest "convert to and from TIFF, PNG and BMP against libtiff and ImageMagick (sandboxed via nix)" \
+    nix build ".#checks.${SYSTEM}.convert" --print-out-paths --no-link
+
 run_subtest "corruption-coverage scorer" \
     tests/cli/corruption_coverage_test
 

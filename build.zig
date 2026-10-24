@@ -278,6 +278,10 @@ pub fn build(b: *std.Build) void {
         .file = b.path("cli/main.c"),
         .flags = cli_cflags,
     });
+    cli.root_module.addCSourceFile(.{
+        .file = b.path("cli/image_io.c"),
+        .flags = cli_cflags,
+    });
     cli.root_module.addIncludePath(b.path("include"));
     // Propagate system-library search paths so the linker can find
     // -lz, -ljpeg, -lopenjp2 referenced transitively through lib.
@@ -342,6 +346,20 @@ pub fn build(b: *std.Build) void {
     const fixture_tests = b.addTest(.{ .root_module = fixture_tests_module });
     const run_fixture_tests = b.addRunArtifact(fixture_tests);
 
+    // --- Writer round trips through the decoder and lzwz ---
+    const writer_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/writer_roundtrip_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    writer_tests_module.addImport("tiffz", lib_module);
+    if (opt_zlib_inc.len > 0) writer_tests_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
+    if (opt_zlib_lib_path.len > 0) writer_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
+    writer_tests_module.linkSystemLibrary("z", .{});
+    const writer_tests = b.addTest(.{ .root_module = writer_tests_module });
+    const run_writer_tests = b.addRunArtifact(writer_tests);
+
     // --- Deterministic mutation fuzzer (Einstein outcome 5). Separate `fuzz`
     // step, NOT part of `test`, per project convention (`./test` = unit +
     // integration; `./fuzz` = fuzzing). Mutates committed fixtures with a fixed
@@ -405,6 +423,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_fixture_tests.step);
+    test_step.dependOn(&run_writer_tests.step);
     test_step.dependOn(&run_parser_consumer_tests.step);
     test_step.dependOn(&run_dual_module_tests.step);
     test_step.dependOn(&run_jpeg_validation_consumer_tests.step);

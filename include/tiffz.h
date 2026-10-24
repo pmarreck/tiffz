@@ -138,6 +138,45 @@ tiffz_status_t tiffz_decode_rgba(
     uint32_t *out_width,
     uint32_t *out_height);
 
+/* As tiffz_decode_rgba, but alpha is straight (unassociated): when the IFD
+ * declares associated alpha (ExtraSamples = 1) each color is divided by
+ * alpha, rounding to nearest; fully transparent pixels become 0. Without
+ * associated alpha the result equals tiffz_decode_rgba's. tiffz_decode_rgba
+ * itself keeps the stored premultiplied values, as libtiff's
+ * TIFFReadRGBAImage does. */
+tiffz_status_t tiffz_decode_rgba_straight(
+	tiffz_decoder_t *decoder,
+	size_t ifd_index,
+	uint8_t **out_pixels,
+	uint32_t *out_width,
+	uint32_t *out_height);
+
+/* Writer channel layouts and compressions for tiffz_encode. */
+#define TIFFZ_CHANNELS_GRAY 1 /* MinIsBlack */
+#define TIFFZ_CHANNELS_RGB 3
+#define TIFFZ_CHANNELS_RGBA 4 /* unassociated alpha */
+#define TIFFZ_COMPRESSION_NONE 1
+#define TIFFZ_COMPRESSION_LZW 5
+#define TIFFZ_COMPRESSION_DEFLATE 8
+
+/* Encode width*height*channels packed 8-bit samples (row-major,
+ * interleaved) as a little-endian baseline TIFF: one IFD, strips of about
+ * 8 KiB. `pixels_len` must equal width*height*channels. On success
+ * `*out` holds `*out_len` bytes owned by the caller; free with
+ * tiffz_free(*out, *out_len). On failure they are NULL and 0, and the
+ * status is TIFFZ_INVALID_ARGUMENT (bad geometry, length, channels or
+ * NULL pointer), TIFFZ_UNSUPPORTED_COMPRESSION or TIFFZ_OUT_OF_MEMORY.
+ * The pixel buffer is only read during the call. */
+tiffz_status_t tiffz_encode(
+	const uint8_t *pixels,
+	size_t pixels_len,
+	uint32_t width,
+	uint32_t height,
+	uint32_t channels,
+	uint32_t compression,
+	uint8_t **out,
+	size_t *out_len);
+
 void tiffz_free(void *ptr, size_t len);
 
 #ifdef __cplusplus
