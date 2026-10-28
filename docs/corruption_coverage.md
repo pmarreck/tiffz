@@ -28,88 +28,118 @@ The same master seed, trial count, corruption-reader version and tiffz
 build give the same counts, so the gate compares exact detection counts
 against floors.
 
-## Why 100% is not reachable
+## Two ceilings: worst case and best case
 
-TIFF stores no checksum of its own. In an uncompressed strip or tile,
-every byte value is a legal sample, so a flipped sample bit yields a
-slightly different image that is still a valid TIFF. No validator can
-detect it, because the damaged file is indistinguishable from a file
-that was written that way.
+A TIFF can store the same image with no integrity protection at all or
+with a checksum over every strip, so no single "maximum detectable
+corruption" figure describes the format. The campaign reports two
+ceilings per profile:
 
-To measure this independently of tiffz, the campaign maps each seed with
-libtiff's `tiffdump` and records the byte ranges of uncompressed strip
-and tile data (IFDs with Compression 1). A case whose changed bytes all
-fall inside those ranges is **free**: undetectable in principle.
+- **Worst case**: uncompressed data. TIFF stores no checksum of its
+  own, and in an uncompressed strip every byte value is a legal sample.
+  A flipped sample bit yields a slightly different image that is still a
+  valid TIFF, indistinguishable from a file written that way.
+- **Best case**: checksummed codecs. Deflate carries zlib's Adler-32
+  trailer (RFC 1950) and LERC a Fletcher-32 over the blob (verified by
+  lercz, after `Lerc2.cpp`). Almost any change to the stream breaks the
+  check. What remains undetectable lies outside the stream: tag values
+  nothing constrains, and bytes no IFD references.
 
-- `ceiling = (decisive - free) / decisive` is the known upper bound on
-  the detection rate.
-- `open_rate` is detections among the cases that are not free.
-- `false_alarm` counts detections of free cases. tiffz rejected a valid
-  file. The gate requires zero.
+Between them sits a third class, **unchecked**: LZW, PackBits, CCITT
+G3/G4, JPEG and Zstd without a content checksum (the Zstd seed's frame
+descriptor is 0x00, flag clear). Damage there often breaks the code
+structure or the decoded length, but a change that still decodes to the
+right amount of data is undetectable.
 
-The ceiling is an upper bound, not the true maximum. Only one
-undetectable class is mapped. Others exist and are not yet counted:
+Each seed takes the class of the codec holding most of its strip and
+tile bytes, and a tie takes the weaker class. Nine seeds are uncompressed
+(including BigTIFF, tiled, GeoTIFF, YCbCr, CMYK and 16-bit RGB), seven are
+unchecked and three are checksummed. The checksummed class rests on
+three seeds (two Deflate, one LERC), so it is the least sampled.
 
-- unconstrained tag values, such as XResolution, DateTime or Software
-  text;
-- bytes no IFD references;
-- for compressed data, damage that still decodes to a valid stream of
-  the right length (below).
+## Bounding each case independently of tiffz
 
-So a reported compressed ceiling of 1.0 means "no undetectable case was
-identified", not "every case is detectable".
+Every case is classed by oracles that do not involve tiffz:
 
-## Uncompressed and compressed seeds differ
-
-Seeds are reported in two classes because their ceilings differ by an
-order of magnitude. A seed is uncompressed when every IFD has
-Compression 1, and compressed otherwise. Ten seeds are uncompressed
-(including BigTIFF, tiled, GeoTIFF, YCbCr, CMYK and 16-bit RGB) and nine
-are compressed.
-
-In an uncompressed seed, most bytes are raw samples. The minisblack seed
-is 23,707 sample bytes out of 24,001. Only structural bytes (header,
-IFDs, tag values) can carry detectable damage.
-
-In a compressed seed, a change to the compressed stream usually breaks
-the code structure, the decoded length or an integrity check. How close
-the true ceiling comes to 100% depends on the codec:
-
-| codec | integrity check | effect on the ceiling |
+| bound | rule | meaning |
 |---|---|---|
-| Deflate (8, 32946) | zlib Adler-32 trailer (RFC 1950), verified when tiffz inflates | almost every change to the stream is detectable |
-| LERC (34887) | Fletcher-32 over the blob, verified by lercz (`Lerc2.cpp`) | almost every change to the blob is detectable |
-| Zstd (50000) | optional frame content checksum; the seed's frame has none (descriptor 0x60) | detectable only when decoding fails or the length changes |
-| LZW (5), PackBits (32773), CCITT G3/G4 (3, 4), JPEG (7) | none | a change that still decodes to the right amount of data is undetectable |
+| free | every changed byte lies in uncompressed strip or tile data (libtiff `tiffdump` maps it) | provably undetectable: the file is a valid TIFF |
+| clean | libtiff `tiffinfo -D` reads every directory and strip with exactly the seed's diagnostics, and every Deflate stream the change touches still inflates with a matching Adler-32 (`pigz -dc`) | probably undetectable |
+| open | anything else, including a change of length | detectable as far as these oracles know |
 
-## Measured on 2026-10-23
+pigz is there because libtiff does not verify Adler-32. It stops
+inflating once it has the bytes it asked for and never reads the
+trailer. In a probe on 2026-10-28, 5 of 40 single-bit flips in a Deflate
+strip read cleanly through libtiff, and pigz rejected a flipped trailer
+byte with "adler32 mismatch". LERC needs no second tool, since libtiff's
+LERC codec verifies the Fletcher-32 itself. No seed uses a checksummed
+Zstd frame. The campaign refuses one until a Zstd oracle exists, rather
+than class it without one.
+
+Per profile and class:
+
+- `ceiling = (decisive - free) / decisive` is an upper bound on the
+  detection rate. For compressed classes no case is provably free, so
+  this bound is 1.0 and says nothing; read `ceiling_est` instead.
+- `ceiling_est = (decisive - free - clean) / decisive` estimates the
+  true ceiling. libtiff is lenient, so some clean cases are detectable
+  (`stricter` counts those tiffz catches), and the estimate errs low by
+  at least `stricter / decisive`. libtiff can also complain about a
+  file that is legal, which would push the estimate high. The baseline
+  comparison removes complaints the seed already raises.
+- `open_rate` is detections among open cases.
+- `false_alarm` counts detections of free cases, which means tiffz
+  rejected a valid file. The gate requires zero.
+- `stricter` counts detections of clean cases. These are not failures:
+  tiffz caught something libtiff accepts.
+
+## Measured on 2026-10-28
 
 corruption-reader 0.8.0 (a7ea995), master 42, 385 decisive trials per
-profile, tiffz at the commit that added this gate. No false alarms.
+profile, tiffz 627f74ff, libtiff 4.7.2. No false alarms.
 
-| profile | class | decisive | detect | free | ceiling | rate | open_rate |
-|---|---|---|---|---|---|---|---|
-| sniper | uncompressed | 186 | 11 | 156 | 0.161 | 0.059 | 0.367 |
-| sniper | compressed | 199 | 109 | 0 | ≤1.000 | 0.548 | 0.548 |
-| bolter | uncompressed | 185 | 9 | 162 | 0.124 | 0.049 | 0.391 |
-| bolter | compressed | 200 | 143 | 0 | ≤1.000 | 0.715 | 0.715 |
-| shotgun | uncompressed | 183 | 14 | 160 | 0.126 | 0.077 | 0.609 |
-| shotgun | compressed | 202 | 162 | 0 | ≤1.000 | 0.802 | 0.802 |
-| nuke | uncompressed | 187 | 84 | 103 | 0.449 | 0.449 | 1.000 |
-| nuke | compressed | 198 | 198 | 0 | ≤1.000 | 1.000 | 1.000 |
+| profile | class | decisive | detect | free | clean | ceiling | ceiling_est | rate | stricter |
+|---|---|---|---|---|---|---|---|---|---|
+| sniper | uncompressed | 186 | 11 | 156 | 14 | 0.161 | 0.086 | 0.059 | 1 |
+| sniper | unchecked | 146 | 63 | 0 | 93 | ≤1.000 | 0.363 | 0.432 | 11 |
+| sniper | checksummed | 53 | 46 | 0 | 6 | ≤1.000 | 0.887 | 0.868 | 0 |
+| bolter | uncompressed | 185 | 9 | 162 | 11 | 0.124 | 0.065 | 0.049 | 0 |
+| bolter | unchecked | 147 | 91 | 0 | 71 | ≤1.000 | 0.517 | 0.619 | 15 |
+| bolter | checksummed | 53 | 52 | 0 | 0 | ≤1.000 | 1.000 | 0.981 | 0 |
+| shotgun | uncompressed | 183 | 14 | 160 | 9 | 0.126 | 0.077 | 0.077 | 0 |
+| shotgun | unchecked | 143 | 104 | 0 | 58 | ≤1.000 | 0.594 | 0.727 | 19 |
+| shotgun | checksummed | 59 | 58 | 0 | 1 | ≤1.000 | 0.983 | 0.983 | 0 |
+| nuke | uncompressed | 187 | 84 | 103 | 0 | 0.449 | 0.449 | 0.449 | 0 |
+| nuke | unchecked | 147 | 147 | 0 | 0 | ≤1.000 | 1.000 | 1.000 | 0 |
+| nuke | checksummed | 51 | 51 | 0 | 0 | ≤1.000 | 1.000 | 1.000 | 0 |
 
-Across both classes, the overall rates are 0.312 (sniper), 0.395
-(bolter), 0.457 (shotgun) and 0.732 (nuke). Those blend the two
-populations and say little on their own.
+The two ceilings, as estimated:
 
-The uncompressed `open_rate` for small damage (37% to 61%) is the
-fraction of structural hits tiffz catches. Some of the misses land in
-unconstrained tag values and are undetectable as well, so that rate
-understates tiffz relative to the unmapped true ceiling.
+| profile | worst case (uncompressed) | best case (checksummed) |
+|---|---|---|
+| sniper (1 bit) | 0.086 (bound 0.161) | 0.887 |
+| bolter (1 byte) | 0.065 (bound 0.124) | 1.000 |
+| shotgun (8 to 16 bits) | 0.077 (bound 0.126) | 0.983 |
+| nuke (4096 bytes) | 0.449 | 1.000 |
+
+The unchecked class lands in between, and how far depends on the codec.
+For a single bit, libtiff decoded 93 of 146 unchecked cases without
+complaint, so damage to LZW, PackBits, CCITT or JPEG data is far from
+reliably detectable. tiffz detects more of those cases than libtiff
+does (rate 0.432 against an estimate of 0.363), which shows how low
+that estimate runs.
+
+For small damage, tiffz misses some open cases: 6 of 16 single-bit
+uncompressed cases, 3 of 12 single-byte ones and 1 of 47 single-bit
+checksummed ones. These are candidates for better detection.
+
+Across all classes, the overall rates are 0.312 (sniper), 0.395
+(bolter), 0.457 (shotgun) and 0.732 (nuke). They mix populations whose
+ceilings differ by an order of magnitude, so they say little on their own.
 
 ## Changing the floors
 
 Raise a floor when detection improves. Lower one only deliberately, and
 say in the commit why tiffz now accepts those cases, for example a
 deviation reclassified as tolerated. A floors file must name every
-profile and class pair.
+profile and class pair (uncompressed, unchecked, checksummed).

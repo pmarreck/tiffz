@@ -34,9 +34,16 @@ master=42
 tiffz_bin="${TIFFZ:-}"
 cr_bin="${CORRUPTION_READER:-}"
 tiffdump_bin="${TIFFDUMP:-}"
-classes=(uncompressed compressed)
+tiffinfo_bin="${TIFFINFO:-}"
+pigz_bin="${PIGZ:-}"
+# Weakest integrity first: a tie between classes takes the weaker one.
+classes=(uncompressed unchecked checksummed)
+# tiffdump shortens arrays to 24 items unless -m raises the limit.
+tiffdump_items=1000000000
 declare -A seed_class=()
 declare -A seed_ranges=()
+declare -A seed_zlib=()
+declare -A seed_diag=()
 seeds_file=""
 floors_file=""
 master_set=0
@@ -60,17 +67,29 @@ reach and are not trials. A corruption-reader no-op is not a trial. The
 detection rate is detections / decisive trials. Each profile gets a 95%
 Wilson interval.
 
-Each seed is mapped with libtiff's tiffdump, independently of tiffz.
-A seed is uncompressed when every IFD has Compression 1; otherwise it is
-compressed. TIFF carries no checksum, so any value is a legal sample:
-a case whose changed bytes all fall inside uncompressed strip or tile
-data still decodes to a valid image and no validator can detect it.
-Such a case is "free". Per profile and class, ceiling = (decisive -
-free) / decisive is the known upper bound on the detection rate, and
-open_rate is detections among the remaining cases. A detection of a free
-case is a false_alarm: tiffz rejected a valid file. The ceiling counts
-only this one undetectable class, so the true ceiling can be lower
-(unconstrained tag values and unreferenced bytes are not mapped).
+Each seed is mapped with libtiff's tiffdump, independently of tiffz, and
+classed by the integrity protection of the codec holding most of its
+strip and tile bytes (a tie takes the weaker class):
+  uncompressed  Compression 1. Every value is a legal sample.
+  unchecked     LZW, PackBits, CCITT, JPEG, Zstd without a content
+                checksum, and any other codec without an integrity check.
+  checksummed   Deflate (zlib Adler-32) and LERC (Fletcher-32).
+uncompressed is the worst case and checksummed the best case; the
+"ceilings" line names both per profile.
+
+Each case is bounded independently of tiffz:
+  free   every changed byte is an uncompressed sample. The file is still
+         a valid TIFF, so no validator can detect it.
+  clean  libtiff's tiffinfo -D reads every directory and strip with the
+         seed's own diagnostics, and every touched Deflate stream still
+         passes pigz's Adler-32 check. Probably undetectable, but a
+         stricter validator can still catch some.
+  open   everything else, including any change of length.
+ceiling = (decisive - free) / decisive is an upper bound on the detection
+rate. ceiling_est = (decisive - free - clean) / decisive estimates it.
+open_rate is detections among open cases. A detection of a free case is
+a false_alarm (tiffz rejected a valid file); a detection of a clean case
+is stricter (tiffz caught what libtiff accepts).
 precise=yes when the half-width is at most --margin (default 0.05), which
 needs 385 decisive trials at a rate near one half and fewer when the rate
 is near 0 or 1.
@@ -98,6 +117,8 @@ options:
   --tiffz PATH               tiffz executable
   --corruption-reader PATH   corruption-reader executable
   --tiffdump PATH            libtiff tiffdump executable (seed layout oracle)
+  --tiffinfo PATH            libtiff tiffinfo executable (decode oracle)
+  --pigz PATH                pigz executable (independent zlib Adler-32 check)
 EOF
 }
 
@@ -173,22 +194,30 @@ print_profile() {
 }
 
 # Print one profile's ceiling line for one seed class from a ledger.
+# With $4 = brief, print only its ceiling and ceiling_est.
 print_class() {
-	awk -v profile="$1" -v class="$2" -F '\t' '
+	awk -v profile="$1" -v class="$2" -v brief="${4:-}" -F '\t' '
 		$1 == profile && $3 == class && ($2 == "detect" || $2 == "accept") {
 			n++
 			if ($2 == "detect") k++
 			if ($4 == "free") { free++; if ($2 == "detect") fa++ }
+			else if ($4 == "clean") { clean++; if ($2 == "detect") st++ }
 		}
+		function rate(num, den) { return den > 0 ? sprintf("%.6f", num / den) : "na" }
 		END {
-			printf "class %s %s decisive=%d detect=%d free=%d ", profile, class, n, k, free
-			if (n > 0) printf "ceiling=%.6f ", (n - free) / n
-			else printf "ceiling=na "
-			if (n - free > 0) printf "open_rate=%.6f ", (k - fa) / (n - free)
-			else printf "open_rate=na "
-			printf "false_alarm=%d\n", fa
+			ceilings = "ceiling=" rate(n - free, n) " ceiling_est=" rate(n - free - clean, n)
+			if (brief == "brief") { printf "%s", ceilings; exit }
+			printf "class %s %s decisive=%d detect=%d free=%d clean=%d %s ", profile, class, n, k, free, clean, ceilings
+			printf "open_rate=%s false_alarm=%d stricter=%d\n", rate(k - fa - st, n - free - clean), fa, st
 		}
 	' "$3"
+}
+
+# Name the worst case (no integrity check, every value legal) and the best
+# case (a checksum over the data) for one profile.
+print_ceilings() {
+	printf 'ceilings %s worst_case=uncompressed %s best_case=checksummed %s\n' "$1" \
+		"$(print_class "$1" uncompressed "$2" brief)" "$(print_class "$1" checksummed "$2" brief)"
 }
 
 count_file() {
@@ -234,6 +263,7 @@ summarize() {
 		for class in "${classes[@]}"; do
 			print_class "$profile" "$class" "$dir/ledger"
 		done
+		print_ceilings "$profile" "$dir/ledger"
 	done <"$dir/order"
 	rm -rf -- "$dir"
 	return "$overall"
@@ -296,6 +326,12 @@ resolve_tools() {
 	if [ -z "$tiffdump_bin" ]; then
 		tiffdump_bin="$(command -v tiffdump 2>/dev/null)" || die "tiffdump (libtiff) not found; pass --tiffdump"
 	fi
+	if [ -z "$tiffinfo_bin" ]; then
+		tiffinfo_bin="$(command -v tiffinfo 2>/dev/null)" || die "tiffinfo (libtiff) not found; pass --tiffinfo"
+	fi
+	if [ -z "$pigz_bin" ]; then
+		pigz_bin="$(command -v pigz 2>/dev/null)" || die "pigz not found; pass --pigz"
+	fi
 }
 
 reader_profile() {
@@ -335,33 +371,94 @@ has_code16() {
 	' "$1"
 }
 
-# Run tiffz validate --json on $1 into $2 under a 30 s limit. macOS hosts
-# have GNU timeout as gtimeout; Linux and the Nix sandbox have timeout.
-validate_limited() {
-	local limit=""
+# Run a command under a 30 s limit. macOS hosts have GNU timeout as
+# gtimeout; Linux and the Nix sandbox have timeout.
+limited() {
 	if command -v gtimeout >/dev/null 2>&1; then
-		limit=gtimeout
+		gtimeout 30 "$@"
 	elif command -v timeout >/dev/null 2>&1; then
-		limit=timeout
-	fi
-	if [ -n "$limit" ]; then
-		"$limit" 30 "$tiffz_bin" validate --json -- "$1" >"$2" 2>"$work/tiffz.err"
+		timeout 30 "$@"
 	else
-		"$tiffz_bin" validate --json -- "$1" >"$2" 2>"$work/tiffz.err"
+		"$@"
 	fi
 }
 
-# Map a seed with tiffdump. Record its class and write the merged,
-# half-open byte ranges of its uncompressed strip and tile data to $2.
-# A Compression tag that is absent means 1 (TIFF 6.0, section 8).
+# Run tiffz validate --json on $1 into $2.
+validate_limited() {
+	limited "$tiffz_bin" validate --json -- "$1" >"$2" 2>"$work/tiffz.err"
+}
+
+# libtiff's verdict on reading every directory and strip of $1: its exit
+# status and its diagnostics, with the file's own path replaced so a seed
+# and its cases compare equal when libtiff says the same thing.
+libtiff_diag() {
+	local st=0 err
+	limited "$tiffinfo_bin" -D "$1" >/dev/null 2>"$work/tiffinfo.err" || st=$?
+	err="$(cat "$work/tiffinfo.err")"
+	printf '%s|%s\n' "$st" "${err//"$1"/@FILE}"
+}
+
+# True when the half-open byte range [$2, $3) of $1 is a zlib stream that
+# inflates with a matching Adler-32 trailer.
+zlib_ok() {
+	tail -c "+$(($2 + 1))" -- "$1" | head -c "$(($3 - $2))" |
+		limited "$pigz_bin" -dc >/dev/null 2>&1
+}
+
+# True when the Zstd frame at byte $2 of $1 sets Content_Checksum_flag
+# (RFC 8878, section 3.1.1.1.1: bit 2 of the frame header descriptor).
+zstd_checksummed() {
+	local b
+	b="$(od -An -tu1 -j "$2" -N5 -- "$1" | tr -s ' ' ' ')"
+	set -- $b
+	[ "$#" -eq 5 ] && [ "$1" -eq 40 ] && [ "$2" -eq 181 ] && [ "$3" -eq 47 ] && [ "$4" -eq 253 ] &&
+		[ $(($5 & 4)) -ne 0 ]
+}
+
+# Map a seed with tiffdump and print its class. Write the half-open byte
+# ranges of its uncompressed strip and tile data to $2 and those of its
+# Deflate streams to $3. A Compression tag that is absent means 1 (TIFF
+# 6.0, section 8). Codes: 8 and 32946 Deflate, 34887 LERC, 50000 Zstd.
 seed_layout() {
-	local seed="$1" ranges="$2" dump
-	dump="$("$tiffdump_bin" "$seed" 2>/dev/null)" || die "tiffdump cannot read seed: $seed"
-	printf '%s\n' "$dump" | awk -v ranges="$ranges" '
+	local seed="$1" ranges="$2" zlib="$3" dump comp start end kind best
+	local -A total=([uncompressed]=0 [unchecked]=0 [checksummed]=0)
+	dump="$("$tiffdump_bin" -m "$tiffdump_items" "$seed" 2>/dev/null)" || die "tiffdump cannot read seed: $seed"
+	while read -r comp start end; do
+		case "$comp" in
+			1)
+				kind=uncompressed
+				printf '%s %s\n' "$start" "$end" >>"$ranges"
+				;;
+			8|32946)
+				kind=checksummed
+				zlib_ok "$seed" "$start" "$end" || die "seed Deflate stream at $start fails its Adler-32 check: $seed"
+				printf '%s %s\n' "$start" "$end" >>"$zlib"
+				;;
+			34887) kind=checksummed ;;
+			50000)
+				zstd_checksummed "$seed" "$start" &&
+					die "no independent oracle for a Zstd content checksum yet: $seed"
+				kind=unchecked
+				;;
+			*) kind=unchecked ;;
+		esac
+		total[$kind]=$((total[$kind] + end - start))
+	done < <(printf '%s\n' "$dump" | seed_strips)
+	best=uncompressed
+	for kind in "${classes[@]}"; do
+		if [ "${total[$kind]}" -gt "${total[$best]}" ]; then
+			best="$kind"
+		fi
+	done
+	printf '%s\n' "$best"
+}
+
+# tiffdump output on stdin to "compression start end" per strip or tile.
+seed_strips() {
+	awk '
 		function flush() {
 			if (!indir) return
-			if (comp != 1) compressed = 1
-			else for (i = 1; i <= noff && i <= ncnt; i++) print off[i], off[i] + cnt[i] >ranges
+			for (i = 1; i <= noff && i <= ncnt; i++) print comp, off[i], off[i] + cnt[i]
 			indir = 0
 		}
 		function values(line, arr,    v, n) {
@@ -374,11 +471,7 @@ seed_layout() {
 		/^Compression \(259\)/ { values($0, tmp); comp = tmp[1] + 0 }
 		/^(StripOffsets \(273\)|TileOffsets \(324\))/ { noff = values($0, off) }
 		/^(StripByteCounts \(279\)|TileByteCounts \(325\))/ { ncnt = values($0, cnt) }
-		END {
-			flush()
-			printf "" >>ranges
-			print (compressed ? "compressed" : "uncompressed")
-		}
+		END { flush() }
 	'
 }
 
@@ -395,23 +488,53 @@ free_bytes() {
 	'
 }
 
-# "free" when every byte that differs between seed $1 and case $2 lies in
-# the seed's uncompressed sample ranges, else "open". A length change is open.
+# Bound case $2 of seed $1 (see --help): "free" when every changed byte
+# lies in the seed's uncompressed sample ranges; "clean" when libtiff reads
+# it with the seed's diagnostics and every Deflate stream it touches still
+# passes Adler-32; else "open". A length change is open.
 case_bound() {
-	local seed="$1" mutated="$2"
+	local seed="$1" mutated="$2" changed="$work/changed" start end
 	if [ "$(wc -c <"$seed")" != "$(wc -c <"$mutated")" ]; then
 		printf 'open\n'
 		return
 	fi
-	cmp -l -- "$seed" "$mutated" 2>/dev/null | awk -v ranges="${seed_ranges[$seed]}" '
+	cmp -l -- "$seed" "$mutated" 2>/dev/null | awk '{ print $1 - 1 }' >"$changed"
+	if [ "$(within_ranges "${seed_ranges[$seed]}" <"$changed")" = all ]; then
+		printf 'free\n'
+		return
+	fi
+	if [ "$(libtiff_diag "$mutated")" != "${seed_diag[$seed]//"$seed"/@FILE}" ]; then
+		printf 'open\n'
+		return
+	fi
+	while read -r start end; do
+		if ! zlib_ok "$mutated" "$start" "$end"; then
+			printf 'open\n'
+			return
+		fi
+	done < <(touched_ranges "${seed_zlib[$seed]}" <"$changed")
+	printf 'clean\n'
+}
+
+# Offsets on stdin: print "all" when each lies in a range of file $1.
+within_ranges() {
+	awk -v ranges="$1" '
 		BEGIN { n = 0; while ((getline line < ranges) > 0) { split(line, r, " "); s[n] = r[1]; e[n] = r[2]; n++ } }
 		{
-			o = $1 - 1
 			hit = 0
-			for (i = 0; i < n; i++) if (o >= s[i] && o < e[i]) { hit = 1; break }
-			if (!hit) { open = 1; exit }
+			for (i = 0; i < n; i++) if ($1 >= s[i] && $1 < e[i]) { hit = 1; break }
+			if (!hit) { out = 1; exit }
 		}
-		END { print (open ? "open" : "free") }
+		END { print (out ? "some" : "all") }
+	'
+}
+
+# Offsets on stdin: print each range of file $1 that holds one, once.
+touched_ranges() {
+	awk -v ranges="$1" '
+		BEGIN { n = 0; while ((getline line < ranges) > 0) { split(line, r, " "); s[n] = r[1]; e[n] = r[2]; n++ } }
+		{ for (i = 0; i < n; i++) if ($1 >= s[i] && $1 < e[i]) hit[i] = 1 }
+		END { for (i = 0; i < n; i++) if (hit[i]) print s[i], e[i] }
 	'
 }
 
@@ -530,11 +653,14 @@ campaign() {
 			printf 'specificity sha256=%s bytes=%s\n' "$hash" "$bytes"
 			seed_non16["$seed"]="$(non16_key "$spec_json")"
 			seed_code16["$seed"]="$(has_code16 "$spec_json")"
-			local ranges="$work/ranges.$accepted" class
+			local ranges="$work/ranges.$accepted" zlib="$work/zlib.$accepted" class
 			: >"$ranges"
-			class="$(seed_layout "$seed" "$ranges")" || exit 2
+			: >"$zlib"
+			class="$(seed_layout "$seed" "$ranges" "$zlib")" || exit 2
 			seed_class["$seed"]="$class"
 			seed_ranges["$seed"]="$ranges"
+			seed_zlib["$seed"]="$zlib"
+			seed_diag["$seed"]="$(libtiff_diag "$seed")"
 			printf 'layout %s class=%s free_bytes=%s bytes=%s\n' "$seed" "$class" "$(free_bytes "$ranges" "$bytes")" "$bytes"
 			accepted=$((accepted + 1))
 		else
@@ -787,6 +913,16 @@ while [ "$#" -gt 0 ]; do
 		--tiffdump)
 			[ "$#" -ge 2 ] || die "--tiffdump needs a path"
 			tiffdump_bin="$2"
+			shift 2
+			;;
+		--tiffinfo)
+			[ "$#" -ge 2 ] || die "--tiffinfo needs a path"
+			tiffinfo_bin="$2"
+			shift 2
+			;;
+		--pigz)
+			[ "$#" -ge 2 ] || die "--pigz needs a path"
+			pigz_bin="$2"
 			shift 2
 			;;
 		--seeds-file)

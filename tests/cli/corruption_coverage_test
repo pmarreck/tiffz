@@ -237,26 +237,86 @@ printf '{"status":"fake","path":"%s","error":%d,"ifds":0,"findings":%s}\n' "$pat
 exit "$code"
 EOF
 chmod +x "$bindir/corruption-reader" "$bindir/tiffz"
-cat >"$bindir/tiffdump" <<'EOF'
+cat >"$bindir/tiffdump" <<'EOF2'
 #!/usr/bin/env bash
-# Fake libtiff tiffdump: describes the 3-byte seed per FAKE_LAYOUT.
+# Fake libtiff tiffdump: describes the seed per FAKE_LAYOUT. Like the real
+# one, it shortens arrays with " ..." unless -m raises the item limit.
 set -u
-case "${FAKE_LAYOUT:-compressed}" in
-	uncompressed-all) comp=1 off=0 cnt=3 ;;
-	uncompressed-tail) comp=1 off=2 cnt=1 ;;
-	compressed) comp=8 off=0 cnt=3 ;;
-	broken)
-		printf '%s: Not a TIFF file\n' "$1" >&2
-		exit 1
-		;;
+full=0
+path=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-m) full=1; shift 2 ;;
+		*) path="$1"; shift ;;
+	esac
+done
+ifd() {
+	# $1 directory  $2 compression  $3 offsets  $4 counts
+	local n offs cnts
+	n="$(printf '%s\n' "$3" | wc -w)"
+	offs="$3"
+	cnts="$4"
+	if [ "$full" -eq 0 ] && [ "$n" -gt 1 ]; then
+		offs="${3%% *} ..."
+		cnts="${4%% *} ..."
+	fi
+	printf 'Directory %s: offset 8 (0x8) next 0 (0)\n' "$1"
+	printf 'Compression (259) SHORT (3) 1<%s>\n' "$2"
+	printf 'StripOffsets (273) LONG (4) %s<%s>\n' "$n" "$offs"
+	printf 'StripByteCounts (279) LONG (4) %s<%s>\n' "$n" "$cnts"
+}
+if [ "${FAKE_LAYOUT:-deflate}" = broken ]; then
+	printf '%s: Not a TIFF file\n' "$path" >&2
+	exit 1
+fi
+printf '%s:\nMagic: 0x4949 <little-endian> Version: 0x2a <ClassicTIFF>\n' "$path"
+case "${FAKE_LAYOUT:-deflate}" in
+	uncompressed-all) ifd 0 1 0 3 ;;
+	uncompressed-tail) ifd 0 1 2 1 ;;
+	two-strips) ifd 0 1 "0 2" "1 1" ;;
+	lzw) ifd 0 5 0 3 ;;
+	deflate) ifd 0 8 0 3 ;;
+	deflate-tail) ifd 0 8 2 1 ;;
+	lerc) ifd 0 34887 0 3 ;;
+	zstd) ifd 0 50000 0 6 ;;
+	majority) ifd 0 1 2 1; ifd 1 5 0 2 ;;
+	tie-unchecked) ifd 0 8 0 1; ifd 1 5 1 1 ;;
+	tie-uncompressed) ifd 0 8 0 1; ifd 1 1 1 1 ;;
 esac
-printf '%s:\nMagic: 0x4949 <little-endian> Version: 0x2a <ClassicTIFF>\n' "$1"
-printf 'Directory 0: offset 8 (0x8) next 0 (0)\n'
-printf 'Compression (259) SHORT (3) 1<%s>\n' "$comp"
-printf 'StripOffsets (273) LONG (4) 1<%s>\n' "$off"
-printf 'StripByteCounts (279) LONG (4) 1<%s>\n' "$cnt"
-EOF
-chmod +x "$bindir/tiffdump"
+EOF2
+cat >"$bindir/tiffinfo" <<'EOF2'
+#!/usr/bin/env bash
+# Fake libtiff tiffinfo -D: the seed reads cleanly; a case reads per FAKE_LIBTIFF.
+set -u
+path="${!#}"
+if [ "${FAKE_LIBTIFF:-clean}" = warn-always ]; then
+	printf '%s: Warning, unknown field with tag 33550\n' "$path" >&2
+	exit 0
+fi
+case "$path" in
+	*"/cr-"*) mode="${FAKE_LIBTIFF:-clean}" ;;
+	*) mode=clean ;;
+esac
+if [ "$mode" = error ]; then
+	printf 'TIFFReadEncodedStrip: %s: Read error on strip 0\n' "$path" >&2
+	exit 1
+fi
+exit 0
+EOF2
+cat >"$bindir/pigz" <<'EOF2'
+#!/usr/bin/env bash
+# Fake pigz -dc: with FAKE_PIGZ=mismatch, a stream the fake reader rewrote
+# (first byte X) fails its Adler-32 check.
+set -u
+first="$(head -c 1)"
+cat >/dev/null
+if [ "${FAKE_PIGZ:-ok}" = mismatch ] && [ "$first" = X ]; then
+	printf 'pigz: skipping: <stdin>: corrupted -- adler32 mismatch\n' >&2
+	exit 1
+fi
+exit 0
+EOF2
+chmod +x "$bindir/tiffdump" "$bindir/tiffinfo" "$bindir/pigz"
 export PATH="$bindir:$PATH"
 
 seedfile="$sandbox/seeds"
@@ -331,51 +391,104 @@ assert_contains "a new non-reach finding is a detection" "$subject_out" \
 assert_contains "finding 16 alone is reach" "$subject_out" \
 	"bolter decisive=0 detect=0 accept=0 reach=4 noop=0 crash=0 harness=0 rate=na"
 
-# --- ceilings: an oracle independent of tiffz --------------------------
+# --- ceilings: oracles independent of tiffz ----------------------------
 #
 # The fake tiffdump describes the one seed ("ok\n", 3 bytes). The fake
-# reader always rewrites byte 0. A change confined to uncompressed sample
-# bytes is undetectable by any validator, so it lowers the ceiling, and a
-# detection of it is a false alarm.
+# reader always rewrites byte 0. Each case is bounded three ways:
+#   free   every changed byte is an uncompressed sample, so the file is
+#          still valid and no validator can tell (a detection is a false
+#          alarm);
+#   clean  libtiff reads the case with the seed's own diagnostics, and any
+#          touched checksummed stream still passes its own check, so it is
+#          probably undetectable (a detection is stricter than libtiff);
+#   open   everything else.
+# ceiling counts only free cases and is an upper bound; ceiling_est also
+# removes clean cases and is an estimate.
 
-FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-all run_subject \
-	--tiffz "$bindir/tiffz" \
-	--corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile" \
-	--master 42 --trials 8 --margin 0.20
+cov_args=(--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
+	--seeds-file "$seedfile" --master 42 --trials 2 --margin 0.20)
+
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-all run_subject "${cov_args[@]}"
 assert_contains "layout line for an all-sample seed" "$subject_out" \
 	"layout $sandbox/seed-a.tiff class=uncompressed free_bytes=3 bytes=3"
 assert_contains "a change inside sample bytes lowers the ceiling" "$subject_out" \
-	"class sniper uncompressed decisive=8 detect=8 free=8 ceiling=0.000000 open_rate=na false_alarm=8"
-assert_contains "an empty class still prints" "$subject_out" \
-	"class sniper compressed decisive=0 detect=0 free=0 ceiling=na open_rate=na false_alarm=0"
+	"class sniper uncompressed decisive=2 detect=2 free=2 clean=0 ceiling=0.000000 ceiling_est=0.000000 open_rate=na false_alarm=2 stricter=0"
+assert_contains "an empty unchecked class still prints" "$subject_out" \
+	"class sniper unchecked decisive=0 detect=0 free=0 clean=0 ceiling=na ceiling_est=na open_rate=na false_alarm=0 stricter=0"
+assert_contains "an empty checksummed class still prints" "$subject_out" \
+	"class sniper checksummed decisive=0 detect=0 free=0 clean=0 ceiling=na ceiling_est=na open_rate=na false_alarm=0 stricter=0"
+assert_contains "worst and best cases are named per profile" "$subject_out" \
+	"ceilings sniper worst_case=uncompressed ceiling=0.000000 ceiling_est=0.000000 best_case=checksummed ceiling=na ceiling_est=na"
 
-FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail run_subject \
-	--tiffz "$bindir/tiffz" \
-	--corruption-reader "$bindir/corruption-reader" \
-	--tiffdump "$bindir/tiffdump" \
-	--seeds-file "$seedfile" \
-	--master 42 --trials 8 --margin 0.20
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_LIBTIFF=error run_subject \
+	--tiffdump "$bindir/tiffdump" --tiffinfo "$bindir/tiffinfo" "${cov_args[@]}"
 assert_contains "layout line counts only sample bytes" "$subject_out" \
 	"layout $sandbox/seed-a.tiff class=uncompressed free_bytes=1 bytes=3"
-assert_contains "a change outside sample bytes stays detectable" "$subject_out" \
-	"class sniper uncompressed decisive=8 detect=8 free=0 ceiling=1.000000 open_rate=1.000000 false_alarm=0"
+assert_contains "a change libtiff rejects stays detectable" "$subject_out" \
+	"class sniper uncompressed decisive=2 detect=2 free=0 clean=0 ceiling=1.000000 ceiling_est=1.000000 open_rate=1.000000 false_alarm=0 stricter=0"
 
-FAKE_MODE=mixed FAKE_LAYOUT=compressed run_subject \
-	--tiffz "$bindir/tiffz" \
-	--corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile" \
-	--master 42 --trials 8 --margin 0.20
-assert_contains "compressed seeds have no free sample bytes" "$subject_out" \
-	"layout $sandbox/seed-a.tiff class=compressed free_bytes=0 bytes=3"
-assert_contains "compressed misses count against the open rate" "$subject_out" \
-	"class shotgun compressed decisive=8 detect=0 free=0 ceiling=1.000000 open_rate=0.000000 false_alarm=0"
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail run_subject "${cov_args[@]}"
+assert_contains "a structural change libtiff reads cleanly is probably free" "$subject_out" \
+	"class sniper uncompressed decisive=2 detect=2 free=0 clean=2 ceiling=1.000000 ceiling_est=0.000000 open_rate=na false_alarm=0 stricter=2"
 
-FAKE_LAYOUT=broken run_subject \
-	--tiffz "$bindir/tiffz" \
-	--corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile" \
-	--master 42 --trials 8 --margin 0.20
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_LIBTIFF=warn-always run_subject "${cov_args[@]}"
+assert_contains "a diagnostic the seed also raises is not a difference" "$subject_out" \
+	"class sniper uncompressed decisive=2 detect=2 free=0 clean=2"
+
+FAKE_MODE=all-detect FAKE_LAYOUT=two-strips run_subject "${cov_args[@]}"
+assert_contains "every strip is mapped, not tiffdump's first few" "$subject_out" \
+	"layout $sandbox/seed-a.tiff class=uncompressed free_bytes=2 bytes=3"
+
+FAKE_MODE=mixed FAKE_LAYOUT=lzw FAKE_LIBTIFF=error run_subject "${cov_args[@]}"
+assert_contains "a codec without a check is unchecked" "$subject_out" \
+	"layout $sandbox/seed-a.tiff class=unchecked free_bytes=0 bytes=3"
+assert_contains "unchecked misses libtiff rejects count against the open rate" "$subject_out" \
+	"class shotgun unchecked decisive=2 detect=0 free=0 clean=0 ceiling=1.000000 ceiling_est=1.000000 open_rate=0.000000 false_alarm=0 stricter=0"
+
+FAKE_MODE=mixed FAKE_LAYOUT=lzw run_subject "${cov_args[@]}"
+assert_contains "an unchecked stream libtiff decodes cleanly is probably free" "$subject_out" \
+	"class shotgun unchecked decisive=2 detect=0 free=0 clean=2 ceiling=1.000000 ceiling_est=0.000000 open_rate=na false_alarm=0 stricter=0"
+
+FAKE_MODE=all-detect FAKE_LAYOUT=deflate FAKE_PIGZ=mismatch run_subject "${cov_args[@]}"
+assert_contains "Deflate is checksummed" "$subject_out" \
+	"layout $sandbox/seed-a.tiff class=checksummed free_bytes=0 bytes=3"
+assert_contains "a failed Adler-32 is detectable even when libtiff reads cleanly" "$subject_out" \
+	"class sniper checksummed decisive=2 detect=2 free=0 clean=0 ceiling=1.000000 ceiling_est=1.000000 open_rate=1.000000 false_alarm=0 stricter=0"
+assert_contains "the best case is the checksummed class" "$subject_out" \
+	"ceilings sniper worst_case=uncompressed ceiling=na ceiling_est=na best_case=checksummed ceiling=1.000000 ceiling_est=1.000000"
+
+FAKE_MODE=all-detect FAKE_LAYOUT=deflate run_subject "${cov_args[@]}"
+assert_contains "a stream that still passes Adler-32 and libtiff is probably free" "$subject_out" \
+	"class sniper checksummed decisive=2 detect=2 free=0 clean=2"
+
+FAKE_MODE=all-detect FAKE_LAYOUT=deflate-tail FAKE_PIGZ=mismatch run_subject "${cov_args[@]}"
+assert_contains "a change outside the stream does not consult its checksum" "$subject_out" \
+	"class sniper checksummed decisive=2 detect=2 free=0 clean=2"
+
+FAKE_MODE=all-detect FAKE_LAYOUT=lerc run_subject "${cov_args[@]}"
+assert_contains "LERC is checksummed" "$subject_out" \
+	"layout $sandbox/seed-a.tiff class=checksummed free_bytes=0 bytes=3"
+
+FAKE_MODE=all-detect FAKE_LAYOUT=majority FAKE_LIBTIFF=error run_subject "${cov_args[@]}"
+assert_contains "a seed is classed by the codec holding most data bytes" "$subject_out" \
+	"layout $sandbox/seed-a.tiff class=unchecked free_bytes=1 bytes=3"
+FAKE_MODE=all-detect FAKE_LAYOUT=tie-unchecked run_subject "${cov_args[@]}"
+assert_contains "a tie takes the weaker class (unchecked)" "$subject_out" "class=unchecked"
+FAKE_MODE=all-detect FAKE_LAYOUT=tie-uncompressed run_subject "${cov_args[@]}"
+assert_contains "a tie takes the weaker class (uncompressed)" "$subject_out" "class=uncompressed"
+
+zseeds="$sandbox/zseeds"
+printf '%s\n' "$sandbox/seed-z.tiff" >"$zseeds"
+printf '\050\265\057\375\140\000' >"$sandbox/seed-z.tiff"
+FAKE_MODE=all-detect FAKE_LAYOUT=zstd run_subject "${cov_args[@]}" --seeds-file "$zseeds"
+assert_contains "a Zstd frame without a content checksum is unchecked" "$subject_out" \
+	"layout $sandbox/seed-z.tiff class=unchecked free_bytes=0 bytes=6"
+printf '\050\265\057\375\144\000' >"$sandbox/seed-z.tiff"
+FAKE_MODE=all-detect FAKE_LAYOUT=zstd run_subject "${cov_args[@]}" --seeds-file "$zseeds"
+assert_equal "a checksummed Zstd frame has no independent oracle yet" 2 "$subject_status"
+assert_contains "the refusal says why" "$subject_err" "Zstd content checksum"
+
+FAKE_LAYOUT=broken run_subject "${cov_args[@]}"
 assert_equal "a seed tiffdump cannot read stops the measurement" 2 "$subject_status"
 assert_contains "the unreadable seed is named" "$subject_err" "seed-a.tiff"
 
@@ -387,13 +500,17 @@ cat >"$floors" <<'EOF'
 
 master=42 trials=8
 sniper uncompressed 8
-sniper compressed 0
+sniper unchecked 0
+sniper checksummed 0
 bolter uncompressed 0
-bolter compressed 0
+bolter unchecked 0
+bolter checksummed 0
 shotgun uncompressed 0
-shotgun compressed 0
+shotgun unchecked 0
+shotgun checksummed 0
 nuke uncompressed 0
-nuke compressed 0
+nuke unchecked 0
+nuke checksummed 0
 EOF
 
 FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail run_subject \
@@ -407,8 +524,8 @@ assert_contains "floors take trials from the file" "$subject_out" "trials=8"
 assert_contains "sniper trial line" "$subject_out" "floor sniper decisive=8 trials=8 ok"
 assert_contains "sniper class floor line" "$subject_out" \
 	"floor sniper uncompressed detect=8 min=8 false_alarm=0 ok"
-assert_contains "nuke compressed floor line" "$subject_out" \
-	"floor nuke compressed detect=0 min=0 false_alarm=0 ok"
+assert_contains "nuke checksummed floor line" "$subject_out" \
+	"floor nuke checksummed detect=0 min=0 false_alarm=0 ok"
 
 FAKE_MODE=finding FAKE_LAYOUT=uncompressed-tail run_subject \
 	--tiffz "$bindir/tiffz" \
@@ -451,12 +568,12 @@ run_subject --floors "$floors" --master 7 \
 	--seeds-file "$seedfile"
 assert_equal "a master that disagrees with the floors file is a usage error" 2 "$subject_status"
 
-grep -v '^nuke compressed' "$floors" >"$floors.partial"
+grep -v '^nuke checksummed' "$floors" >"$floors.partial"
 run_subject --floors "$floors.partial" \
 	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
 	--seeds-file "$seedfile"
 assert_equal "a floors file missing a profile and class is a usage error" 2 "$subject_status"
-assert_contains "the missing pair is named" "$subject_err" "nuke compressed"
+assert_contains "the missing pair is named" "$subject_err" "nuke checksummed"
 
 sed 's/^sniper uncompressed 8$/sniper uncompressed eight/' "$floors" >"$floors.bad"
 run_subject --floors "$floors.bad" \
@@ -464,7 +581,7 @@ run_subject --floors "$floors.bad" \
 	--seeds-file "$seedfile"
 assert_equal "a non-numeric floor is a usage error" 2 "$subject_status"
 
-sed 's/^sniper compressed 0$/sniper lossless 0/' "$floors" >"$floors.class"
+sed 's/^sniper unchecked 0$/sniper compressed 0/' "$floors" >"$floors.class"
 run_subject --floors "$floors.class" \
 	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
 	--seeds-file "$seedfile"

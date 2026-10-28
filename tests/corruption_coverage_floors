@@ -8,16 +8,22 @@
 # Lower one only on purpose, saying in the commit why tiffz now accepts
 # those cases (for example, a deviation reclassified as tolerated).
 #
-# Set 2026-10-23 with corruption-reader 0.8.0 (a7ea995), 385 decisive
-# trials per profile. Uncompressed seeds have a low ceiling because most
-# of their bytes are raw samples, where any value is legal.
+# Classes by integrity protection, weakest first: uncompressed (worst
+# case: every value is a legal sample), unchecked (compressed without an
+# integrity check) and checksummed (best case: Deflate or LERC).
+# Set 2026-10-28 with corruption-reader 0.8.0 (a7ea995), 385 decisive
+# trials per profile.
 
 master=42 trials=385
 sniper uncompressed 11
-sniper compressed 109
+sniper unchecked 63
+sniper checksummed 46
 bolter uncompressed 9
-bolter compressed 143
+bolter unchecked 91
+bolter checksummed 52
 shotgun uncompressed 14
-shotgun compressed 162
+shotgun unchecked 104
+shotgun checksummed 58
 nuke uncompressed 84
-nuke compressed 198
+nuke unchecked 147
+nuke checksummed 51

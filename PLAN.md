@@ -7,9 +7,13 @@ Open work and the latest completions. Older narrative:
 
 Order (BDFN, 2026-10-23): coverage gate, then build-layout conformance, then writer and conversion CLI.
 
+- [ ] Investigate the open cases tiffz misses, where libtiff complains and tiffz accepts: 6 of 16 single-bit uncompressed, 3 of 12 single-byte uncompressed, 1 of 47 single-bit checksummed (2026-10-28 campaign).
+- [ ] corruption-coverage spends about 140 ms per case on process forks (contract test 69 s, campaign 2m06s). Parse each batch's report and ranges in fewer processes.
 - [ ] Shared PATH cutover to `bin/<PF>` (dotfiles owner), then drop the legacy `result` and `zig-out/bin/tiffz` links from `./build`'s publish().
 
 ## Done
+
+- [x] Two coverage ceilings (BDFN, 2026-10-28): seeds classed uncompressed (worst case), unchecked or checksummed (best case) by the codec holding most data bytes; each case bounded free (proven, tiffdump), clean (libtiff tiffinfo -D plus pigz Adler-32) or open; `ceilings` line per profile; floors per class. Sandboxed check reproduced every floor; full `./test` green in 8m42s (done 2026-10-28 13:10 EDT).
 
 - [x] C CLI conversion both ways through the C FFI, for PNG and BMP (BDFN, 2026-10-23). Today `dump` writes TIFF to PNG. Add TIFF to BMP, plus PNG and BMP to TIFF, through a minimal Zig-core writer: strip-based, 8-bit gray/RGB/RGBA, uncompressed or Deflate/LZW, with new FFI entry points (scope recorded in INTENT.md). Round-trip tests both ways. Writer output must pass `tiffz validate` and libtiff.
   - [x] `src/writer.zig` encode(): little-endian baseline TIFF, one IFD, strips of about 8 KiB, gray8 (MinIsBlack), RGB8, RGBA8 (ExtraSamples = unassociated alpha), compression none. Round-trips through tiffz's own decoder.

@@ -373,7 +373,7 @@
             # fully green ReleaseFast suite.
             #
             # Enforced HERE, not as a per-module `.optimize` in build.zig: Zig
-            # honours per-module optimize, so pinning only the test module
+            # honors per-module optimize, so pinning only the test module
             # would leave imported library code at ReleaseFast. The command
             # line flips the whole test compilation at once.
             #
@@ -469,7 +469,8 @@
         # Corruption detection gate: a deterministic corruption-reader
         # campaign over the known-good seed corpus, scored by the packaged
         # CLI against tests/corruption_coverage_floors. libtiff tiffdump maps
-        # each seed independently of tiffz; see docs/corruption_coverage.md.
+        # each seed, and libtiff tiffinfo plus pigz (zlib Adler-32) bound each
+        # case, independently of tiffz; see docs/corruption_coverage.md.
         checks.corruption-coverage = pkgs.runCommand "tiffz-corruption-coverage" {
           nativeBuildInputs = [ pkgs.bash pkgs.gawk pkgs.diffutils ];
         } ''
@@ -478,6 +479,8 @@
             --floors tests/corruption_coverage_floors \
             --tiffz ${tiffzPkg}/bin/tiffz \
             --tiffdump ${pkgs.libtiff.bin}/bin/tiffdump \
+            --tiffinfo ${pkgs.libtiff.bin}/bin/tiffinfo \
+            --pigz ${pkgs.pigz}/bin/pigz \
             --corruption-reader ${corruption-reader.packages.${system}.default}/bin/corruption-reader \
             >"$TMPDIR/report" 2>"$TMPDIR/err" && status=0 || status=$?
           cat "$TMPDIR/report"
@@ -505,6 +508,7 @@
 
             # TIFF fixture / oracle toolchain (SPEC §4 verification oracles + §A fixture recipes)
             pkgs.libtiff       # tiffcp, tiffinfo, tiff2rgba, tiffmedian, raw2tiff, tiffdump
+            pkgs.pigz          # independent zlib Adler-32 check for corruption-coverage
             pkgs.imagemagick   # most flexible TIFF variant generator
             gdalNoCheck        # LERC, ZSTD-in-TIFF, JPEG2000, GeoTIFF, tiled
             pkgs.netpbm        # pnmtotiff / pamtotiff (lighter path for 1-bit)
