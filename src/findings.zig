@@ -109,15 +109,34 @@ pub const SourceDecoder = enum(i32) {
     _,
 };
 
-/// Four-way validation outcome. Native informational/tolerance findings use
-/// `valid`; strict nested validators preserve all four values unchanged.
+/// Validation outcome. Native informational/tolerance findings use `valid`;
+/// strict nested validators' outcomes pass through unchanged. `known_defect`
+/// (appended to match jpegz's KNOWN_DEFECT wire value) is a recognized encoder
+/// defect: the data decodes, and the consumer decides how to treat it.
 pub const Verdict = enum(i32) {
     valid = 0,
     corrupt = 1,
     unsupported = 2,
     indeterminate = 3,
+    known_defect = 4,
     _,
 };
+
+/// Classify one finding from jpegz's own T.81/T.87 validator the way jpegz's
+/// classic leg classifies its findings (classifyClassicFindings, jpegz
+/// d88957b), so a TIFF consumer sees the codec's own judgment per finding.
+/// Recovered truncation and restart faults are corruption whatever their
+/// severity, all-zero Huffman padding is a known encoder defect, and an
+/// unknown marker or unchecked JFIF version leaves the outcome indeterminate.
+pub fn classicFindingVerdict(code: @import("jpegz").FindingCode, severity: @import("jpegz").Severity) Verdict {
+    if (severity == .fail) return .corrupt;
+    return switch (code) {
+        .missing_eoi, .insufficient_data, .restart_marker_missing, .restart_marker_unexpected => .corrupt,
+        .entropy_padding_zero_bits => .known_defect,
+        .unknown_marker, .jfif_version_unchecked, .unrecognized_container, .jxl_validator_unavailable => .indeterminate,
+        else => .valid,
+    };
+}
 
 /// Presence and exactness bits for the callback's scalar metadata fields.
 pub const MetadataFlags = struct {
@@ -149,16 +168,52 @@ pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
             else => .indeterminate,
         },
         // jpegz's own cleanroom T.81/T.87 leg (validateAny, added 2026-08-06),
-        // plus its validateAny meta-findings. Mirror jpegz.strictFromReport: a
-        // deviation the decoder recovers from (.warn/.info) is not corruption,
-        // only .fail is; the two validator-meta codes are indeterminate.
-        .jpegz => if (finding.severity == .fail)
+        // plus its validateAny meta-findings.
+        .jpegz => if (finding.code) |c|
+            classicFindingVerdict(c, finding.severity)
+        else if (finding.severity == .fail)
             .corrupt
-        else if (finding.code) |c| switch (c) {
-            .unrecognized_container, .jxl_validator_unavailable => .indeterminate,
-            else => .valid,
-        } else .valid,
+        else
+            .valid,
     };
+}
+
+test "classic JPEG finding verdict follows jpegz's classification over every code and severity" {
+    // jpegz d88957b classifyClassicFindings: any fail is corrupt; recovered
+    // truncation and restart faults are corrupt at any severity; all-zero
+    // Huffman padding is a known encoder defect; an unknown marker or
+    // unchecked JFIF version leaves the result indeterminate, as do the two
+    // validateAny meta-findings. Everything else a decoder recovers from is
+    // valid.
+    @setEvalBranchQuota(100_000);
+    const testing = @import("std").testing;
+    const jpegz = @import("jpegz");
+    const C = jpegz.FindingCode;
+    const always_corrupt = [_]C{ .missing_eoi, .insufficient_data, .restart_marker_missing, .restart_marker_unexpected };
+    const indeterminate = [_]C{ .unknown_marker, .jfif_version_unchecked, .unrecognized_container, .jxl_validator_unavailable };
+    inline for (@typeInfo(C).@"enum".fields) |field| {
+        const code: C = @field(C, field.name);
+        inline for (@typeInfo(jpegz.Severity).@"enum".fields) |sev_field| {
+            const severity: jpegz.Severity = @field(jpegz.Severity, sev_field.name);
+            const expected: Verdict = if (severity == .fail or comptime contains(&always_corrupt, code))
+                .corrupt
+            else if (code == .entropy_padding_zero_bits)
+                .known_defect
+            else if (comptime contains(&indeterminate, code))
+                .indeterminate
+            else
+                .valid;
+            testing.expectEqual(expected, classicFindingVerdict(code, severity)) catch |err| {
+                @import("std").debug.print("code {s} severity {s}\n", .{ field.name, sev_field.name });
+                return err;
+            };
+        }
+    }
+}
+
+fn contains(comptime set: []const @import("jpegz").FindingCode, code: @import("jpegz").FindingCode) bool {
+    for (set) |member| if (member == code) return true;
+    return false;
 }
 
 test "strict JXL finding verdict classifies the complete known code set" {

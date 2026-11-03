@@ -106,6 +106,9 @@ typedef int32_t tiffz_finding_verdict_t;
 #define TIFFZ_VERDICT_CORRUPT ((tiffz_finding_verdict_t)1)
 #define TIFFZ_VERDICT_UNSUPPORTED ((tiffz_finding_verdict_t)2)
 #define TIFFZ_VERDICT_INDETERMINATE ((tiffz_finding_verdict_t)3)
+/* A recognized encoder defect (jpegz KNOWN_DEFECT, for example all-zero
+ * Huffman padding): the data decodes; the consumer chooses the treatment. */
+#define TIFFZ_VERDICT_KNOWN_DEFECT ((tiffz_finding_verdict_t)4)
 
 #define TIFFZ_FINDING_MAPPED_CODE_PRESENT UINT32_C(1)
 #define TIFFZ_FINDING_BYTE_OFFSET_PRESENT UINT32_C(2)

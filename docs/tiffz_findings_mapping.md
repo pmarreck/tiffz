@@ -65,8 +65,14 @@ setter remains future API, while the current callable setter is Zig-only.
 Finding identity is the
 pair `(source_decoder, finding_code)`; equal integers from different sources
 do not collide. Optional mapped codes and offsets are presence-flagged so zero
-remains a valid value. JP2/JXL nested findings preserve `valid`, `corrupt`,
-`unsupported`, and `indeterminate` rather than forcing a binary answer:
+remains a valid value. Nested findings preserve `valid` (0), `corrupt` (1),
+`unsupported` (2), `indeterminate` (3) and `known_defect` (4) rather than
+forcing a binary answer. JPEG-in-TIFF findings carry jpegz's own
+classification: all-zero Huffman padding (jpegz 63) is `known_defect` and the
+strip still decodes; a recovered truncation or restart fault (missing EOI,
+insufficient data, missing or unexpected restart marker) is `corrupt` and the
+strip is rejected; an unknown marker or unchecked JFIF version is
+`indeterminate`. The consumer decides how to treat a known defect:
 
 ```c
 typedef void (*tiffz_finding_callback_t)(

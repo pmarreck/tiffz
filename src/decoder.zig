@@ -1493,7 +1493,10 @@ pub const Decoder = struct {
 
                 var validation = compressions_jpeg.jpegz.validate(self.allocator, prepared.bytes) catch break :blk error.OutOfMemory;
                 defer validation.deinit(self.allocator);
+                var corrupt = false;
                 for (validation.findings.items) |finding| {
+                    const verdict = findings_mod.classicFindingVerdict(finding.code, finding.severity);
+                    if (verdict == .corrupt) corrupt = true;
                     const host_offset = if (finding.offset) |leaf_offset|
                         prepared.hostOffset(leaf_offset, offset)
                     else
@@ -1502,14 +1505,14 @@ pub const Decoder = struct {
                         .jpegz,
                         @intCast(@intFromEnum(finding.code)),
                         null,
-                        if (finding.severity == .fail) .corrupt else .valid,
+                        verdict,
                         finding.offset,
                         host_offset,
                         host_offset != null,
                         finding.detail orelse &.{},
                     );
                 }
-                if (!validation.isValid()) break :blk error.JpegInTiffPayload;
+                if (corrupt or !validation.isValid()) break :blk error.JpegInTiffPayload;
 
                 if (cfa) {
                     // Sensor mosaic: only a checked single-component decode is

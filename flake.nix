@@ -89,10 +89,10 @@
         });
         # Pre-fetched Zig dependencies (fixed-output derivation).
         # Update zigDepsHash when build.zig.zon changes:
-        #   1. Set zigDepsHash = "sha256-V97Qz1eXyX3hqNwbEp0+Z6ma4hmM5FBKy8OMxvuBIG0=";
+        #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-V97Qz1eXyX3hqNwbEp0+Z6ma4hmM5FBKy8OMxvuBIG0=";
+        zigDepsHash = "sha256-OUmWE8XV5OMLA4QQ5HhGWHufdlwOb26DQ+3cGGebBjo=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";

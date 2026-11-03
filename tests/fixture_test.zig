@@ -2071,9 +2071,17 @@ fn putU32(buf: []u8, at: usize, v: u32) void {
 
 /// Classic little-endian TIFF: 4×4, Compression=7, Photometric=CFA, one strip.
 fn wrapCfaJpeg(allocator: std.mem.Allocator, jpeg: []const u8) ![]u8 {
+    return wrapJpeg(allocator, jpeg, 4, 4, 1, 32803);
+}
+
+/// Classic little-endian TIFF holding `jpeg` as its one Compression=7 strip,
+/// with 8-bit samples. BitsPerSample moves out of line past one sample.
+fn wrapJpeg(allocator: std.mem.Allocator, jpeg: []const u8, width: u32, height: u32, spp: u16, photometric: u16) ![]u8 {
     const ntags: usize = 9;
     const ifd_bytes = 2 + ntags * 12 + 4;
-    const strip_off: u32 = @intCast(8 + ifd_bytes);
+    const bps_off: u32 = @intCast(8 + ifd_bytes);
+    const bps_bytes: u32 = if (spp > 2) 2 * @as(u32, spp) else 0;
+    const strip_off: u32 = bps_off + bps_bytes;
     const buf = try allocator.alloc(u8, strip_off + jpeg.len);
     @memset(buf, 0);
     buf[0] = 'I';
@@ -2081,26 +2089,94 @@ fn wrapCfaJpeg(allocator: std.mem.Allocator, jpeg: []const u8) ![]u8 {
     putU16(buf, 2, 42);
     putU32(buf, 4, 8);
     putU16(buf, 8, @intCast(ntags));
-    const tags = [_]struct { tag: u16, typ: u16, val: u32 }{
-        .{ .tag = 256, .typ = 4, .val = 4 },
-        .{ .tag = 257, .typ = 4, .val = 4 },
-        .{ .tag = 258, .typ = 3, .val = 8 },
+    const tags = [_]struct { tag: u16, typ: u16, count: u32 = 1, val: u32 }{
+        .{ .tag = 256, .typ = 4, .val = width },
+        .{ .tag = 257, .typ = 4, .val = height },
+        .{ .tag = 258, .typ = 3, .count = spp, .val = if (spp > 2) bps_off else 8 | (if (spp == 2) @as(u32, 8) << 16 else 0) },
         .{ .tag = 259, .typ = 3, .val = 7 },
-        .{ .tag = 262, .typ = 3, .val = 32803 },
+        .{ .tag = 262, .typ = 3, .val = photometric },
         .{ .tag = 273, .typ = 4, .val = strip_off },
-        .{ .tag = 277, .typ = 3, .val = 1 },
-        .{ .tag = 278, .typ = 4, .val = 4 },
+        .{ .tag = 277, .typ = 3, .val = spp },
+        .{ .tag = 278, .typ = 4, .val = height },
         .{ .tag = 279, .typ = 4, .val = @intCast(jpeg.len) },
     };
     for (tags, 0..) |entry, i| {
         const at = 10 + i * 12;
         putU16(buf, at, entry.tag);
         putU16(buf, at + 2, entry.typ);
-        putU32(buf, at + 4, 1);
+        putU32(buf, at + 4, entry.count);
         putU32(buf, at + 8, entry.val);
     }
+    var sample: u32 = 0;
+    while (sample < bps_bytes / 2) : (sample += 1) putU16(buf, bps_off + 2 * sample, 8);
     @memcpy(buf[strip_off..], jpeg);
     return buf;
+}
+
+/// Validate every strip of `bytes`, recording findings. Returns the
+/// validation error, if any.
+fn validateRecording(allocator: std.mem.Allocator, bytes: []const u8, recorder: *FindingRecorder) !void {
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(recorder));
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try dec.validateAllStripsAndTiles(&ws);
+}
+
+// jpegz recognizes all-zero Huffman padding as a known encoder defect
+// (KNOWN_DEFECT, distinct from its WARN severity). The fixture is jpegz's
+// tests/unit/fixtures/zero_pad_16x16_420.jpg, with its pad byte at 293.
+test "JPEG-in-TIFF: a known encoder defect validates and keeps jpegz's known_defect verdict" {
+    const allocator = std.testing.allocator;
+    const jpeg = try loadFile(allocator, "tests/fixtures/jpeg/zero_pad_16x16_420.jpg");
+    defer allocator.free(jpeg);
+    const bytes = try wrapJpeg(allocator, jpeg, 16, 16, 3, 6);
+    defer allocator.free(bytes);
+    const strip_off = bytes.len - jpeg.len;
+
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try validateRecording(allocator, bytes, &recorder);
+    var saw = false;
+    for (recorder.findings.items) |finding| {
+        if (finding.source != .jpegz) continue;
+        try std.testing.expect(finding.verdict != .corrupt);
+        if (finding.finding_code != @intFromEnum(tiffz.jpegz.FindingCode.entropy_padding_zero_bits)) continue;
+        try std.testing.expectEqual(tiffz.findings.Verdict.known_defect, finding.verdict);
+        try std.testing.expectEqual(@as(?u64, strip_off + 293), finding.host_byte_offset);
+        saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+// A strip whose EOI is replaced by an empty COM segment ends without EOI.
+// jpegz reports missing_eoi only at WARN severity (the scan is intact), but
+// classifies it as corrupt at any severity, so tiffz rejects the strip.
+// Simply cutting the EOI off is a FAIL truncated_stream instead, which tiffz
+// already rejected.
+test "JPEG-in-TIFF: a warning-severity missing EOI is corrupt, not a tolerated warning" {
+    const allocator = std.testing.allocator;
+    const jpeg = try loadFile(allocator, "tests/fixtures/jpeg/zero_pad_16x16_420.jpg");
+    defer allocator.free(jpeg);
+    try std.testing.expectEqualSlices(u8, &.{ 0xFF, 0xD9 }, jpeg[jpeg.len - 2 ..]);
+    const no_eoi = try std.mem.concat(allocator, u8, &.{ jpeg[0 .. jpeg.len - 2], &.{ 0xFF, 0xFE, 0x00, 0x02 } });
+    defer allocator.free(no_eoi);
+    const bytes = try wrapJpeg(allocator, no_eoi, 16, 16, 3, 6);
+    defer allocator.free(bytes);
+
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const outcome = validateRecording(allocator, bytes, &recorder);
+    var saw = false;
+    for (recorder.findings.items) |finding| {
+        if (finding.source == .jpegz and finding.verdict == .corrupt and
+            finding.finding_code == @intFromEnum(tiffz.jpegz.FindingCode.missing_eoi)) saw = true;
+    }
+    try std.testing.expectError(error.JpegInTiffPayload, outcome);
+    try std.testing.expect(saw);
 }
 
 test "DNG CFA compression 7: lossless grayscale JPEG validates as sensor samples, not RGB" {
@@ -2200,4 +2276,30 @@ test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {
     defer workspace.deinit();
 
     try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&workspace));
+}
+
+// The C header spells each verdict and source value by hand. Every named Zig
+// value must have its TIFFZ_ constant with the same number, so appending a
+// value without its #define fails here.
+test "C header defines every finding verdict and source with the Zig value" {
+    const allocator = std.testing.allocator;
+    const header = try loadFile(allocator, "include/tiffz.h");
+    defer allocator.free(header);
+    inline for (.{
+        .{ tiffz.findings.Verdict, "TIFFZ_VERDICT_", "tiffz_finding_verdict_t" },
+        .{ tiffz.findings.SourceDecoder, "TIFFZ_SOURCE_", "tiffz_source_decoder_t" },
+    }) |spec| {
+        inline for (@typeInfo(spec[0]).@"enum".fields) |field| {
+            const upper = comptime blk: {
+                var u: [field.name.len]u8 = undefined;
+                for (field.name, 0..) |c, i| u[i] = std.ascii.toUpper(c);
+                break :blk u;
+            };
+            const line = std.fmt.comptimePrint("#define {s}{s} (({s}){d})", .{ spec[1], &upper, spec[2], field.value });
+            std.testing.expect(std.mem.indexOf(u8, header, line) != null) catch |err| {
+                std.debug.print("include/tiffz.h lacks: {s}\n", .{line});
+                return err;
+            };
+        }
+    }
 }

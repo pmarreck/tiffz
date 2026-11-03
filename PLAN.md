@@ -7,11 +7,15 @@ Open work and the latest completions. Older narrative:
 
 Order (BDFN, 2026-10-23): coverage gate, then build-layout conformance, then writer and conversion CLI.
 
+- [ ] Reply to validate with the repinned revision, package hash and exact-commit CI receipt, and tell rawz to repin tiffz.
+- [ ] Adopt jpegz's exported per-finding classic classification once it ships (asked 2026-11-02), so tiffz stops mirroring `classifyClassicFindings` in `findings.classicFindingVerdict`.
 - [ ] Investigate the open cases tiffz misses, where libtiff complains and tiffz accepts: 6 of 16 single-bit uncompressed, 3 of 12 single-byte uncompressed, 1 of 47 single-bit checksummed (2026-10-28 campaign).
 - [ ] corruption-coverage spends about 140 ms per case on process forks (contract test 69 s, campaign 2m06s). Parse each batch's report and ranges in fewer processes.
 - [ ] Shared PATH cutover to `bin/<PF>` (dotfiles owner), then drop the legacy `result` and `zig-out/bin/tiffz` links from `./build`'s publish().
 
 ## Done
+
+- [x] Repin jpegz to d88957b: append `Verdict.known_defect = 4` (Zig, C header, mapping doc, header parity test). JPEG-in-TIFF findings follow jpegz's classic leg: 63 known_defect; missing_eoi, insufficient_data and restart faults corrupt and reject the strip even at warning severity; unknown_marker and jfif_version_unchecked indeterminate. Coverage counts unchanged, so floors stay. Full `./test` green (done 2026-11-02 22:40 EST).
 
 - [x] Two coverage ceilings (BDFN, 2026-10-28): seeds classed uncompressed (worst case), unchecked or checksummed (best case) by the codec holding most data bytes; each case bounded free (proven, tiffdump), clean (libtiff tiffinfo -D plus pigz Adler-32) or open; `ceilings` line per profile; floors per class. Sandboxed check reproduced every floor; full `./test` green in 8m42s (done 2026-10-28 13:10 EDT).
 
