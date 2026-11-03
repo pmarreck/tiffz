@@ -44,6 +44,13 @@ declare -A seed_class=()
 declare -A seed_ranges=()
 declare -A seed_zlib=()
 declare -A seed_diag=()
+declare -A seed_bytes=()
+# Per-case results, set by functions rather than printed, so scoring a case
+# does not fork a subshell for each of them.
+outcome=""
+bound=""
+diag=""
+batch_decisive=0
 seeds_file=""
 floors_file=""
 master_set=0
@@ -269,28 +276,6 @@ summarize() {
 	return "$overall"
 }
 
-json_field() {
-	# $1 is the field name. The JSON object is on stdin.
-	awk -v key="$1" '
-		BEGIN { pat = "\"" key "\":" }
-		{
-			i = index($0, pat)
-			if (i == 0) { print ""; exit }
-			rest = substr($0, i + length(pat))
-			if (substr(rest, 1, 4) == "null") { print "null"; exit }
-			if (substr(rest, 1, 1) == "\"") {
-				rest = substr(rest, 2)
-				q = index(rest, "\"")
-				print substr(rest, 1, q - 1)
-				exit
-			}
-			n = match(rest, /[,}]/)
-			if (n == 0) print rest
-			else print substr(rest, 1, n - 1)
-		}
-	'
-}
-
 resolve_tools() {
 	local pf
 	pf="$("$root/tools/pf" 2>/dev/null)" || pf=""
@@ -343,31 +328,62 @@ reader_profile() {
 	esac
 }
 
-non16_key() {
+# Print "KEY|FLAG" for tiffz's JSON report in $1, in one process. KEY is
+# the finding codes other than 16, ascending and comma-joined (empty when
+# there are none). FLAG is yes when code 16 is present, otherwise no.
+finding_key() {
 	awk '
-		{
-			s = $0
-			while (match(s, /"code":[0-9]+/)) {
-				code = substr(s, RSTART + 7, RLENGTH - 7)
-				if (code != "16") print code
-				s = substr(s, RSTART + RLENGTH)
-			}
-		}
-	' "$1" | sort -n | paste -sd, -
-}
-
-has_code16() {
-	awk '
-		BEGIN { found = 0 }
+		BEGIN { n = 0; found = 0 }
 		{
 			s = $0
 			while (match(s, /"code":[0-9]+/)) {
 				code = substr(s, RSTART + 7, RLENGTH - 7)
 				if (code == "16") found = 1
+				else c[n++] = code + 0
 				s = substr(s, RSTART + RLENGTH)
 			}
 		}
-		END { print (found ? "yes" : "no") }
+		END {
+			for (i = 1; i < n; i++) {
+				v = c[i]
+				for (j = i - 1; j >= 0 && c[j] > v; j--) c[j + 1] = c[j]
+				c[j + 1] = v
+			}
+			key = ""
+			for (i = 0; i < n; i++) key = key (i ? "," : "") c[i]
+			print key "|" (found ? "yes" : "no")
+		}
+	' "$1"
+}
+
+# corruption-reader's JSONL report in $1 to one word per non-blank line:
+# noop (no mutation applied), harness (nothing emitted) or emit. One
+# process per batch rather than three per case.
+report_kinds() {
+	awk '
+		function field(key,    pat, i, rest, q, n) {
+			pat = "\"" key "\":"
+			i = index($0, pat)
+			if (i == 0) return ""
+			rest = substr($0, i + length(pat))
+			if (substr(rest, 1, 4) == "null") return "null"
+			if (substr(rest, 1, 1) == "\"") {
+				rest = substr(rest, 2)
+				q = index(rest, "\"")
+				return substr(rest, 1, q - 1)
+			}
+			n = match(rest, /[,}]/)
+			return n == 0 ? rest : substr(rest, 1, n - 1)
+		}
+		$0 == "" { next }
+		{
+			status = field("status")
+			noop = field("noop")
+			emitted = field("emitted")
+			if (status == "noop" || (noop != "" && noop != "null")) print "noop"
+			else if (emitted != "true") print "harness"
+			else print "emit"
+		}
 	' "$1"
 }
 
@@ -388,14 +404,18 @@ validate_limited() {
 	limited "$tiffz_bin" validate --json -- "$1" >"$2" 2>"$work/tiffz.err"
 }
 
-# libtiff's verdict on reading every directory and strip of $1: its exit
-# status and its diagnostics, with the file's own path replaced so a seed
-# and its cases compare equal when libtiff says the same thing.
+# Set diag to libtiff's verdict on reading every directory and strip of
+# $1: its exit status and its diagnostics, with the file's own path
+# replaced so a seed and its cases compare equal when libtiff says the
+# same thing. Trailing newlines are dropped, as command substitution would.
 libtiff_diag() {
-	local st=0 err
+	local st=0 err=""
 	limited "$tiffinfo_bin" -D "$1" >/dev/null 2>"$work/tiffinfo.err" || st=$?
-	err="$(cat "$work/tiffinfo.err")"
-	printf '%s|%s\n' "$st" "${err//"$1"/@FILE}"
+	IFS= read -r -d '' err <"$work/tiffinfo.err" || :
+	while [ "${err%$'\n'}" != "$err" ]; do
+		err="${err%$'\n'}"
+	done
+	diag="$st|${err//"$1"/@FILE}"
 }
 
 # True when the half-open byte range [$2, $3) of $1 is a zlib stream that
@@ -491,86 +511,92 @@ free_bytes() {
 # Bound case $2 of seed $1 (see --help): "free" when every changed byte
 # lies in the seed's uncompressed sample ranges; "clean" when libtiff reads
 # it with the seed's diagnostics and every Deflate stream it touches still
-# passes Adler-32; else "open". A length change is open.
+# passes Adler-32; else "open". A length change is open. Sets bound.
 case_bound() {
-	local seed="$1" mutated="$2" changed="$work/changed" start end
-	if [ "$(wc -c <"$seed")" != "$(wc -c <"$mutated")" ]; then
-		printf 'open\n'
+	local seed="$1" mutated="$2" size scan ranges="" start end
+	size="$(wc -c <"$mutated")"
+	if [ "$((size))" -ne "${seed_bytes[$seed]}" ]; then
+		bound=open
 		return
 	fi
-	cmp -l -- "$seed" "$mutated" 2>/dev/null | awk '{ print $1 - 1 }' >"$changed"
-	if [ "$(within_ranges "${seed_ranges[$seed]}" <"$changed")" = all ]; then
-		printf 'free\n'
+	# One pass over the changed offsets: the first line is "all" when each
+	# lies in an uncompressed sample range, else "some"; then each Deflate
+	# stream range that holds one, once.
+	scan="$(cmp -l -- "$seed" "$mutated" 2>/dev/null | awk -v free="${seed_ranges[$seed]}" -v zlib="${seed_zlib[$seed]}" '
+		function load(file, s, e,    line, r, n) {
+			n = 0
+			while ((getline line < file) > 0) { split(line, r, " "); s[n] = r[1]; e[n] = r[2]; n++ }
+			return n
+		}
+		BEGIN { nf = load(free, fs, fe); nz = load(zlib, zs, ze); all = 1 }
+		{
+			off = $1 - 1
+			if (all) {
+				hit = 0
+				for (i = 0; i < nf; i++) if (off >= fs[i] && off < fe[i]) { hit = 1; break }
+				if (!hit) all = 0
+			}
+			for (i = 0; i < nz; i++) if (off >= zs[i] && off < ze[i]) touched[i] = 1
+		}
+		END {
+			print (all ? "all" : "some")
+			for (i = 0; i < nz; i++) if (touched[i]) print zs[i], ze[i]
+		}
+	')"
+	if [ "${scan%%$'\n'*}" = all ]; then
+		bound=free
 		return
 	fi
-	if [ "$(libtiff_diag "$mutated")" != "${seed_diag[$seed]//"$seed"/@FILE}" ]; then
-		printf 'open\n'
+	libtiff_diag "$mutated"
+	if [ "$diag" != "${seed_diag[$seed]//"$seed"/@FILE}" ]; then
+		bound=open
 		return
 	fi
+	case "$scan" in
+		*$'\n'*) ranges="${scan#*$'\n'}" ;;
+	esac
 	while read -r start end; do
+		[ -n "$start" ] || continue
 		if ! zlib_ok "$mutated" "$start" "$end"; then
-			printf 'open\n'
+			bound=open
 			return
 		fi
-	done < <(touched_ranges "${seed_zlib[$seed]}" <"$changed")
-	printf 'clean\n'
+	done <<<"$ranges"
+	bound=clean
 }
 
-# Offsets on stdin: print "all" when each lies in a range of file $1.
-within_ranges() {
-	awk -v ranges="$1" '
-		BEGIN { n = 0; while ((getline line < ranges) > 0) { split(line, r, " "); s[n] = r[1]; e[n] = r[2]; n++ } }
-		{
-			hit = 0
-			for (i = 0; i < n; i++) if ($1 >= s[i] && $1 < e[i]) { hit = 1; break }
-			if (!hit) { out = 1; exit }
-		}
-		END { print (out ? "some" : "all") }
-	'
-}
-
-# Offsets on stdin: print each range of file $1 that holds one, once.
-touched_ranges() {
-	awk -v ranges="$1" '
-		BEGIN { n = 0; while ((getline line < ranges) > 0) { split(line, r, " "); s[n] = r[1]; e[n] = r[2]; n++ } }
-		{ for (i = 0; i < n; i++) if ($1 >= s[i] && $1 < e[i]) hit[i] = 1 }
-		END { for (i = 0; i < n; i++) if (hit[i]) print s[i], e[i] }
-	'
-}
-
+# Set outcome for one case. $1 wait status, $2 JSON file, $3 unmutated seed.
 classify_tiffz() {
-	# $1 wait status, $2 JSON file, $3 unmutated seed path.
 	local status="$1" json="$2" seed="$3"
 	# 124 is timeout's status when the decoder did not finish.
 	if [ "$status" -ge 128 ] || [ "$status" -eq 124 ]; then
-		printf 'crash\n'
+		outcome=crash
 	elif [ "$status" -eq 1 ]; then
-		printf 'detect\n'
+		outcome=detect
 	elif [ "$status" -eq 4 ]; then
-		printf 'reach\n'
+		outcome=reach
 	elif [ "$status" -eq 0 ]; then
-		local now base now16 base16
-		now="$(non16_key "$json")"
-		base="${seed_non16[$seed]:-}"
-		now16="$(has_code16 "$json")"
-		base16="${seed_code16[$seed]:-no}"
-		if [ "$now" != "$base" ]; then
-			printf 'detect\n'
-		elif [ "$now16" != "$base16" ]; then
-			printf 'reach\n'
+		local key
+		key="$(finding_key "$json")"
+		if [ "${key%|*}" != "${seed_non16[$seed]:-}" ]; then
+			outcome=detect
+		elif [ "${key##*|}" != "${seed_code16[$seed]:-no}" ]; then
+			outcome=reach
 		else
-			printf 'accept\n'
+			outcome=accept
 		fi
 	else
-		printf 'harness\n'
+		outcome=harness
 	fi
 }
 
 score_batch() {
 	# Append outcomes for one corruption-reader invocation.
 	# $1 profile  $2 report  $3 path list  $4 reader exit  $5 outcome file  $6 seed
+	# Adds the batch's detections and accepts to batch_decisive. The emitted
+	# cases live in the batch directory, which the caller removes.
 	local profile="$1" report="$2" pathfile="$3" reader_status="$4" out="$5" seed="$6"
-	local line status noop emitted path
+	local kind path class="${seed_class[$seed]}" json="$work/tiffz.json"
 	if [ "$reader_status" -eq 2 ] || [ ! -s "$report" ]; then
 		printf '%s\tharness\n' "$profile" >>"$out"
 		return
@@ -581,31 +607,27 @@ score_batch() {
 		paths+=("$path")
 	done <"$pathfile"
 	local cursor=0
-	while IFS= read -r line; do
-		[ -n "$line" ] || continue
-		status="$(printf '%s\n' "$line" | json_field status)"
-		noop="$(printf '%s\n' "$line" | json_field noop)"
-		emitted="$(printf '%s\n' "$line" | json_field emitted)"
-		if [ "$status" = "noop" ] || { [ -n "$noop" ] && [ "$noop" != "null" ]; }; then
+	while IFS= read -r kind <&3; do
+		if [ "$kind" = noop ]; then
 			printf '%s\tnoop\n' "$profile" >>"$out"
 			continue
 		fi
-		if [ "$emitted" != "true" ] || [ "$cursor" -ge "${#paths[@]}" ]; then
+		if [ "$kind" != emit ] || [ "$cursor" -ge "${#paths[@]}" ]; then
 			printf '%s\tharness\n' "$profile" >>"$out"
 			continue
 		fi
 		path="${paths[$cursor]}"
 		cursor=$((cursor + 1))
 		local tiffz_status=0
-		local json="$work/tiffz.json"
 		: >"$json"
 		validate_limited "$path" "$json" || tiffz_status=$?
-		local bound
-		bound="$(case_bound "$seed" "$path")"
-		rm -f -- "$path"
-		classify_tiffz "$tiffz_status" "$json" "$seed" | awk -v profile="$profile" -v class="${seed_class[$seed]}" -v bound="$bound" \
-			'{ printf "%s\t%s\t%s\t%s\n", profile, $0, class, bound }' >>"$out"
-	done <"$report"
+		case_bound "$seed" "$path"
+		classify_tiffz "$tiffz_status" "$json" "$seed"
+		printf '%s\t%s\t%s\t%s\n' "$profile" "$outcome" "$class" "$bound" >>"$out"
+		case "$outcome" in
+			detect|accept) batch_decisive=$((batch_decisive + 1)) ;;
+		esac
+	done 3< <(report_kinds "$report")
 }
 
 campaign() {
@@ -651,8 +673,11 @@ campaign() {
 			hash="$(sha256sum -- "$seed" | awk '{ print $1 }')"
 			bytes="$(wc -c <"$seed" | tr -d '[:space:]')"
 			printf 'specificity sha256=%s bytes=%s\n' "$hash" "$bytes"
-			seed_non16["$seed"]="$(non16_key "$spec_json")"
-			seed_code16["$seed"]="$(has_code16 "$spec_json")"
+			local key
+			key="$(finding_key "$spec_json")"
+			seed_non16["$seed"]="${key%|*}"
+			seed_code16["$seed"]="${key##*|}"
+			seed_bytes["$seed"]="$bytes"
 			local ranges="$work/ranges.$accepted" zlib="$work/zlib.$accepted" class
 			: >"$ranges"
 			: >"$zlib"
@@ -660,7 +685,8 @@ campaign() {
 			seed_class["$seed"]="$class"
 			seed_ranges["$seed"]="$ranges"
 			seed_zlib["$seed"]="$zlib"
-			seed_diag["$seed"]="$(libtiff_diag "$seed")"
+			libtiff_diag "$seed"
+			seed_diag["$seed"]="$diag"
 			printf 'layout %s class=%s free_bytes=%s bytes=%s\n' "$seed" "$class" "$(free_bytes "$ranges" "$bytes")" "$bytes"
 			accepted=$((accepted + 1))
 		else
@@ -724,20 +750,12 @@ EOF
 					--tmp-dir "$batch" \
 					--report "$report" \
 					-- "$seed" >"$paths" 2>"$batch/reader.err" || reader_status=$?
-				local before_lines
-				before_lines="$(wc -l <"$ledger" | tr -d '[:space:]')"
+				batch_decisive=0
 				score_batch "$profile" "$report" "$paths" "$reader_status" "$ledger" "$seed"
 				round_base=$((round_base + draw))
 				attempts=$((attempts + draw))
-				local added
-				added="$(awk -v profile="$profile" -F '\t' '
-					$1 == profile && ($2 == "detect" || $2 == "accept") { n++ }
-					END { print n+0 }
-				' "$ledger")"
-				decisive="$added"
+				decisive=$((decisive + batch_decisive))
 				rm -rf -- "$batch"
-				# before_lines is only here so a failed batch is still visible in the ledger.
-				: "$before_lines"
 			done <<EOF
 $seeds
 EOF
