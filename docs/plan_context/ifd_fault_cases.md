@@ -51,10 +51,18 @@ FillOrder 2 on 8-bit data, Orientation 2 to 8, SampleFormat 4.
 | 10 | tests/fixtures/geotiff/gray16_geotiff.tif | 191 | 0x87 | 0x78 | tags are not sorted in ascending order |
 | 11 | tests/fixtures/photometric/cmyk.tif | 1102 | 0x01 | 0xfe | bad value 254 for FillOrder |
 | 12 | tests/fixtures/predictor/predictor3_deflate_fp32.tif | 119 | 0x01 | 0xfe | tags are not sorted in ascending order |
+| 13 | tests/fixtures/photometric/rgb16.tif | 1603 | 0x00 | 0x04 | (none: libtiff accepts PhotometricInterpretation 1026) |
+| 14 | tests/fixtures/geotiff/gray16_geotiff.tif | 55 | 0x00 | 0x40 | Compression scheme 16385 strip decoding is not implemented |
 
 Cases 1-8 are sniper (one bit) and 9-12 bolter (one byte). By seed class:
 1 unchecked (Zstd), 2 and 12 checksummed (LERC, Deflate), the rest
-uncompressed.
+uncompressed. Cases 13 and 14 (sniper round 336 case 6 and round 273
+case 20) became detections with the Compression and
+PhotometricInterpretation value sets (commit 222a6069). Their arrival
+moved the deterministic draw, so the sniper checksummed case at
+predictor3_deflate_fp32.tif offset 638 (0x31 to 0x21, round 378 case 11,
+a Deflate data error) is no longer drawn. It is pinned as its own replay
+in `tests/fixture_test.zig` (validate, 2026-11-04).
 
 To rebuild case N into `out.tif` from its seed, offset and new byte:
 

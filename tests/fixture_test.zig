@@ -2369,9 +2369,9 @@ test "C header defines every finding verdict and source with the Zig value" {
     }
 }
 
-// The twelve single-byte IFD-entry faults from the master-42 corruption
-// campaign (docs/plan_context/ifd_fault_cases.md). validate ruled them all
-// corrupt (2026-11-03). Each is rebuilt from its seed. It must fail Malformed
+// Single-byte IFD-entry faults from the master-42 corruption campaign
+// (docs/plan_context/ifd_fault_cases.md). validate ruled them all corrupt
+// (2026-11-03 and 2026-11-04). Each is rebuilt from its seed. It must fail Malformed
 // with the expected finding, and that finding's entry offset must contain the
 // mutated byte: the offset comes from the case table, not from tiffz.
 const IfdFaultCase = struct {
@@ -2398,6 +2398,9 @@ const ifd_fault_cases = [_]IfdFaultCase{
     .{ .seed = "tests/fixtures/geotiff/gray16_geotiff.tif", .offset = 191, .new_byte = 0x78, .finding = .ifd_entries_unsorted, .tag = 30897 },
     .{ .seed = "tests/fixtures/photometric/cmyk.tif", .offset = 1102, .new_byte = 0xfe, .finding = .tag_field_invalid, .tag = 266, .reason = 3 },
     .{ .seed = "tests/fixtures/predictor/predictor3_deflate_fp32.tif", .offset = 119, .new_byte = 0xfe, .finding = .ifd_entries_unsorted, .tag = 65052 },
+    // Pinned after the value sets moved the sniper draw (validate, 2026-11-04).
+    .{ .seed = "tests/fixtures/photometric/rgb16.tif", .offset = 1603, .new_byte = 0x04, .finding = .tag_field_invalid, .tag = 262, .reason = 3 },
+    .{ .seed = "tests/fixtures/geotiff/gray16_geotiff.tif", .offset = 55, .new_byte = 0x40, .finding = .tag_field_invalid, .tag = 259, .reason = 3 },
 };
 
 fn countConformance(recorder: *const FindingRecorder) usize {
@@ -2928,7 +2931,7 @@ test "IFD-entry faults: every clean seed validates without a directory-rule find
     }
 }
 
-test "IFD-entry faults: each of the twelve campaign cases is corrupt at the mutated entry" {
+test "IFD-entry faults: each campaign case is corrupt at the mutated entry" {
     const allocator = std.testing.allocator;
     for (ifd_fault_cases, 1..) |case, number| {
         const bytes = try loadFile(allocator, case.seed);
@@ -2977,4 +2980,23 @@ test "IFD-entry faults: each of the twelve campaign cases is corrupt at the muta
             return error.TestExpectedEqual;
         }
     }
+}
+
+// A detected campaign case that a draw shift stopped drawing. The sniper
+// checksummed floor fell from 47 to 46 only because this case was no longer
+// drawn (validate, 2026-11-04); pinning it means the floor is not the only
+// record that it is detected. One bit in the Deflate stream; libtiff reports
+// "ZIPDecode: Decoding error at scanline 0".
+test "corruption replay: predictor3_deflate_fp32.tif sniper round 378 case 11 is detected" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/predictor/predictor3_deflate_fp32.tif");
+    defer allocator.free(bytes);
+    try std.testing.expectEqual(@as(u8, 0x31), bytes[638]);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try validateRecording(allocator, bytes, &recorder);
+    bytes[638] = 0x21;
+    var mutated = FindingRecorder.init(allocator);
+    defer mutated.deinit();
+    try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &mutated));
 }
