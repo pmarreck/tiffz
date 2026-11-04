@@ -3044,3 +3044,64 @@ test "ExtraSamples: strike.tif validates clean, and a count that leaves too few 
     }
     try std.testing.expectEqual(@as(usize, 1), matched);
 }
+
+// Synthetic KNOWN_DEFECT registry controls for validate (2026-11-04), built
+// by tests/fixtures/known_defect/gen.pl from the TIFF 6.0 field definitions.
+// The owner admitted two producer patterns in validate's registry: Kodak DCS
+// MinSampleValue with one value where SamplesPerPixel is 3, and Canon CR2
+// IFD0 BitsPerSample [8, 8, 8] with SamplesPerPixel absent. tiffz's findings
+// do not change: each file fails Malformed with exactly these finding-18
+// records (IFD index, tag, reason), and the near-matches still fail while
+// breaking the registry signature.
+const KnownDefectFixture = struct {
+    path: []const u8,
+    faults: []const struct { ifd: u32, tag: u16, reason: u16 },
+};
+const known_defect_fixtures = [_]KnownDefectFixture{
+    .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-exemplar.tif", .faults = &.{.{ .ifd = 0, .tag = 280, .reason = 2 }} },
+    .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-near-count2.tif", .faults = &.{.{ .ifd = 0, .tag = 280, .reason = 2 }} },
+    .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-near-spp4.tif", .faults = &.{.{ .ifd = 0, .tag = 280, .reason = 2 }} },
+    .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-near-max-short.tif", .faults = &.{ .{ .ifd = 0, .tag = 280, .reason = 2 }, .{ .ifd = 0, .tag = 281, .reason = 2 } } },
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-exemplar.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }} },
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-8-8-16.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }} },
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-count2.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }} },
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-subifd.tif", .faults = &.{.{ .ifd = 1, .tag = 258, .reason = 2 }} },
+};
+
+test "KNOWN_DEFECT controls: each synthetic exemplar and near-match fails with exactly its finding-18 records" {
+    const allocator = std.testing.allocator;
+    for (known_defect_fixtures) |fixture| {
+        const bytes = try loadFile(allocator, fixture.path);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder)) catch |err| {
+            std.debug.print("{s}: not rejected Malformed\n", .{fixture.path});
+            return err;
+        };
+        var got: usize = 0;
+        for (recorder.findings.items) |f| {
+            if (f.source != .tiffz) continue;
+            if (f.verdict == .corrupt and f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) {
+                std.debug.print("{s}: unexpected corrupt finding {d}\n", .{ fixture.path, f.finding_code });
+                return error.TestUnexpectedResult;
+            }
+            if (f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+            const p = f.payload_bytes;
+            const ifd = std.mem.readInt(u32, p[0..4], .little);
+            const tag = std.mem.readInt(u16, p[16..18], .little);
+            const reason = std.mem.readInt(u16, p[18..20], .little);
+            var expected = false;
+            for (fixture.faults) |want| expected = expected or (want.ifd == ifd and want.tag == tag and want.reason == reason);
+            if (!expected) {
+                std.debug.print("{s}: unexpected finding 18 ifd {d} tag {d} reason {d}\n", .{ fixture.path, ifd, tag, reason });
+                return error.TestUnexpectedResult;
+            }
+            got += 1;
+        }
+        std.testing.expectEqual(fixture.faults.len, got) catch |err| {
+            std.debug.print("{s}: {d} finding-18 records, want {d}\n", .{ fixture.path, got, fixture.faults.len });
+            return err;
+        };
+    }
+}
