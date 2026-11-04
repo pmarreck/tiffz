@@ -3056,6 +3056,8 @@ test "ExtraSamples: strike.tif validates clean, and a count that leaves too few 
 const KnownDefectFixture = struct {
     path: []const u8,
     faults: []const struct { ifd: u32, tag: u16, reason: u16 },
+    /// A passing control: validation succeeds and reports no finding 18.
+    passes: bool = false,
 };
 const known_defect_fixtures = [_]KnownDefectFixture{
     .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-exemplar.tif", .faults = &.{.{ .ifd = 0, .tag = 280, .reason = 2 }} },
@@ -3066,16 +3068,27 @@ const known_defect_fixtures = [_]KnownDefectFixture{
     .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-8-8-16.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }} },
     .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-count2.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }} },
     .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-subifd.tif", .faults = &.{.{ .ifd = 1, .tag = 258, .reason = 2 }} },
+    // Three YCbCr IFDs, MinSampleValue count 3 in IFD0 and count 1 in IFDs 1 and 2: the
+    // signature is per IFD, so only the faulty IFDs are reported.
+    .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-near-one-ifd-sound.tif", .faults = &.{ .{ .ifd = 1, .tag = 280, .reason = 2 }, .{ .ifd = 2, .tag = 280, .reason = 2 } } },
+    // Passing control: the Canon IFD0 shape with SamplesPerPixel 3 written.
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-control-spp-present.tif", .faults = &.{}, .passes = true },
 };
 
-test "KNOWN_DEFECT controls: each synthetic exemplar and near-match fails with exactly its finding-18 records" {
+test "KNOWN_DEFECT controls: each synthetic exemplar and near-match fails with exactly its finding-18 records, and each passing control validates" {
     const allocator = std.testing.allocator;
     for (known_defect_fixtures) |fixture| {
         const bytes = try loadFile(allocator, fixture.path);
         defer allocator.free(bytes);
         var recorder = FindingRecorder.init(allocator);
         defer recorder.deinit();
-        std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder)) catch |err| {
+        const result = validateRecording(allocator, bytes, &recorder);
+        if (fixture.passes) {
+            result catch |err| {
+                std.debug.print("{s}: passing control failed with {s}\n", .{ fixture.path, @errorName(err) });
+                return err;
+            };
+        } else std.testing.expectError(error.Malformed, result) catch |err| {
             std.debug.print("{s}: not rejected Malformed\n", .{fixture.path});
             return err;
         };

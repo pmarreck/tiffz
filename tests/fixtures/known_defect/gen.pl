@@ -69,7 +69,7 @@ sub vlen { my ($t, $type, $v) = @{ $_[0] }; return $type eq 'ascii' ? length($v)
 sub write_file { my ($name, $bytes) = @_; open my $fh, '>:raw', "$out/$name" or die; print $fh $bytes; close $fh }
 
 # Kodak: 2x2 uncompressed YCbCr, no chroma subsampling, 8-bit.
-sub kodak {
+sub kodak_entries {
     my (%o) = @_;
     my $spp = $o{spp} // 3;
     my @e = (
@@ -81,7 +81,12 @@ sub kodak {
         [284, 3, [1]], [530, 3, [1, 1]],
     );
     push @e, [338, 3, [(0) x ($spp - 3)]] if $spp > 3;
-    return build(ifds => [{ entries => \@e, strip => chr(128) x (4 * $spp) }]);
+    return \@e;
+}
+sub kodak {
+    my (%o) = @_;
+    my $spp = $o{spp} // 3;
+    return build(ifds => [{ entries => kodak_entries(%o), strip => chr(128) x (4 * $spp) }]);
 }
 
 # Canon: IFD0 shaped like a CR2 IFD0 (old-style JPEG preview, BitsPerSample
@@ -117,3 +122,16 @@ write_file('canon-cr2-ifd0-bps-near-subifd.tif',
         ifds => [{ entries => canon_ifd0(extra => [[262, 3, [6]], [277, 3, [3]], [330, 4, []]]), strip => $jpeg_stub }],
         subifd => { entries => canon_ifd0(), strip => $jpeg_stub },
     ));
+
+# Near-match: three YCbCr IFDs; MinSampleValue is sound (count 3) in IFD0 and
+# count 1 in IFD1 and IFD2, so the signature must be evaluated per IFD.
+{
+    my @ifds;
+    for my $min_count (3, 1, 1) {
+        push @ifds, { entries => kodak_entries(min_count => $min_count), strip => chr(128) x 12 };
+    }
+    write_file('kodak-minsamplevalue-near-one-ifd-sound.tif', build(ifds => \@ifds));
+}
+# Passing control: the Canon IFD0 shape with SamplesPerPixel 3 written.
+write_file('canon-cr2-ifd0-bps-control-spp-present.tif',
+    build(ifds => [{ entries => canon_ifd0(extra => [[277, 3, [3]]]), strip => $jpeg_stub }]));
