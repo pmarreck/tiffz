@@ -12,15 +12,16 @@
 # case: every value is a legal sample), unchecked (compressed without an
 # integrity check) and checksummed (best case: Deflate or LERC).
 # Set 2026-10-28 with corruption-reader 0.8.0 (a7ea995), 385 decisive
-# trials per profile.
+# trials per profile. Raised 2026-11-03 for findings 17 and 18 (IFD-entry
+# rules): sniper +6/+1/+1, bolter +3/+0/+1.
 
 master=42 trials=385
-sniper uncompressed 11
-sniper unchecked 63
-sniper checksummed 46
-bolter uncompressed 9
+sniper uncompressed 17
+sniper unchecked 64
+sniper checksummed 47
+bolter uncompressed 12
 bolter unchecked 91
-bolter checksummed 52
+bolter checksummed 53
 shotgun uncompressed 14
 shotgun unchecked 104
 shotgun checksummed 58

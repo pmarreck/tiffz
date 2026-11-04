@@ -93,19 +93,20 @@ Per profile and class:
 - `stricter` counts detections of clean cases. These are not failures:
   tiffz caught something libtiff accepts.
 
-## Measured on 2026-10-28
+## Measured on 2026-11-03
 
 corruption-reader 0.8.0 (a7ea995), master 42, 385 decisive trials per
-profile, tiffz 627f74ff, libtiff 4.7.2. No false alarms.
+profile, tiffz with findings 17 and 18 (IFD-entry rules), libtiff 4.7.2. No
+false alarms.
 
 | profile | class | decisive | detect | free | clean | ceiling | ceiling_est | rate | stricter |
 |---|---|---|---|---|---|---|---|---|---|
-| sniper | uncompressed | 186 | 11 | 156 | 14 | 0.161 | 0.086 | 0.059 | 1 |
-| sniper | unchecked | 146 | 63 | 0 | 93 | ≤1.000 | 0.363 | 0.432 | 11 |
-| sniper | checksummed | 53 | 46 | 0 | 6 | ≤1.000 | 0.887 | 0.868 | 0 |
-| bolter | uncompressed | 185 | 9 | 162 | 11 | 0.124 | 0.065 | 0.049 | 0 |
+| sniper | uncompressed | 186 | 17 | 156 | 14 | 0.161 | 0.086 | 0.091 | 1 |
+| sniper | unchecked | 146 | 64 | 0 | 93 | ≤1.000 | 0.363 | 0.438 | 11 |
+| sniper | checksummed | 53 | 47 | 0 | 6 | ≤1.000 | 0.887 | 0.887 | 0 |
+| bolter | uncompressed | 185 | 12 | 162 | 11 | 0.124 | 0.065 | 0.065 | 0 |
 | bolter | unchecked | 147 | 91 | 0 | 71 | ≤1.000 | 0.517 | 0.619 | 15 |
-| bolter | checksummed | 53 | 52 | 0 | 0 | ≤1.000 | 1.000 | 0.981 | 0 |
+| bolter | checksummed | 53 | 53 | 0 | 0 | ≤1.000 | 1.000 | 1.000 | 0 |
 | shotgun | uncompressed | 183 | 14 | 160 | 9 | 0.126 | 0.077 | 0.077 | 0 |
 | shotgun | unchecked | 143 | 104 | 0 | 58 | ≤1.000 | 0.594 | 0.727 | 19 |
 | shotgun | checksummed | 59 | 58 | 0 | 1 | ≤1.000 | 0.983 | 0.983 | 0 |
@@ -126,14 +127,20 @@ The unchecked class lands in between, and how far depends on the codec.
 For a single bit, libtiff decoded 93 of 146 unchecked cases without
 complaint, so damage to LZW, PackBits, CCITT or JPEG data is far from
 reliably detectable. tiffz detects more of those cases than libtiff
-does (rate 0.432 against an estimate of 0.363), which shows how low
+does (rate 0.438 against an estimate of 0.363), which shows how low
 that estimate runs.
 
-For small damage, tiffz misses some open cases: 6 of 16 single-bit
-uncompressed cases, 3 of 12 single-byte ones and 1 of 47 single-bit
-checksummed ones. These are candidates for better detection.
+tiffz now detects every open case (`open_rate` 1.000 in every class).
+Before findings 17 and 18 it missed twelve: single-byte faults in IFD
+entries, such as a corrupted tag ID or an out-of-range Orientation, that
+libtiff warns about and tiffz decoded around without saying so. validate
+ruled them corrupt (2026-11-03). They are kept as regressions in
+`tests/fixture_test.zig` and listed in
+`docs/plan_context/ifd_fault_cases.md`. tiffz's sniper uncompressed rate
+(0.091) now exceeds that class's ceiling estimate (0.086) because it
+also catches one case libtiff accepts (`stricter` 1).
 
-Across all classes, the overall rates are 0.312 (sniper), 0.395
+Across all classes, the overall rates are 0.332 (sniper), 0.405
 (bolter), 0.457 (shotgun) and 0.732 (nuke). They mix populations whose
 ceilings differ by an order of magnitude, so they say little on their own.
 

@@ -32,6 +32,7 @@ const compressions_zstd = @import("compressions/zstd.zig");
 const compressions_lerc = @import("compressions/lerc.zig");
 const predictors_mod = @import("predictors.zig");
 const findings_mod = @import("findings.zig");
+const conformance = @import("ifd_conformance.zig");
 
 /// One tag 330 value plus the directory that named it. The parent index is
 /// how a pointer back at an ancestor is told from a second name for a page
@@ -273,6 +274,40 @@ pub const Decoder = struct {
             if (payload.len > 0) payload.ptr else null,
             payload.len,
         );
+    }
+
+    /// Check one IFD against the directory rules in `ifd_conformance` and emit
+    /// a corrupt finding per fault. Notes the first fault for progress and
+    /// returns whether there was any. Validation fails Malformed once the
+    /// walk ends, so every page is still decoded for reach.
+    fn checkIfdConformance(self: *Decoder, dir: *const Ifd, ifd_index: usize) errors.Error!bool {
+        var faults: std.ArrayListUnmanaged(conformance.Fault) = .empty;
+        defer faults.deinit(self.allocator);
+        try conformance.check(self.allocator, dir, self.endian, &faults);
+        const ifd_offset = self.ifdFileOffset(ifd_index) orelse return error.Bug;
+        for (faults.items) |fault| {
+            const entry_offset = conformance.entryOffset(ifd_offset, fault.entryIndex(), dir.offset_width);
+            const finding: findings_mod.InfoFinding = switch (fault) {
+                .unsorted => .ifd_entries_unsorted,
+                .field_invalid => .tag_field_invalid,
+            };
+            self.noteDiscrepancy(.@"error", entry_offset, switch (fault) {
+                .unsorted => "ifd_entries_unsorted",
+                .field_invalid => "tag_field_invalid",
+            });
+            var buf: [conformance.field_invalid_payload_len]u8 = undefined;
+            self.emitDetailed(
+                .tiffz,
+                @intCast(@intFromEnum(finding)),
+                null,
+                .corrupt,
+                entry_offset,
+                null,
+                true,
+                conformance.encodePayload(fault, @intCast(ifd_index), entry_offset, &buf),
+            );
+        }
+        return faults.items.len > 0;
     }
 
     fn emitU32(self: *Decoder, finding: findings_mod.InfoFinding, value: u32) void {
@@ -661,12 +696,17 @@ pub const Decoder = struct {
             };
         }
 
+        // A directory-rule fault fails validation only after the walk, so
+        // later pages still get decoded and their findings reported.
+        var nonconforming = false;
+
         var ifd_index: usize = 0;
         while (ifd_index < self.ifdCount()) : (ifd_index += 1) {
             const dir = self.ifd(ifd_index) catch |err| {
                 self.noteFileClaim(err, self.ifdFileOffset(ifd_index));
                 return err;
             };
+            if (try self.checkIfdConformance(dir, ifd_index)) nonconforming = true;
             // No strip/tile arrays. A JPEGInterchangeFormat thumbnail (CR2
             // IFD1) is still a known page with nothing for this walk to
             // decode. Any other main-chain IFD in that shape is not an
@@ -746,6 +786,7 @@ pub const Decoder = struct {
                 };
             }
         }
+        if (nonconforming) return error.Malformed;
     }
 
     const ChunkLayout = struct {

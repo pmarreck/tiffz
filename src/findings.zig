@@ -90,6 +90,19 @@ pub const InfoFinding = enum(u32) {
     /// 2026-08-27). Emitted once PER SKIPPED IFD. Payload: 8 bytes,
     /// u32 LE IFD index then u32 LE compression code.
     unsupported_compression_skipped = 16,
+    /// An IFD entry's tag is not larger than the tag before it (TIFF 6.0
+    /// p. 15 requires strictly ascending order). Usually a corrupted tag
+    /// ID, whose lost value the decoder then replaces with the default.
+    /// Verdict corrupt: validation fails Malformed after the walk (validate
+    /// ruling, 2026-11-03). Once per offending entry. Payload: 20 bytes,
+    /// see `ifd_conformance.unsorted_payload_len`. The finding's byte offset
+    /// is the entry's, exact.
+    ifd_entries_unsorted = 17,
+    /// An entry's type, count or value violates its tag's rule in
+    /// `ifd_conformance.rules`. Verdict corrupt, as for 17. Once per
+    /// offending entry. Payload: 38 bytes, see
+    /// `ifd_conformance.field_invalid_payload_len`.
+    tag_field_invalid = 18,
     _,
 };
 

@@ -10,6 +10,7 @@ pub const photometric: u16 = 262;            // 0x0106
 pub const fill_order: u16 = 266;             // 0x010A; 1 = MSB-first, 2 = LSB-first
 pub const strip_offsets: u16 = 273;          // 0x0111
 pub const samples_per_pixel: u16 = 277;      // 0x0115
+pub const orientation: u16 = 274;            // 0x0112; SHORT, 1-8
 pub const rows_per_strip: u16 = 278;         // 0x0116
 pub const strip_byte_counts: u16 = 279;      // 0x0117
 /// Child IFD offsets (TIFF Tech Note 1 / DNG). Not a next-IFD link.
@@ -17,6 +18,7 @@ pub const sub_ifds: u16 = 330;               // 0x014A
 pub const planar_configuration: u16 = 284;   // 0x011C
 pub const t4_options: u16 = 292;             // 0x0124; bit 0 = 2D, bit 1 = uncompressed, bit 2 = EOL byte align
 pub const t6_options: u16 = 293;             // 0x0125; bit 1 = uncompressed
+pub const transfer_function: u16 = 301;      // 0x012D; SHORT[{1 or 3} * 2**BitsPerSample]
 pub const predictor: u16 = 317;              // 0x013D
 pub const colormap: u16 = 320;               // 0x0140
 pub const tile_width: u16 = 322;             // 0x0142
@@ -24,7 +26,8 @@ pub const tile_length: u16 = 323;            // 0x0143
 pub const tile_offsets: u16 = 324;           // 0x0144
 pub const tile_byte_counts: u16 = 325;       // 0x0145
 pub const extra_samples: u16 = 338;          // 0x0152; SHORT[N]; per extra sample: 0=unspec, 1=associated alpha (pre-multiplied), 2=unassociated alpha
-pub const jpeg_tables: u16 = 347;            // 0x015B; TIFF TN2 Mode 2 — shared JPEG abbreviated table datastream
+pub const sample_format: u16 = 339;          // 0x0153; SHORT[SamplesPerPixel], 1-4
+pub const jpeg_tables: u16 = 347;           // 0x015B; TIFF TN2 Mode 2 — shared JPEG abbreviated table datastream
 pub const jpeg_interchange_format: u16 = 513; // 0x0201; thumbnail JPEG blob, not a strip offset
 pub const jpeg_interchange_format_length: u16 = 514; // 0x0202
 pub const ycbcr_subsampling: u16 = 530;      // 0x0212; SHORT[2] [ChromaSubsampleHoriz, ChromaSubsampleVert], default [2,2]

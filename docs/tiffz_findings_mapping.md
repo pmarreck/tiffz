@@ -108,6 +108,19 @@ typedef void (*tiffz_finding_callback_t)(
 | `final_strip_padding_tolerated` (13) | none | once when a final strip exceeds its logical extent but stays within one full RowsPerStrip chunk |
 | `lzw_missing_eod_tolerated` (14) | none | once when valid LZW transitions reach physical EOF at an exact container bound without EOD |
 | `tiled_geometry_via_strip_tags_tolerated` (15) | none | once when complete tile geometry uses complete strip arrays and both canonical tile arrays are absent |
+| `unsupported_compression_skipped` (16) | u32 LE IFD index, u32 LE compression | per IFD skipped because tiffz never supports its compression (partial coverage) |
+| `ifd_entries_unsorted` (17) | 20 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 preceding tag | per entry whose tag is not larger than the one before it (TIFF 6.0 p. 15); verdict corrupt |
+| `tag_field_invalid` (18) | 38 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 reason (1 type, 2 count, 3 value), u16 raw type, u64 raw count, u64 raw value/offset slot | per entry that breaks its tag's rule in `src/ifd_conformance.zig`; verdict corrupt |
+
+Codes 17 and 18 are tiffz's only native findings with a `corrupt` verdict.
+They are proven TIFF violations (validate's ruling, 2026-11-03), so
+validation fails `Malformed` after the walk finishes; every page is still
+decoded. The finding's byte offset is the 12-byte (BigTIFF: 20-byte)
+entry's, exact. The raw slot is the value/offset field read as an unsigned
+integer in the file's byte order (u32 classic, u64 BigTIFF). BYTE, SHORT
+and LONG are all accepted for any unsigned-integer field, scalar or array
+(TIFF 6.0 p. 16), though a field defined as SHORT must hold 16-bit values.
+Values from 32768 to 65535 are private, so they are not faults.
 
 Numeric finding codes are **stable** — they never change once
 assigned. New findings append at the end. The Zig enum
@@ -162,6 +175,8 @@ forward-compat unknowns.
 | `final_strip_padding_tolerated`   | warn             | `warning_message = "final TIFF strip padded to RowsPerStrip"`          |
 | `lzw_missing_eod_tolerated`       | warn             | `warning_message = "TIFF LZW stream omitted EOD at exact extent"`      |
 | `tiled_geometry_via_strip_tags_tolerated` | warn      | `warning_message = "TIFF tile geometry uses strip offset/count tags"`  |
+| `ifd_entries_unsorted`            | fail             | detail for the `Malformed` failure: "TIFF IFD entries out of tag order" |
+| `tag_field_invalid`               | fail             | detail for the `Malformed` failure: "TIFF tag has an invalid type, count or value" |
 
 Notes on taxonomy:
 
@@ -292,6 +307,9 @@ pub const TiffzInfoFinding = enum(u32) {
     final_strip_padding_tolerated = 13,
     lzw_missing_eod_tolerated = 14,
     tiled_geometry_via_strip_tags_tolerated = 15,
+    unsupported_compression_skipped = 16,
+    ifd_entries_unsorted = 17,
+    tag_field_invalid = 18,
     _, // forward-compat: new tiffz versions may introduce codes
 };
 
@@ -321,6 +339,10 @@ pub fn routeInfoFinding(finding: TiffzInfoFinding, payload_u32: ?u32) RoutedFind
         .final_strip_padding_tolerated => .{ .warning = "final TIFF strip padded to RowsPerStrip" },
         .lzw_missing_eod_tolerated => .{ .warning = "TIFF LZW stream omitted EOD at exact extent" },
         .tiled_geometry_via_strip_tags_tolerated => .{ .warning = "TIFF tile geometry uses strip offset/count tags" },
+        .unsupported_compression_skipped => .{ .warning = "TIFF IFD skipped: compression never supported" },
+        // The file already fails Malformed; these carry the entry detail.
+        .ifd_entries_unsorted  => .{ .other = "TIFF IFD entries out of tag order" },
+        .tag_field_invalid     => .{ .other = "TIFF tag has an invalid type, count or value" },
         _                      => .{ .other = "unknown tiffz finding code" },
     };
 }

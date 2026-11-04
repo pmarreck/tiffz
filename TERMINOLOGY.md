@@ -38,14 +38,19 @@ Used by `docs/tiffz_coverage_matrix.md`:
 
 - **Namespace A:** jpegz + jp2z finding codes. Nested JPEG-family
   findings stay tagged with their source decoder.
-- **Namespace B:** tiffz `InfoFinding` codes (1–16 today). Disjoint
+- **Namespace B:** tiffz `InfoFinding` codes (1–18 today). Disjoint
   from A. Validate disambiguates by emitting decoder, so tiffz `1`
   (`bigtiff_format`) does not collide with jpegz `1`.
 - **Finding identity:** the pair `(source_decoder, finding_code)`.
   Equal integers from different sources do not collide.
-- **Four-way verdict:** `valid`, `corrupt`, `unsupported`,
-  `indeterminate`. Nested strict-facade findings keep all four;
-  native tiffz INFO/WARN findings use `valid`.
+- **Verdict:** `valid`, `corrupt`, `unsupported`, `indeterminate`,
+  `known_defect`. Nested strict-facade findings keep their own;
+  native tiffz INFO/WARN findings use `valid`, and findings 17 and 18
+  use `corrupt`.
+- **Findings 17 / 18** (`ifd_entries_unsorted`, `tag_field_invalid`):
+  proven IFD-entry violations (validate's ruling, 2026-11-03). The walk
+  finishes, then validation fails `Malformed`. Tolerance belongs in
+  the decoder, never in the verdict.
 - **Finding 16** (`unsupported_compression_skipped`): the walk
   skipped a never-supported compression IFD (payload: u32 LE IFD
   index, then u32 LE compression). Partial coverage, not a file-level

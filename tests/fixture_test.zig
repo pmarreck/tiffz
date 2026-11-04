@@ -641,6 +641,8 @@ const FindingRecorder = struct {
         payload_u32: ?u32, // decoded from a 4-byte little-endian payload, else null
         payload_u32_2: ?u32, // second LE u32 (bytes 4..8) for 8-byte payloads, else null
         payload_len: usize,
+        /// The first `payload_bytes.len` payload bytes, zero-filled past `payload_len`.
+        payload_bytes: [64]u8,
     };
 
     fn init(allocator: std.mem.Allocator) FindingRecorder {
@@ -672,6 +674,11 @@ const FindingRecorder = struct {
             const slice = payload.?[4..8];
             break :blk std.mem.readInt(u32, slice, .little);
         } else null;
+        var payload_bytes = [_]u8{0} ** 64;
+        if (payload) |p| {
+            const n = @min(payload_len, payload_bytes.len);
+            @memcpy(payload_bytes[0..n], p[0..n]);
+        }
         self.findings.append(self.allocator, .{
             .source = @enumFromInt(source_decoder),
             .finding_code = finding_id,
@@ -692,6 +699,7 @@ const FindingRecorder = struct {
             .payload_u32 = payload_u32,
             .payload_u32_2 = payload_u32_2,
             .payload_len = payload_len,
+            .payload_bytes = payload_bytes,
         }) catch unreachable;
     }
 
@@ -2300,6 +2308,223 @@ test "C header defines every finding verdict and source with the Zig value" {
                 std.debug.print("include/tiffz.h lacks: {s}\n", .{line});
                 return err;
             };
+        }
+    }
+}
+
+// The twelve single-byte IFD-entry faults from the master-42 corruption
+// campaign (docs/plan_context/ifd_fault_cases.md). validate ruled them all
+// corrupt (2026-11-03). Each is rebuilt from its seed. It must fail Malformed
+// with the expected finding, and that finding's entry offset must contain the
+// mutated byte: the offset comes from the case table, not from tiffz.
+const IfdFaultCase = struct {
+    seed: []const u8,
+    offset: usize,
+    new_byte: u8,
+    finding: tiffz.findings.InfoFinding,
+    /// For tag_field_invalid: the tag and reason. For ifd_entries_unsorted:
+    /// the corrupted tag ID, which is either the entry's tag or the one before.
+    tag: u16,
+    reason: u16 = 0,
+};
+
+const ifd_fault_cases = [_]IfdFaultCase{
+    .{ .seed = "tests/fixtures/zstd/rgb_zstd.tif", .offset = 134, .new_byte = 0x10, .finding = .tag_field_invalid, .tag = 301, .reason = 2 },
+    .{ .seed = "tests/fixtures/lerc/gray16_lerc.tif", .offset = 134, .new_byte = 0x21, .finding = .tag_field_invalid, .tag = 339, .reason = 2 },
+    .{ .seed = "tests/fixtures/geotiff/gray16_geotiff.tif", .offset = 119, .new_byte = 0x21, .finding = .ifd_entries_unsorted, .tag = 8476 },
+    .{ .seed = "tests/fixtures/geotiff/gray16_geotiff.tif", .offset = 139, .new_byte = 0x01, .finding = .tag_field_invalid, .tag = 339, .reason = 3 },
+    .{ .seed = "tests/fixtures/photometric/ycbcr.tif", .offset = 911, .new_byte = 0x11, .finding = .ifd_entries_unsorted, .tag = 4380 },
+    .{ .seed = "tests/fixtures/photometric/ycbcr.tif", .offset = 871, .new_byte = 0x01, .finding = .tag_field_invalid, .tag = 274, .reason = 3 },
+    .{ .seed = "tests/fixtures/photometric/cmyk.tif", .offset = 1096, .new_byte = 0x0b, .finding = .tag_field_invalid, .tag = 266, .reason = 1 },
+    .{ .seed = "tests/fixtures/photometric/rgb16.tif", .offset = 1583, .new_byte = 0x21, .finding = .ifd_entries_unsorted, .tag = 8451 },
+    .{ .seed = "tests/fixtures/geotiff/gray16_geotiff.tif", .offset = 83, .new_byte = 0xfe, .finding = .ifd_entries_unsorted, .tag = 65045 },
+    .{ .seed = "tests/fixtures/geotiff/gray16_geotiff.tif", .offset = 191, .new_byte = 0x78, .finding = .ifd_entries_unsorted, .tag = 30897 },
+    .{ .seed = "tests/fixtures/photometric/cmyk.tif", .offset = 1102, .new_byte = 0xfe, .finding = .tag_field_invalid, .tag = 266, .reason = 3 },
+    .{ .seed = "tests/fixtures/predictor/predictor3_deflate_fp32.tif", .offset = 119, .new_byte = 0xfe, .finding = .ifd_entries_unsorted, .tag = 65052 },
+};
+
+fn countConformance(recorder: *const FindingRecorder) usize {
+    var n: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz) continue;
+        if (f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.ifd_entries_unsorted) or
+            f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) n += 1;
+    }
+    return n;
+}
+
+/// Classic little-endian 2x1 8-bit grayscale TIFF, uncompressed, with one
+/// extra field `tag` (above 279, so the entries stay sorted) of type `typ`
+/// holding `values`. The field is inline when it fits in 4 bytes.
+fn grayWithField(allocator: std.mem.Allocator, tag: u16, typ: u16, values: []const u32) ![]u8 {
+    const width: u32 = switch (typ) {
+        1 => 1,
+        3 => 2,
+        4 => 4,
+        else => unreachable,
+    };
+    const ntags: usize = 10;
+    const field_off: u32 = 8 + 2 + ntags * 12 + 4;
+    const field_bytes: u32 = width * @as(u32, @intCast(values.len));
+    const out_of_line = field_bytes > 4;
+    const strip_off: u32 = field_off + (if (out_of_line) field_bytes else 0);
+    const buf = try allocator.alloc(u8, strip_off + 2);
+    @memset(buf, 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    putU16(buf, 2, 42);
+    putU32(buf, 4, 8);
+    putU16(buf, 8, @intCast(ntags));
+    var slot = [_]u8{0} ** 4;
+    const data: []u8 = if (out_of_line) buf[field_off..strip_off] else slot[0..field_bytes];
+    for (values, 0..) |v, i| switch (width) {
+        1 => data[i] = @intCast(v),
+        2 => std.mem.writeInt(u16, data[2 * i ..][0..2], @intCast(v), .little),
+        else => std.mem.writeInt(u32, data[4 * i ..][0..4], v, .little),
+    };
+    const entries = [_]struct { tag: u16, typ: u16, count: u32 = 1, val: u32 }{
+        .{ .tag = 256, .typ = 4, .val = 2 },
+        .{ .tag = 257, .typ = 4, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 },
+        .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 262, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = strip_off },
+        .{ .tag = 277, .typ = 3, .val = 1 },
+        .{ .tag = 278, .typ = 4, .val = 1 },
+        .{ .tag = 279, .typ = 4, .val = 2 },
+        .{ .tag = tag, .typ = typ, .count = @intCast(values.len), .val = if (out_of_line) field_off else std.mem.readInt(u32, &slot, .little) },
+    };
+    for (entries, 0..) |entry, i| {
+        const at = 10 + i * 12;
+        putU16(buf, at, entry.tag);
+        putU16(buf, at + 2, entry.typ);
+        putU32(buf, at + 4, entry.count);
+        putU32(buf, at + 8, entry.val);
+    }
+    buf[strip_off] = 0x10;
+    buf[strip_off + 1] = 0xf0;
+    return buf;
+}
+
+test "IFD-entry rules: SampleFormat and TransferFunction stored as BYTE or LONG validate clean" {
+    // TIFF 6.0 p. 16: BYTE, SHORT or LONG for any unsigned-integer field,
+    // arrays included (validate, 2026-11-04).
+    const allocator = std.testing.allocator;
+    var table: [256]u32 = undefined;
+    for (&table, 0..) |*v, i| v.* = @intCast(i);
+    var long_table: [256]u32 = undefined;
+    for (&long_table, 0..) |*v, i| v.* = @intCast(i * 257);
+    const cases = [_]struct { tag: u16, typ: u16, values: []const u32 }{
+        .{ .tag = 339, .typ = 1, .values = &.{1} },
+        .{ .tag = 339, .typ = 4, .values = &.{1} },
+        .{ .tag = 301, .typ = 1, .values = &table },
+        .{ .tag = 301, .typ = 4, .values = &long_table },
+    };
+    for (cases) |case| {
+        const bytes = try grayWithField(allocator, case.tag, case.typ, case.values);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        validateRecording(allocator, bytes, &recorder) catch |err| {
+            std.debug.print("tag {d} type {d}: {s}\n", .{ case.tag, case.typ, @errorName(err) });
+            return err;
+        };
+        try std.testing.expectEqual(@as(usize, 0), countConformance(&recorder));
+    }
+}
+
+test "IFD-entry rules: a LONG SampleFormat or TransferFunction value above 65535 is corrupt" {
+    const allocator = std.testing.allocator;
+    var long_table: [256]u32 = undefined;
+    for (&long_table, 0..) |*v, i| v.* = @intCast(i * 257);
+    long_table[255] = 65536;
+    const cases = [_]struct { tag: u16, values: []const u32 }{
+        .{ .tag = 339, .values = &.{65537} },
+        .{ .tag = 301, .values = &long_table },
+    };
+    for (cases) |case| {
+        const bytes = try grayWithField(allocator, case.tag, 4, case.values);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
+        var matched: usize = 0;
+        for (recorder.findings.items) |f| {
+            if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+            try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, f.verdict);
+            const p = f.payload_bytes;
+            try std.testing.expectEqual(case.tag, std.mem.readInt(u16, p[16..18], .little));
+            try std.testing.expectEqual(@as(u16, 3), std.mem.readInt(u16, p[18..20], .little)); // value
+            try std.testing.expectEqual(@as(u16, 4), std.mem.readInt(u16, p[20..22], .little)); // LONG
+            try std.testing.expectEqual(@as(?u64, 8 + 2 + 9 * 12), f.byte_offset);
+            matched += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), matched);
+    }
+}
+
+test "IFD-entry faults: every clean seed validates without a directory-rule finding" {
+    const allocator = std.testing.allocator;
+    for (ifd_fault_cases) |case| {
+        const bytes = try loadFile(allocator, case.seed);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        validateRecording(allocator, bytes, &recorder) catch |err| {
+            std.debug.print("seed {s}: {s}\n", .{ case.seed, @errorName(err) });
+            return err;
+        };
+        try std.testing.expectEqual(@as(usize, 0), countConformance(&recorder));
+    }
+}
+
+test "IFD-entry faults: each of the twelve campaign cases is corrupt at the mutated entry" {
+    const allocator = std.testing.allocator;
+    for (ifd_fault_cases, 1..) |case, number| {
+        const bytes = try loadFile(allocator, case.seed);
+        defer allocator.free(bytes);
+        try std.testing.expect(bytes[case.offset] != case.new_byte);
+        bytes[case.offset] = case.new_byte;
+
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        const result = validateRecording(allocator, bytes, &recorder);
+        std.testing.expectError(error.Malformed, result) catch |err| {
+            std.debug.print("case {d} ({s} @ {d}) was not rejected Malformed\n", .{ number, case.seed, case.offset });
+            return err;
+        };
+
+        var matched = false;
+        for (recorder.findings.items) |f| {
+            if (f.source != .tiffz or f.finding_code != @intFromEnum(case.finding)) continue;
+            try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, f.verdict);
+            try std.testing.expect(f.offset_is_exact);
+            const p = f.payload_bytes;
+            const entry_offset = std.mem.readInt(u64, p[8..16], .little);
+            try std.testing.expectEqual(@as(?u64, entry_offset), f.byte_offset);
+            const tag = std.mem.readInt(u16, p[16..18], .little);
+            const hit = switch (case.finding) {
+                .ifd_entries_unsorted => blk: {
+                    try std.testing.expectEqual(@as(usize, 20), f.payload_len);
+                    const prev = std.mem.readInt(u16, p[18..20], .little);
+                    // The corrupted entry is this one or the one before it.
+                    const in_reach = case.offset + 12 >= entry_offset and case.offset < entry_offset + 12;
+                    break :blk in_reach and (tag == case.tag or prev == case.tag);
+                },
+                .tag_field_invalid => blk: {
+                    try std.testing.expectEqual(@as(usize, 38), f.payload_len);
+                    const reason = std.mem.readInt(u16, p[18..20], .little);
+                    break :blk tag == case.tag and reason == case.reason and
+                        case.offset >= entry_offset and case.offset < entry_offset + 12;
+                },
+                else => unreachable,
+            };
+            if (hit) matched = true;
+        }
+        if (!matched) {
+            std.debug.print("case {d} ({s} @ {d}): no matching finding; got:\n", .{ number, case.seed, case.offset });
+            for (recorder.findings.items) |f| std.debug.print("  source {s} code {d} verdict {s}\n", .{ @tagName(f.source), f.finding_code, @tagName(f.verdict) });
+            return error.TestExpectedEqual;
         }
     }
 }

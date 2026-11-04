@@ -119,6 +119,9 @@ pub const OffsetWidth = enum {
 pub const Entry = struct {
     tag: u16,
     field_type: FieldType,
+    /// The type code as stored, so a code `FieldType` folds to `.unknown`
+    /// (13 to 15) can still be reported exactly.
+    raw_type: u16,
     count: u64,
     /// Raw value/offset slot, in file byte order. Width is 8 bytes for
     /// BigTIFF; classic TIFF zero-fills bytes 4-7. Resolve via
@@ -227,6 +230,16 @@ pub const Ifd = struct {
             .long8, .ifd8 => header_mod.readU64(buf[0..8], endian),
             else => error.UnsupportedTagType,
         };
+    }
+
+    /// The value bytes of entry `index` (by position, so a duplicated tag
+    /// reads its own entry): the eagerly cached out-of-line buffer, or the
+    /// inline part of the slot. Parsing caches every out-of-line value or
+    /// fails, so this never touches the Source.
+    pub fn entryValueSlice(self: *const Ifd, index: usize) []const u8 {
+        if (self.cached_values[index]) |buf| return buf;
+        const total: usize = @intCast(@min(entryValueBytes(self.entries[index]), self.offset_width.inlineCap()));
+        return self.entries[index].raw_value_or_offset[0..total];
     }
 
     /// Total bytes required for an entry's value array.
@@ -361,6 +374,7 @@ pub fn parse(
         entry.* = .{
             .tag = header_mod.readU16(entries_buf[base..][0..2], endian),
             .field_type = FieldType.fromU16(type_code),
+            .raw_type = type_code,
             .count = switch (offset_width) {
                 .classic => @as(u64, header_mod.readU32(entries_buf[base + 4 ..][0..4], endian)),
                 .big => header_mod.readU64(entries_buf[base + 4 ..][0..8], endian),
