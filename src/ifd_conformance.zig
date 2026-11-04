@@ -143,6 +143,16 @@ const Extra = enum {
     /// With Compression 7, PhotometricInterpretation "shall not be 3 (palette
     /// color) nor 4 (transparency mask)" (TIFF Technical Note 2).
     not_palette_or_mask_with_jpeg,
+    /// SamplesPerPixel = C + m, with C the color channels the
+    /// PhotometricInterpretation implies and m the ExtraSamples count, 0 when
+    /// absent (TIFF 6.0 p. 32; validate's table, 2026-11-04). On ExtraSamples,
+    /// a mismatch is a count fault. On SamplesPerPixel, it is a value fault,
+    /// reported only when ExtraSamples is absent.
+    channels_plus_extra_samples,
+    /// As `channels_plus_extra_samples`, on PhotometricInterpretation, when
+    /// neither SamplesPerPixel nor ExtraSamples is present: the default of
+    /// one sample must suit the photometric.
+    channels_without_samples_per_pixel,
 };
 
 const Rule = struct {
@@ -168,7 +178,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.image_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
     .{ .tag = tags.bits_per_sample, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 29" },
     .{ .tag = tags.compression, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 10 }}, .citation = "TIFF 6.0 pp. 30, 49, 104 (1-7); Photoshop TIFF Technical Notes (8); RFC 3949 pp. 44, 56 (9, 10)" },
-    .{ .tag = tags.photometric, .kind = .unsigned_short, .count = .one, .values = &.{ .{ 0, 6 }, .{ 8, 10 } }, .extras = &.{.not_palette_or_mask_with_jpeg}, .citation = "TIFF 6.0 p. 37 (0-6, 8); Photoshop TIFF Technical Notes (9); RFC 3949 p. 48 (10); TIFF Technical Note 2 (not 3 or 4 with JPEG)" },
+    .{ .tag = tags.photometric, .kind = .unsigned_short, .count = .one, .values = &.{ .{ 0, 6 }, .{ 8, 10 } }, .extras = &.{ .not_palette_or_mask_with_jpeg, .channels_without_samples_per_pixel }, .citation = "TIFF 6.0 p. 37 (0-6, 8); Photoshop TIFF Technical Notes (9); RFC 3949 p. 48 (10); TIFF Technical Note 2 (not 3 or 4 with JPEG); TIFF 6.0 p. 32 (channels, when SamplesPerPixel is absent)" },
     .{ .tag = tags.threshholding, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 41" },
     .{ .tag = tags.cell_width, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 29" },
     .{ .tag = tags.cell_length, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 29" },
@@ -179,7 +189,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.model, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 35" },
     .{ .tag = tags.strip_offsets, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 40; BigTIFF" },
     .{ .tag = tags.orientation, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 8 }}, .citation = "TIFF 6.0 pp. 36-37" },
-    .{ .tag = tags.samples_per_pixel, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 39" },
+    .{ .tag = tags.samples_per_pixel, .kind = .unsigned_short, .count = .one, .extras = &.{.channels_plus_extra_samples}, .citation = "TIFF 6.0 pp. 32, 39" },
     .{ .tag = tags.rows_per_strip, .kind = .unsigned_long, .count = .one, .extras = &.{.rows_multiple_of_vertical_subsampling}, .citation = "TIFF 6.0 pp. 39, 92; TIFF Technical Note 2, Section 21" },
     .{ .tag = tags.strip_byte_counts, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 40; BigTIFF" },
     .{ .tag = tags.min_sample_value, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 35" },
@@ -221,7 +231,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.number_of_inks, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 70" },
     .{ .tag = tags.dot_range, .kind = .unsigned_short, .count = .dot_range, .citation = "TIFF 6.0 p. 71" },
     .{ .tag = tags.target_printer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 71" },
-    .{ .tag = tags.extra_samples, .kind = .unsigned_short, .count = .any, .values = &.{.{ 0, 2 }}, .citation = "TIFF 6.0 pp. 31-32, 77" },
+    .{ .tag = tags.extra_samples, .kind = .unsigned_short, .count = .any, .values = &.{.{ 0, 2 }}, .extras = &.{.channels_plus_extra_samples}, .citation = "TIFF 6.0 pp. 31-32, 77" },
     .{ .tag = tags.sample_format, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 4 }}, .citation = "TIFF 6.0 p. 80" },
     .{ .tag = tags.transfer_range, .kind = .unsigned_short, .count = .six, .citation = "TIFF 6.0 p. 86" },
     .{ .tag = tags.clip_path, .kind = .bytes, .count = .any, .citation = "PageMaker 6.0 TIFF Technical Notes p. 6" },
@@ -265,7 +275,7 @@ pub const rules = [_]Rule{
 pub const Pending = struct { what: []const u8, citation: []const u8, waits_for: []const u8 };
 pub const pending = [_]Pending{
     .{ .what = "NewSubfileType bits", .citation = "TIFF 6.0 p. 36", .waits_for = "DNG (TIFF-FX adds bit 4, MRC, RFC 3949 p. 64)" },
-    .{ .what = "ExtraSamples count m from PhotometricInterpretation and SamplesPerPixel", .citation = "TIFF 6.0 p. 31", .waits_for = "a ruling on the color channels each PhotometricInterpretation implies (Separated depends on InkSet and NumberOfInks; CIELab allows L* alone)" },
+    .{ .what = "PhotometricInterpretation 3 needs ColorMap; 4 needs BitsPerSample 1", .citation = "TIFF 6.0 p. 37", .waits_for = "the next TIFF 6.0 cross-field increment, after ExtraSamples" },
     .{ .what = "DCT JPEG multi-strip RowsPerStrip and tile sizes are MCU multiples, and SOF sampling factors equal YCbCrSubSampling", .citation = "TIFF Technical Note 2", .waits_for = "a finding that cites the entry and the SOF offset, checked where the SOF is parsed (Namespace B sign-off)" },
 };
 
@@ -428,6 +438,20 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
             if (layer < 1 or layer > 3 or order < 1) return .value;
         },
         .not_with_rows_per_strip => if (indexOf(dir, tags.rows_per_strip) != null) return .value,
+        .channels_plus_extra_samples => {
+            if (entry.tag == tags.extra_samples) {
+                const samples = scalar(dir, tags.samples_per_pixel, endian) orelse
+                    if (indexOf(dir, tags.samples_per_pixel) == null) 1 else continue;
+                if (!channelsFit(dir, endian, samples, entry.count)) return .count;
+            } else if (indexOf(dir, tags.extra_samples) == null) {
+                const samples = element(bytes, entry.field_type, 0, endian) orelse return .count;
+                if (!channelsFit(dir, endian, samples, 0)) return .value;
+            }
+        },
+        .channels_without_samples_per_pixel => {
+            if (indexOf(dir, tags.samples_per_pixel) != null or indexOf(dir, tags.extra_samples) != null) continue;
+            if (!channelsFit(dir, endian, 1, 0)) return .value;
+        },
         .multiple_of_16, .date_time => {},
     };
     return null;
@@ -435,6 +459,36 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
 
 fn hasExtra(rule: Rule, extra: Extra) bool {
     return std.mem.indexOfScalar(Extra, rule.extras, extra) != null;
+}
+
+/// Whether `samples` = C + `extra`, with C the color channels the
+/// PhotometricInterpretation implies (validate's table, 2026-11-04). True
+/// when the photometric is absent, malformed, private or undefined (each its
+/// own fault or no constraint), or when an ink field it needs is malformed.
+fn channelsFit(dir: *const Ifd, endian: Endian, samples: u64, extra: u64) bool {
+    const photometric = scalar(dir, tags.photometric, endian) orelse return true;
+    return switch (photometric) {
+        // WhiteIsZero and BlackIsZero (p. 37).
+        0, 1 => samples == 1 + extra,
+        // Palette and transparency mask: "SamplesPerPixel must be 1" (p. 37),
+        // so no extra samples either.
+        3, 4 => samples == 1 and extra == 0,
+        // RGB (p. 24) and YCbCr (p. 94).
+        2, 6 => samples == 3 + extra,
+        // Separated: NumberOfInks, default 4 (p. 70). With InkSet 1 (CMYK,
+        // the default) and NumberOfInks other than 4, either is accepted.
+        5 => blk: {
+            const inks = scalar(dir, tags.number_of_inks, endian) orelse
+                if (indexOf(dir, tags.number_of_inks) == null) 4 else break :blk true;
+            const ink_set = scalar(dir, tags.ink_set, endian) orelse
+                if (indexOf(dir, tags.ink_set) == null) 1 else break :blk true;
+            break :blk samples == inks + extra or (ink_set == 1 and samples == 4 + extra);
+        },
+        // CIELab (p. 111), ICCLab (Photoshop notes) and ITULab (RFC 3949):
+        // L* may stand alone.
+        8, 9, 10 => samples == 3 + extra or samples == 1 + extra,
+        else => true,
+    };
 }
 
 /// YCbCrSubSampling factor `axis` (0 horizontal, 1 vertical) of a YCbCr image,
@@ -646,8 +700,14 @@ test "every single-value rule accepts its range ends and rejects the values just
         const ranges = rule.values orelse continue;
         for (ranges) |range| {
             for ([_]u16{ range[0], range[1] }) |v| {
-                var ok = [_]Entry{inline16(rule.tag, .short, 1, v)};
-                try expectFaults(&ok, &.{});
+                if (rule.tag == tags.photometric) {
+                    // With the SamplesPerPixel the photometric implies.
+                    var ok = [_]Entry{ inline16(rule.tag, .short, 1, v), inline16(tags.samples_per_pixel, .short, 1, impliedChannels(v)) };
+                    try expectFaults(&ok, &.{});
+                } else {
+                    var ok = [_]Entry{inline16(rule.tag, .short, 1, v)};
+                    try expectFaults(&ok, &.{});
+                }
             }
             for ([_]u32{ range[0] -% 1, range[1] + 1 }) |v| {
                 if (v >= 32768) continue; // private, never a fault
@@ -829,26 +889,29 @@ test "multi-strip YCbCr RowsPerStrip is a multiple of the vertical subsampling" 
         var entries = [_]Entry{
             inline16(tags.image_length, .short, 1, 16),
             inline16(tags.photometric, .short, 1, 6),
+            inline16(tags.samples_per_pixel, .short, 1, 3),
             inline16(tags.rows_per_strip, .long, 1, case.rows),
         };
         if (case.fault) {
-            try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 2, .tag = tags.rows_per_strip, .reason = .value, .raw_type = 4, .raw_count = 1, .raw_slot = case.rows } }});
+            try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 3, .tag = tags.rows_per_strip, .reason = .value, .raw_type = 4, .raw_count = 1, .raw_slot = case.rows } }});
         } else try expectFaults(&entries, &.{});
     }
     // Explicit [4, 4] subsampling makes 6 a fault and 8 fine.
     var four = [_]Entry{
         inline16(tags.image_length, .short, 1, 16),
         inline16(tags.photometric, .short, 1, 6),
+        inline16(tags.samples_per_pixel, .short, 1, 3),
         inline16(tags.rows_per_strip, .short, 1, 6),
         inline16(tags.ycbcr_subsampling, .short, 2, 0x0004_0004),
     };
-    try expectFaults(&four, &.{.{ .field_invalid = .{ .entry_index = 2, .tag = tags.rows_per_strip, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 6 } }});
-    four[2] = inline16(tags.rows_per_strip, .short, 1, 8);
+    try expectFaults(&four, &.{.{ .field_invalid = .{ .entry_index = 3, .tag = tags.rows_per_strip, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 6 } }});
+    four[3] = inline16(tags.rows_per_strip, .short, 1, 8);
     try expectFaults(&four, &.{});
     // Not YCbCr: no constraint.
     var rgb = [_]Entry{
         inline16(tags.image_length, .short, 1, 16),
         inline16(tags.photometric, .short, 1, 2),
+        inline16(tags.samples_per_pixel, .short, 1, 3),
         inline16(tags.rows_per_strip, .short, 1, 3),
     };
     try expectFaults(&rgb, &.{});
@@ -903,6 +966,7 @@ test "YCbCr image dimensions are not constrained by the subsampling (TIFF Techni
             inline16(tags.image_length, .short, 1, 3),
             inline16(tags.compression, .short, 1, compression),
             inline16(tags.photometric, .short, 1, 6),
+            inline16(tags.samples_per_pixel, .short, 1, 3),
         };
         try expectFaults(&entries, &.{});
     }
@@ -918,6 +982,7 @@ test "with Compression 7, PhotometricInterpretation is not palette or transparen
         var entries = [_]Entry{
             inline16(tags.compression, .short, 1, case.compression),
             inline16(tags.photometric, .short, 1, case.photometric),
+            inline16(tags.samples_per_pixel, .short, 1, impliedChannels(case.photometric)),
         };
         if (case.fault) {
             try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.photometric, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = case.photometric } }});
@@ -999,12 +1064,100 @@ test "TIFF-FX kinds and rules" {
     }
 }
 
+test "SamplesPerPixel is the photometric's color channels plus the ExtraSamples count" {
+    const F = struct { tag: u16, reason: Reason };
+    const Case = struct { photometric: u32, spp: ?u32, extra: ?u32 = null, inks: ?u32 = null, ink_set: ?u32 = null, fault: ?F = null };
+    for ([_]Case{
+        .{ .photometric = 1, .spp = 1 },
+        .{ .photometric = 1, .spp = null },
+        .{ .photometric = 1, .spp = 2, .extra = 1 },
+        .{ .photometric = 1, .spp = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 0, .spp = 3, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
+        .{ .photometric = 2, .spp = 3 },
+        .{ .photometric = 2, .spp = 4, .extra = 1 },
+        .{ .photometric = 2, .spp = 4, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 2, .spp = 3, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
+        .{ .photometric = 2, .spp = null, .fault = .{ .tag = tags.photometric, .reason = .value } },
+        .{ .photometric = 2, .spp = null, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
+        .{ .photometric = 3, .spp = 1 },
+        .{ .photometric = 3, .spp = 3, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 4, .spp = 2, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
+        .{ .photometric = 5, .spp = 4 },
+        .{ .photometric = 5, .spp = 5, .extra = 1 },
+        .{ .photometric = 5, .spp = 3, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 5, .spp = 2, .inks = 2 },
+        .{ .photometric = 5, .spp = 4, .inks = 2 }, // InkSet 1 by default: 4 also accepted
+        .{ .photometric = 5, .spp = 4, .inks = 2, .ink_set = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 5, .spp = 6, .inks = 6, .ink_set = 2 },
+        .{ .photometric = 6, .spp = 3 },
+        .{ .photometric = 6, .spp = 1, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 8, .spp = 1 },
+        .{ .photometric = 8, .spp = 3 },
+        .{ .photometric = 9, .spp = 4, .extra = 1 },
+        .{ .photometric = 10, .spp = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 32803, .spp = 1 }, // CFA: private, skipped
+        .{ .photometric = 7, .spp = 9, .fault = .{ .tag = tags.photometric, .reason = .value } }, // undefined: its own fault only
+    }) |case| {
+        var entries: [5]Entry = undefined;
+        var n: usize = 0;
+        entries[n] = inline16(tags.photometric, .short, 1, case.photometric);
+        n += 1;
+        if (case.spp) |v| {
+            entries[n] = inline16(tags.samples_per_pixel, .short, 1, v);
+            n += 1;
+        }
+        if (case.ink_set) |v| {
+            entries[n] = inline16(tags.ink_set, .short, 1, v);
+            n += 1;
+        }
+        if (case.inks) |v| {
+            entries[n] = inline16(tags.number_of_inks, .short, 1, v);
+            n += 1;
+        }
+        if (case.extra) |m| {
+            // m associated-alpha values; inline holds at most two SHORTs.
+            std.debug.assert(m <= 2);
+            entries[n] = inline16(tags.extra_samples, .short, m, if (m == 2) 0x0001_0001 else 1);
+            n += 1;
+        }
+        var cached = [_]?[]u8{null} ** 16;
+        var out = try faultsOf(entries[0..n], cached[0..n]);
+        defer out.deinit(testing.allocator);
+        if (case.fault) |want| {
+            if (out.items.len != 1 or out.items[0].field_invalid.tag != want.tag or out.items[0].field_invalid.reason != want.reason) {
+                std.debug.print("photometric {d} spp {?d} extra {?d}: want {d}/{s}, got {any}\n", .{ case.photometric, case.spp, case.extra, want.tag, @tagName(want.reason), out.items });
+                return error.TestExpectedEqual;
+            }
+        } else if (out.items.len != 0) {
+            std.debug.print("photometric {d} spp {?d} extra {?d}: want no fault, got {any}\n", .{ case.photometric, case.spp, case.extra, out.items });
+            return error.TestExpectedEqual;
+        }
+    }
+}
+
+test "a malformed SamplesPerPixel or NumberOfInks reports only its own fault" {
+    var spp = [_]Entry{ inline16(tags.photometric, .short, 1, 2), inline16(tags.samples_per_pixel, .short, 2, 0x0003_0003), inline16(tags.extra_samples, .short, 1, 1) };
+    try expectFaults(&spp, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.samples_per_pixel, .reason = .count, .raw_type = 3, .raw_count = 2, .raw_slot = 0x0003_0003 } }});
+    var inks = [_]Entry{ inline16(tags.photometric, .short, 1, 5), inline16(tags.samples_per_pixel, .short, 1, 7), inline16(tags.number_of_inks, .short, 2, 0x0007_0007) };
+    try expectFaults(&inks, &.{.{ .field_invalid = .{ .entry_index = 2, .tag = tags.number_of_inks, .reason = .count, .raw_type = 3, .raw_count = 2, .raw_slot = 0x0007_0007 } }});
+}
+
+/// The SamplesPerPixel a photometric implies without extra samples (a
+/// Separated image with the default four inks).
+fn impliedChannels(photometric: u32) u32 {
+    return switch (photometric) {
+        2, 6 => 3,
+        5 => 4,
+        else => 1,
+    };
+}
+
 test "the pending constraints are pinned" {
     // Removing one of these must come with a row (and its regressions) that
     // checks it, or with a ruling that it is not a constraint.
     const expected = [_][]const u8{
         "NewSubfileType bits",
-        "ExtraSamples count m from PhotometricInterpretation and SamplesPerPixel",
+        "PhotometricInterpretation 3 needs ColorMap; 4 needs BitsPerSample 1",
         "DCT JPEG multi-strip RowsPerStrip and tile sizes are MCU multiples, and SOF sampling factors equal YCbCrSubSampling",
     };
     try testing.expectEqual(expected.len, pending.len);

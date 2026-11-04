@@ -2744,7 +2744,7 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 334, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
     .{ .tag = 336, .clean = short(&.{ 0, 255 }), .corrupt = short(&.{ 0, 128, 255 }), .reason = 2, .seen = 0 },
     .{ .tag = 337, .clean = ascii("printer\x00"), .corrupt = ascii("printer"), .reason = 3, .seen = 0 },
-    .{ .tag = 338, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .seen = 1 },
+    .{ .tag = 338, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .end_to_end = false, .seen = 1 }, // the gray builder has one sample; strike.tif covers it end to end
     .{ .tag = 339, .clean = short(&.{1}), .corrupt = short(&.{5}), .reason = 3, .seen = 21 },
     .{ .tag = 342, .clean = short(&.{ 0, 255, 0, 255, 0, 255 }), .corrupt = short(&.{ 0, 255, 0, 255, 0 }), .reason = 2, .seen = 0 },
     .{ .tag = 343, .clean = .{ .typ = 1, .count = 4, .raw = "\x00\x00\x00\x00" }, .corrupt = .{ .typ = 7, .count = 4, .raw = "\x00\x00\x00\x00" }, .reason = 1, .seen = 0 },
@@ -2785,7 +2785,18 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
 /// Rule-level verdict of one field in the 8-bit grayscale context.
 fn rowFaults(allocator: std.mem.Allocator, tag: u16, field: RowField) !std.ArrayListUnmanaged(tiffz.ifd_conformance.Fault) {
     const Entry = tiffz.ifd.Entry;
-    const context = [_]struct { tag: u16, value: u16 }{ .{ .tag = 258, .value = 8 }, .{ .tag = 262, .value = 1 }, .{ .tag = 277, .value = 1 } };
+    // One-sample 8-bit BlackIsZero. So that only the field itself is under
+    // test, ExtraSamples gets SamplesPerPixel 1 + m and a
+    // PhotometricInterpretation gets the SamplesPerPixel it implies (TIFF 6.0
+    // p. 32); with more than one sample, BitsPerSample is left to its default.
+    const spp: u16 = if (tag == 338)
+        @intCast(1 + field.count)
+    else if (tag == 262 and field.count == 1 and field.raw.len >= 2) switch (std.mem.readInt(u16, field.raw[0..2], .little)) {
+        2, 6 => 3,
+        5 => 4,
+        else => 1,
+    } else 1;
+    const context = [_]struct { tag: u16, value: u16 }{ .{ .tag = 258, .value = 8 }, .{ .tag = 262, .value = 1 }, .{ .tag = 277, .value = spp } };
     var entries: [4]Entry = undefined;
     var cached = [_]?[]u8{null} ** 4;
     var n: usize = 0;
@@ -2799,7 +2810,7 @@ fn rowFaults(allocator: std.mem.Allocator, tag: u16, field: RowField) !std.Array
             n += 1;
             placed = true;
         }
-        if (c.tag == tag) continue;
+        if (c.tag == tag or (c.tag == 258 and spp != 1)) continue;
         var slot = [_]u8{0} ** 8;
         std.mem.writeInt(u16, slot[0..2], c.value, .little);
         entries[n] = .{ .tag = c.tag, .field_type = .short, .raw_type = 3, .count = 1, .raw_value_or_offset = slot };
@@ -2999,4 +3010,37 @@ test "corruption replay: predictor3_deflate_fp32.tif sniper round 378 case 11 is
     var mutated = FindingRecorder.init(allocator);
     defer mutated.deinit();
     try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &mutated));
+}
+
+// ExtraSamples end to end on a real RGBA file: strike.tif is LZW RGB with
+// SamplesPerPixel 4 and one associated-alpha ExtraSamples entry (big-endian,
+// entry 15 of the IFD at 110206). SamplesPerPixel must be 3 color channels
+// plus the ExtraSamples count (TIFF 6.0 p. 32; validate, 2026-11-04), so a
+// count of 2 is a count fault on ExtraSamples.
+test "ExtraSamples: strike.tif validates clean, and a count that leaves too few color channels is corrupt" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/lzw/strike.tif");
+    defer allocator.free(bytes);
+    const entry: usize = 110206 + 2 + 15 * 12;
+    try std.testing.expectEqualSlices(u8, &.{ 0x01, 0x52, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01 }, bytes[entry..][0..8]);
+
+    var clean = FindingRecorder.init(allocator);
+    defer clean.deinit();
+    try validateRecording(allocator, bytes, &clean);
+    try std.testing.expectEqual(@as(usize, 0), countConformance(&clean));
+
+    bytes[entry + 7] = 2; // count 2: inline values 1, 0
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
+    try std.testing.expectEqual(@as(usize, 1), countConformance(&recorder));
+    var matched: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+        try std.testing.expectEqual(@as(?u64, entry), f.byte_offset);
+        try std.testing.expectEqual(@as(u16, 338), std.mem.readInt(u16, f.payload_bytes[16..18], .little));
+        try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, f.payload_bytes[18..20], .little));
+        matched += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), matched);
 }

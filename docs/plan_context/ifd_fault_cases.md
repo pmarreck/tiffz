@@ -268,3 +268,36 @@ on the value of the PhotometricInterpretation field". C is:
 Private photometrics are skipped. A wrong count with ExtraSamples present is a
 count fault on ExtraSamples. With it absent, the mismatch is reported once on
 SamplesPerPixel, since the file cannot say which field is wrong.
+
+Implementation choices beyond the table, for validate's review:
+
+- Palette 3 and transparency mask 4 require SamplesPerPixel 1 outright
+  ("SamplesPerPixel must be 1", p. 37), so ExtraSamples present with
+  either is a count fault on ExtraSamples, whatever SamplesPerPixel says.
+- With neither SamplesPerPixel nor ExtraSamples present, SamplesPerPixel
+  takes its default of 1. A photometric that needs more channels is then
+  reported on PhotometricInterpretation (value), the only entry involved.
+- InkSet defaults to 1 (p. 70), so an absent InkSet takes the "either 4
+  or NumberOfInks" branch. A malformed SamplesPerPixel, NumberOfInks or
+  InkSet reports only its own fault.
+- Undefined public photometrics (7, 11 and up) have their own value
+  fault and no channel check.
+
+Corpus report (140 distinct sha256, pinned manifest), 2026-11-04. No verdict
+changes. Three files gain one finding 18 each; all were already invalid.
+An independent tiffdump scan of every top-level IFD (`Photometric`,
+`SamplesPerPixel`, `ExtraSamples` count, `InkSet`, `NumberOfInks`) found
+the two KDC mismatches and no others; tiffdump does not follow SubIFDs,
+which is where the third file's mismatch is.
+
+| file | sha256 | bytes | IFD | finding | prior cause | cause |
+|---|---|---|---|---|---|---|
+| Kodak P880 KDC | 8138d068d14e9ce90c6877b175759fc92358024303b8cd5e9b9eb5ae11e8c4b1 | 13828802 | 0 | PhotometricInterpretation 6 (YCbCr) with SamplesPerPixel absent, entry offset 34 | findings 9 and 2 | producer pattern |
+| Kodak P712 KDC | b1c3870c8c794f0271053a80a15296e3a9b575ab736796cdb53929d50c86a084 | 12245402 | 0 | same as P880 | findings 9 and 2 | producer pattern |
+| Kodak EOS DCS 3 TIF | dd05419fedb091ca14c86485106e8c338509b09c8188dacf92eef6c78007deca | 1374208 | 1 (SubIFD at 1024) | SamplesPerPixel 3 with BlackIsZero and no ExtraSamples, entry offset 1098 | finding 18 on Make and Software (ASCII without NUL) | producer pattern |
+
+Both KDC IFD0s describe a JPEG thumbnail through JPEGInterchangeFormat
+without ImageWidth, ImageLength or SamplesPerPixel. The DCS 3 SubIFD is a
+160x128 three-plane thumbnail (PlanarConfiguration 2) labeled BlackIsZero.
+Per-row occurrences: ExtraSamples 0, SamplesPerPixel 1,
+PhotometricInterpretation 2.
