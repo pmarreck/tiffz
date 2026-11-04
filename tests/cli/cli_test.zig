@@ -295,12 +295,103 @@ test "tiffz validate --json writes a JSON object to stdout" {
     try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"status\"") != null);
 }
 
-test "tiffz validate accepts CR2 partial coverage with exit 0" {
-    const r = try runCli(&.{ "validate", good_cr2 });
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var n: usize = 0;
+    var at: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, at, needle)) |i| : (at = i + needle.len) n += 1;
+    return n;
+}
+
+test "tiffz validate rejects the Canon 40D CR2 for its IFD0 BitsPerSample count" {
+    // IFD0 gives BitsPerSample three values but omits SamplesPerPixel
+    // (default 1): N = SamplesPerPixel, TIFF 6.0 p. 29. Corrupt per validate
+    // (2026-11-04), pending its known-defect review of the Canon pattern.
+    const r = try runCli(&.{ "validate", "--json", good_cr2 });
     defer std.testing.allocator.free(r.stdout);
     defer std.testing.allocator.free(r.stderr);
 
+    try std.testing.expectEqual(@as(?u8, 1), exitedCode(r.term));
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(r.stdout, "\"code\":18,"));
+    try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":17,"));
+    // IFD 0, entry 2, entry offset 42, tag 258, reason 2 (count), type 3, count 3.
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"payload_hex\":\"00000000" ++ "02000000" ++ "2a00000000000000" ++ "0201" ++ "0200" ++ "0300" ++ "0300000000000000") != null);
+    // Partial coverage is still named: two code-16 skips.
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":16,"));
+}
+
+/// `withSamplesPerPixelInIfd0` in tests/fixture_test.zig, duplicated because
+/// this test module cannot import outside tests/cli: IFD0 rebuilt at the end
+/// of a copy with SamplesPerPixel `spp` inserted in tag order.
+fn withSamplesPerPixelInIfd0(allocator: std.mem.Allocator, bytes: []const u8, spp: u16) ![]u8 {
+    std.debug.assert(bytes[0] == 'I' and bytes[1] == 'I');
+    const ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    const n: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+    const pad = bytes.len % 2;
+    const at = bytes.len + pad;
+    const out = try allocator.alloc(u8, at + 2 + (n + 1) * 12 + 4);
+    @memcpy(out[0..bytes.len], bytes);
+    if (pad == 1) out[bytes.len] = 0;
+    std.mem.writeInt(u16, out[at..][0..2], @intCast(n + 1), .little);
+    var placed = false;
+    var w: usize = at + 2;
+    for (0..n) |i| {
+        const entry = bytes[ifd + 2 + 12 * i ..][0..12];
+        const tag = std.mem.readInt(u16, entry[0..2], .little);
+        std.debug.assert(tag != 277);
+        if (!placed and tag > 277) {
+            std.mem.writeInt(u16, out[w..][0..2], 277, .little);
+            std.mem.writeInt(u16, out[w + 2 ..][0..2], 3, .little);
+            std.mem.writeInt(u32, out[w + 4 ..][0..4], 1, .little);
+            std.mem.writeInt(u32, out[w + 8 ..][0..4], spp, .little);
+            w += 12;
+            placed = true;
+        }
+        @memcpy(out[w..][0..12], entry);
+        w += 12;
+    }
+    std.debug.assert(placed);
+    @memcpy(out[w..][0..4], bytes[ifd + 2 + 12 * n ..][0..4]);
+    std.mem.writeInt(u32, out[4..8], @intCast(at), .little);
+    return out;
+}
+
+test "tiffz validate accepts CR2 partial coverage with exit 0 once IFD0 is consistent" {
+    // The control for the test above: the same 40D with SamplesPerPixel 3
+    // added to IFD0 at test time (no fixture bytes committed). It must pass
+    // for the right reason: partial coverage, no directory-rule finding.
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const original = blk: {
+        const file = try std.Io.Dir.cwd().openFile(io, good_cr2, .{});
+        defer file.close(io);
+        const stat = try file.stat(io);
+        const buf = try allocator.alloc(u8, @intCast(stat.size));
+        errdefer allocator.free(buf);
+        var read_buf: [4096]u8 = undefined;
+        var reader = file.reader(io, &read_buf);
+        try reader.interface.readSliceAll(buf);
+        break :blk buf;
+    };
+    defer allocator.free(original);
+    const repaired = try withSamplesPerPixelInIfd0(allocator, original, 3);
+    defer allocator.free(repaired);
+
+    const path = "zig-out/cli-test-cr2-spp3.cr2";
+    {
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, repaired);
+    }
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    const r = try runCli(&.{ "validate", "--json", path });
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+
     try std.testing.expectEqual(@as(?u8, 0), exitedCode(r.term));
+    try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":18,"));
+    try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":17,"));
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":16,"));
 }
 
 test "tiffz --help mentions dump" {

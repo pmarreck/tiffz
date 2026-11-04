@@ -149,3 +149,65 @@ The corpus is pinned in `real_corpus_manifest.tsv` (sha256, size, source and
 name per file), so later reports run against the same baseline and list any
 added files explicitly. Rule rows are batched by specification section,
 with one corpus report per batch (validate, 2026-11-04).
+
+## TIFF 6.0 batch rulings (validate, 2026-11-04)
+
+1. ASCII (p. 15): a byte of 0x80 or above, or a final byte other than NUL,
+   is a value fault. A count of 0 is a count fault.
+2. NUL runs (p. 16): only a run followed by more text ("A\0\0B") is a fault.
+   Trailing padding ("Model\0\0\0") is recorded as data only.
+3. YCbCr multiples (p. 92): ImageWidth, ImageLength, TileWidth and
+   TileLength wait for the Technical Notes batch (pinned in
+   `ifd_conformance.pending`). RowsPerStrip uses the effective rows per strip,
+   min(RowsPerStrip, ImageLength), and a multi-strip value must already be a
+   multiple of YCbCrSubsampleVert, which defaults to 2.
+4. "Private" means defined by no claimed specification, whatever the number.
+   Copyright (33432) is checked.
+
+Also, BigTIFF allows LONG8 for StripOffsets, StripByteCounts, TileOffsets
+and TileByteCounts only (BigTIFF design, libtiff documentation). LONG8 in
+any other field, or in a classic TIFF, is a type fault.
+
+## Canon CR2 evidence of record (2026-11-04)
+
+Every Canon CR2 surveyed gives IFD0 a three-value BitsPerSample ([8, 8, 8], the
+old-style JPEG preview) and omits SamplesPerPixel, whose default is 1. So
+`tag_field_invalid` (count) is reported at IFD0 entry 2, and every file goes
+from ok to invalid. Repair-to-pass rebuilds IFD0 with SamplesPerPixel 3 inserted
+in tag order. Each repaired copy validates ok with the same partial coverage,
+and LibRaw's raw data and the extracted previews are unchanged. The files are
+CC0 samples from raw.pixls.us, kept out of every repository; the CR2 test fixture
+is the 40D. By hash and size:
+
+| model | firmware | year | sha256 | bytes | repair identical |
+|---|---|---|---|---|---|
+| Canon EOS 40D | 1.1.1 | 2017 | ba644e7dd2abe74eca260e67f0206ff113bf0f62e710f8130611e964d6be5bf1 | 5805950 | yes |
+| Canon EOS-1D Mark III | 1.3.0 | 2017 | 860b5c9791548db8081823e3852c436a439e648ea863b0def05e99aac6e9e726 | 14312777 | yes |
+| Canon EOS-1D X Mark II | (not recorded) | 2017 | 35b66b2fc26a015ee622af7269eaf3e694fa6f5b6126ade27d910957d417d81a | 12294856 | yes |
+| Canon EOS 20D | (not recorded) | 2017 | db78660d48589130d99e0bc621424851eb0f84df052634fb5bc89c7a02fe7033 | 7489116 | yes |
+| Canon EOS 30D | (not recorded) | 2017 | fb216f8df8d7abca4eb9d9f8dc594c1d2b69d0a6369fb8b4107743343c37144f | 9254110 | yes |
+| Canon EOS 350D DIGITAL | (not recorded) | 2008 | 8cbb84e04d93b005fe082da9c954122a612b5281af00aa088d767850f343fd38 | 10586467 | yes |
+| Canon EOS 50D | 1.0.9 | 2017 | 1f8521e21d53e8df6c5f6b390aa4e0e9928e87412e94d0d0a6f34f4848c18304 | 9705243 | yes |
+| Canon EOS 5D Mark III | 1.2.3 | 2017 | a79065e78a6c5bdbc8726e786ade02d54a7d496cc3cb4504d804c924a3d999da | 12343414 | yes |
+| Canon EOS 5D Mark IV | (not recorded) | 2017 | 25d928f9e9a65525ac796bdff13e93b7b36b627568d7a17338e12dc44424078a | 15217883 | yes |
+| Canon EOS 60D | 1.1.1 | 2017 | 248945210b1edd43073499f8211707e06adf5a66e416ca9d1c86196e3f941d19 | 11955913 | yes |
+| Canon EOS 6D Mark II | (not recorded) | 2017 | a4bf9842c2222b2eeb95ec71065f9d981c9b5be619b96db7f121e395968a119b | 20556842 | yes |
+| Canon EOS 6D | 1.1.7 | 2017 | a4f71895b4c5087791ed2cb97b30790ae9d52a9e7b66f0c9ea91cf3e4a12335b | 11605858 | yes |
+| Canon EOS 70D | 1.1.1 | 2017 | dd166060ef873a2356f9a41a991b875d09229692cf219073e65dc906e42e042f | 12068759 | yes |
+| Canon EOS 7D | 2.0.3 | 2016 | 3789b1ba5d880613104637c40a06619cd9f3b54b0cf62d2d95b9f9e885edcf6e | 11062629 | yes |
+| Canon EOS 80D | 1.0.1 | 2017 | f9c5404b57248c21e9b269721aa0d721c3b1281c94ebdee3c50bf32db42613a8 | 20220625 | yes |
+| Canon PowerShot G9 | (not recorded) | 2009 | ad27a4d751984cd709380e3be274a4a5243d36ca89c5fc711736ba8a9f5c932f | 12586055 | yes |
+
+A Canon PowerShot S2 IS sample named .CR2 is in fact a DNG written by CHDK
+(third-party firmware). Its DateTime is binary garbage, a different producer
+and fault (sha256 445764716df165a1facd37c01d67ede44ca49671ed1a6112dd8ff7426324c757,
+6611520 bytes). No surveyed CR2 writes SamplesPerPixel in IFD0.
+
+## Kodak MinSampleValue repair-to-pass (2026-11-04)
+
+The six Kodak DCS files give MinSampleValue one value where SamplesPerPixel is
+3 (YCbCr preview IFDs). libtiff reads the single value (0) without a warning,
+so readers apply it to every sample. Repeating the value to count 3 (stored
+out of line) removes every MinSampleValue finding. The three files with no other
+fault (DCS Pro 14n, 14nx, SLR/n) then validate ok. LibRaw raw data and the
+extracted previews are identical in all six.

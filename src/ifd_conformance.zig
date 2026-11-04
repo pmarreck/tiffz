@@ -68,13 +68,50 @@ const Kind = enum {
     /// Defined as SHORT. Stored as BYTE, SHORT or LONG, scalar or array
     /// (TIFF 6.0 p. 16); every value must fit in 16 bits.
     unsigned_short,
+    /// Defined as LONG, or as SHORT or LONG. Stored as BYTE, SHORT or LONG.
+    unsigned_long,
+    /// StripOffsets, StripByteCounts, TileOffsets and TileByteCounts: as
+    /// `unsigned_long`, and in BigTIFF also LONG8 ("allowed to have the
+    /// datatype TIFF_LONG8 in BigTIFF", BigTIFF design, libtiff docs).
+    offsets_or_counts,
+    /// RATIONAL only.
+    rational,
+    /// ASCII only.
+    ascii,
 };
 
 const Count = enum {
     one,
+    two,
+    three,
+    six,
+    /// DateTime's "YYYY:MM:DD HH:MM:SS" plus its NUL.
+    twenty,
     samples_per_pixel,
     /// {1 or 3} * 2**BitsPerSample.
     transfer_function,
+    /// 2**BitsPerSample.
+    per_level,
+    /// 3 * 2**BitsPerSample.
+    color_map,
+    /// 2, or 2 * SamplesPerPixel.
+    dot_range,
+    /// At least one.
+    any,
+};
+
+/// A constraint beyond type, count and value set.
+const Extra = enum {
+    none,
+    /// Every value is a multiple of 16.
+    multiple_of_16,
+    /// Two values, the second (vertical) at most the first (horizontal).
+    vertical_at_most_horizontal,
+    /// "YYYY:MM:DD HH:MM:SS" followed by NUL.
+    date_time,
+    /// RowsPerStrip of a multi-strip YCbCr image is a multiple of
+    /// YCbCrSubsampleVert (default 2).
+    rows_multiple_of_vertical_subsampling,
 };
 
 const Rule = struct {
@@ -82,24 +119,103 @@ const Rule = struct {
     kind: Kind,
     count: Count,
     /// Inclusive public-range value ranges, or null when unconstrained.
-    values: ?[]const [2]u16,
+    values: ?[]const [2]u16 = null,
+    extra: Extra = .none,
     /// Where the rule comes from, so an omission is auditable.
     citation: []const u8,
 };
 
 /// One row per constrained tag. Growing this table to every tag a claimed
 /// specification constrains is tracked in PLAN.md.
+/// Value sets for Compression, PhotometricInterpretation, Predictor and
+/// NewSubfileType wait for the batch that claims their other defining
+/// specifications; see `pending`.
 pub const rules = [_]Rule{
+    .{ .tag = tags.new_subfile_type, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 36" },
     .{ .tag = tags.subfile_type, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 pp. 40-41" },
+    .{ .tag = tags.image_width, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34" },
+    .{ .tag = tags.image_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34" },
+    .{ .tag = tags.bits_per_sample, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 29" },
+    .{ .tag = tags.compression, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 30" },
+    .{ .tag = tags.photometric, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 37" },
     .{ .tag = tags.threshholding, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 41" },
+    .{ .tag = tags.cell_width, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 29" },
+    .{ .tag = tags.cell_length, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 29" },
     .{ .tag = tags.fill_order, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 32" },
+    .{ .tag = tags.document_name, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 55" },
+    .{ .tag = tags.image_description, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 34" },
+    .{ .tag = tags.make, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 35" },
+    .{ .tag = tags.model, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 35" },
+    .{ .tag = tags.strip_offsets, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 40; BigTIFF" },
     .{ .tag = tags.orientation, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 8 }}, .citation = "TIFF 6.0 pp. 36-37" },
+    .{ .tag = tags.samples_per_pixel, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 39" },
+    .{ .tag = tags.rows_per_strip, .kind = .unsigned_long, .count = .one, .extra = .rows_multiple_of_vertical_subsampling, .citation = "TIFF 6.0 pp. 39, 92" },
+    .{ .tag = tags.strip_byte_counts, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 40; BigTIFF" },
+    .{ .tag = tags.min_sample_value, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 35" },
+    .{ .tag = tags.max_sample_value, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 35" },
+    .{ .tag = tags.x_resolution, .kind = .rational, .count = .one, .citation = "TIFF 6.0 p. 41" },
+    .{ .tag = tags.y_resolution, .kind = .rational, .count = .one, .citation = "TIFF 6.0 p. 41" },
+    .{ .tag = tags.planar_configuration, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 38" },
+    .{ .tag = tags.page_name, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 55" },
+    .{ .tag = tags.x_position, .kind = .rational, .count = .one, .citation = "TIFF 6.0 p. 55" },
+    .{ .tag = tags.y_position, .kind = .rational, .count = .one, .citation = "TIFF 6.0 p. 56" },
+    .{ .tag = tags.free_offsets, .kind = .unsigned_long, .count = .any, .citation = "TIFF 6.0 p. 33" },
+    .{ .tag = tags.free_byte_counts, .kind = .unsigned_long, .count = .any, .citation = "TIFF 6.0 p. 33" },
     .{ .tag = tags.gray_response_unit, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 5 }}, .citation = "TIFF 6.0 pp. 33-34" },
+    .{ .tag = tags.gray_response_curve, .kind = .unsigned_short, .count = .per_level, .citation = "TIFF 6.0 p. 33" },
+    .{ .tag = tags.t4_options, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 51" },
+    .{ .tag = tags.t6_options, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 52" },
     .{ .tag = tags.resolution_unit, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 38" },
-    .{ .tag = tags.transfer_function, .kind = .unsigned_short, .count = .transfer_function, .values = null, .citation = "TIFF 6.0 p. 84" },
+    .{ .tag = tags.page_number, .kind = .unsigned_short, .count = .two, .citation = "TIFF 6.0 p. 55" },
+    .{ .tag = tags.transfer_function, .kind = .unsigned_short, .count = .transfer_function, .citation = "TIFF 6.0 p. 84" },
+    .{ .tag = tags.software, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 39" },
+    .{ .tag = tags.date_time, .kind = .ascii, .count = .twenty, .extra = .date_time, .citation = "TIFF 6.0 pp. 15-16, 31" },
+    .{ .tag = tags.artist, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 28" },
+    .{ .tag = tags.host_computer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 34" },
+    .{ .tag = tags.predictor, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 64" },
+    .{ .tag = tags.white_point, .kind = .rational, .count = .two, .citation = "TIFF 6.0 p. 83" },
+    .{ .tag = tags.primary_chromaticities, .kind = .rational, .count = .six, .citation = "TIFF 6.0 p. 83" },
+    .{ .tag = tags.colormap, .kind = .unsigned_short, .count = .color_map, .citation = "TIFF 6.0 p. 29" },
+    .{ .tag = tags.halftone_hints, .kind = .unsigned_short, .count = .two, .citation = "TIFF 6.0 p. 72" },
+    .{ .tag = tags.tile_width, .kind = .unsigned_long, .count = .one, .extra = .multiple_of_16, .citation = "TIFF 6.0 p. 67" },
+    .{ .tag = tags.tile_length, .kind = .unsigned_long, .count = .one, .extra = .multiple_of_16, .citation = "TIFF 6.0 pp. 67-68" },
+    .{ .tag = tags.tile_offsets, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 68; BigTIFF" },
+    .{ .tag = tags.tile_byte_counts, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 68; BigTIFF" },
     .{ .tag = tags.ink_set, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 70" },
+    .{ .tag = tags.ink_names, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 70" },
+    .{ .tag = tags.number_of_inks, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 70" },
+    .{ .tag = tags.dot_range, .kind = .unsigned_short, .count = .dot_range, .citation = "TIFF 6.0 p. 71" },
+    .{ .tag = tags.target_printer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 71" },
+    .{ .tag = tags.extra_samples, .kind = .unsigned_short, .count = .any, .values = &.{.{ 0, 2 }}, .citation = "TIFF 6.0 pp. 31-32, 77" },
     .{ .tag = tags.sample_format, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 4 }}, .citation = "TIFF 6.0 p. 80" },
+    .{ .tag = tags.transfer_range, .kind = .unsigned_short, .count = .six, .citation = "TIFF 6.0 p. 86" },
+    .{ .tag = tags.jpeg_proc, .kind = .unsigned_short, .count = .one, .values = &.{ .{ 1, 1 }, .{ 14, 14 } }, .citation = "TIFF 6.0 p. 104" },
+    .{ .tag = tags.jpeg_interchange_format, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 105" },
+    .{ .tag = tags.jpeg_interchange_format_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 105" },
+    .{ .tag = tags.jpeg_restart_interval, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 105" },
+    .{ .tag = tags.jpeg_lossless_predictors, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 7 }}, .citation = "TIFF 6.0 p. 106" },
+    .{ .tag = tags.jpeg_point_transforms, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 106" },
+    .{ .tag = tags.jpeg_q_tables, .kind = .unsigned_long, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
+    .{ .tag = tags.jpeg_dc_tables, .kind = .unsigned_long, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
+    .{ .tag = tags.jpeg_ac_tables, .kind = .unsigned_long, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
+    .{ .tag = tags.ycbcr_coefficients, .kind = .rational, .count = .three, .citation = "TIFF 6.0 p. 90" },
+    .{ .tag = tags.ycbcr_subsampling, .kind = .unsigned_short, .count = .two, .values = &.{ .{ 1, 2 }, .{ 4, 4 } }, .extra = .vertical_at_most_horizontal, .citation = "TIFF 6.0 pp. 91-92" },
     .{ .tag = tags.ycbcr_positioning, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 92" },
+    .{ .tag = tags.reference_black_white, .kind = .rational, .count = .six, .citation = "TIFF 6.0 p. 86" },
+    .{ .tag = tags.copyright, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 31" },
+};
+
+/// Constraints a claimed specification states that are not yet checked,
+/// each waiting for a named reason. Kept as data so that none silently
+/// disappears; a test pins this list.
+pub const Pending = struct { what: []const u8, citation: []const u8, waits_for: []const u8 };
+pub const pending = [_]Pending{
+    .{ .what = "ImageWidth, ImageLength, TileWidth and TileLength are multiples of YCbCrSubSampling; a single-strip RowsPerStrip with them", .citation = "TIFF 6.0 p. 92", .waits_for = "the Technical Notes batch (any TN2 JPEG exemption)" },
+    .{ .what = "Compression value set", .citation = "TIFF 6.0 pp. 30, 49, 104", .waits_for = "Adobe Deflate, TIFF-FX and other claimed codecs" },
+    .{ .what = "PhotometricInterpretation value set", .citation = "TIFF 6.0 p. 37", .waits_for = "ICCLab (TN), ITULab (TIFF-FX), CFA and LinearRaw (TIFF/EP, DNG)" },
+    .{ .what = "Predictor value set", .citation = "TIFF 6.0 p. 64", .waits_for = "floating-point Predictor 3 (Adobe Technical Note 3)" },
+    .{ .what = "NewSubfileType bits", .citation = "TIFF 6.0 p. 36", .waits_for = "bits defined by TIFF-FX and DNG" },
+    .{ .what = "ExtraSamples count m from PhotometricInterpretation and SamplesPerPixel", .citation = "TIFF 6.0 p. 31", .waits_for = "the PhotometricInterpretation value set" },
 };
 
 comptime {
@@ -109,9 +225,14 @@ comptime {
     }
 }
 
+/// Binary search; `rules` is sorted by tag (checked at comptime).
 fn ruleFor(tag: u16) ?*const Rule {
-    for (&rules) |*rule| {
-        if (rule.tag == tag) return rule;
+    var lo: usize = 0;
+    var hi: usize = rules.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (rules[mid].tag == tag) return &rules[mid];
+        if (rules[mid].tag < tag) lo = mid + 1 else hi = mid;
     }
     return null;
 }
@@ -156,37 +277,122 @@ fn rawSlot(entry: Entry, width: ifd_mod.OffsetWidth, endian: Endian) u64 {
 fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reason {
     const entry = dir.entries[index];
     const type_ok = switch (rule.kind) {
-        .unsigned_short => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long,
+        .unsigned_short, .unsigned_long => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long,
+        .offsets_or_counts => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long or
+            (entry.field_type == .long8 and dir.offset_width == .big),
+        .rational => entry.field_type == .rational,
+        .ascii => entry.field_type == .ascii,
     };
     if (!type_ok) return .type;
 
-    const count_ok = switch (rule.count) {
+    // An absent SamplesPerPixel or BitsPerSample takes its TIFF default (1).
+    // A malformed one is its own fault; do not let it cascade into a count
+    // fault here.
+    const spp_entry = dir.get(tags.samples_per_pixel) != null;
+    const spp_value: ?u64 = if (spp_entry) scalar(dir, tags.samples_per_pixel, endian) else 1;
+    const spp_dependent = rule.count == .samples_per_pixel or rule.count == .dot_range;
+    const spp = spp_value orelse 1;
+    const count_ok = if (spp_dependent and spp_value == null) true else switch (rule.count) {
         .one => entry.count == 1,
-        // A missing or malformed SamplesPerPixel is its own problem; do not
-        // let it cascade into a count fault here.
-        .samples_per_pixel => if (scalar(dir, tags.samples_per_pixel, endian)) |spp| entry.count == spp else true,
-        .transfer_function => blk: {
+        .two => entry.count == 2,
+        .three => entry.count == 3,
+        .six => entry.count == 6,
+        .twenty => entry.count == 20,
+        .samples_per_pixel => entry.count == spp,
+        .transfer_function, .per_level, .color_map => blk: {
             const bps = firstElement(dir, tags.bits_per_sample, endian) orelse 1;
             if (bps == 0 or bps > 16) break :blk false;
-            const per_channel = @as(u64, 1) << @intCast(bps);
-            break :blk entry.count == per_channel or entry.count == 3 * per_channel;
+            const levels = @as(u64, 1) << @intCast(bps);
+            break :blk switch (rule.count) {
+                .transfer_function => entry.count == levels or entry.count == 3 * levels,
+                .per_level => entry.count == levels,
+                .color_map => entry.count == 3 * levels,
+                else => unreachable,
+            };
         },
+        .dot_range => entry.count == 2 or entry.count == 2 * spp,
+        .any => entry.count >= 1,
     };
     if (!count_ok) return .count;
 
+    const bytes = dir.entryValueSlice(index);
+    switch (rule.kind) {
+        .rational => return null,
+        .ascii => {
+            if (!isAscii(bytes)) return .value;
+            if (rule.extra == .date_time and !isDateTime(bytes)) return .value;
+            return null;
+        },
+        .unsigned_short, .unsigned_long, .offsets_or_counts => {},
+    }
     const max: u64 = switch (rule.kind) {
         .unsigned_short => std.math.maxInt(u16),
+        .unsigned_long => std.math.maxInt(u32),
+        else => std.math.maxInt(u64),
     };
-    const bytes = dir.entryValueSlice(index);
     var i: usize = 0;
     while (i < entry.count) : (i += 1) {
         const value = element(bytes, entry.field_type, i, endian) orelse return .count;
         if (value > max) return .value;
+        if (rule.extra == .multiple_of_16 and value % 16 != 0) return .value;
         const ranges = rule.values orelse continue;
         if (value >= 32768) continue; // private range, not a violation
         if (!inRanges(@intCast(value), ranges)) return .value;
     }
+    switch (rule.extra) {
+        .vertical_at_most_horizontal => {
+            const horizontal = element(bytes, entry.field_type, 0, endian) orelse return .count;
+            const vertical = element(bytes, entry.field_type, 1, endian) orelse return .count;
+            if (vertical > horizontal) return .value;
+        },
+        .rows_multiple_of_vertical_subsampling => {
+            // Only a YCbCr image with more than one strip: the effective
+            // rows per strip is min(RowsPerStrip, ImageLength), and a single
+            // strip reduces to the ImageLength rule, which waits in `pending`
+            // (validate, 2026-11-04).
+            const photometric = scalar(dir, tags.photometric, endian) orelse return null;
+            if (photometric != tags.photometric_ycbcr) return null;
+            const rows = element(bytes, entry.field_type, 0, endian) orelse return .count;
+            const length = scalar(dir, tags.image_length, endian) orelse return null;
+            if (rows >= length) return null;
+            const vertical = vertical: {
+                const index_ss = indexOf(dir, tags.ycbcr_subsampling) orelse break :vertical 2;
+                const ss = dir.entries[index_ss];
+                if (ss.count != 2) return null; // its own count fault
+                break :vertical element(dir.entryValueSlice(index_ss), ss.field_type, 1, endian) orelse return null;
+            };
+            if (vertical == 0 or rows % vertical != 0) return .value;
+        },
+        .none, .multiple_of_16, .date_time => {},
+    }
     return null;
+}
+
+/// TIFF 6.0 p. 15: "8-bit byte that contains a 7-bit ASCII code; the last
+/// byte must be NUL". p. 16: "Only one NUL is allowed between strings", so a
+/// run of NULs followed by more text is a fault; trailing NUL padding is
+/// not (validate, 2026-11-04).
+fn isAscii(bytes: []const u8) bool {
+    if (bytes.len == 0 or bytes[bytes.len - 1] != 0) return false;
+    for (bytes, 0..) |b, i| {
+        if (b >= 0x80) return false;
+        if (b == 0 and i + 1 < bytes.len and bytes[i + 1] == 0) {
+            for (bytes[i + 1 ..]) |rest| if (rest != 0) return false;
+            return true;
+        }
+    }
+    return true;
+}
+
+/// "YYYY:MM:DD HH:MM:SS" and its NUL (TIFF 6.0 p. 31).
+fn isDateTime(bytes: []const u8) bool {
+    const pattern = "dddd:dd:dd dd:dd:dd";
+    if (bytes.len != pattern.len + 1 or bytes[pattern.len] != 0) return false;
+    for (pattern, bytes[0..pattern.len]) |p, b| {
+        const ok = if (p == 'd') std.ascii.isDigit(b) else b == p;
+        if (!ok) return false;
+    }
+    return true;
 }
 
 fn inRanges(value: u16, ranges: []const [2]u16) bool {
@@ -196,13 +402,14 @@ fn inRanges(value: u16, ranges: []const [2]u16) bool {
     return false;
 }
 
-/// Element `i` of an unsigned BYTE, SHORT or LONG array, or null if the
-/// bytes are too short.
+/// Element `i` of an unsigned BYTE, SHORT, LONG or LONG8 array, or null if
+/// the bytes are too short.
 fn element(bytes: []const u8, field_type: FieldType, i: usize, endian: Endian) ?u64 {
     const width: usize = switch (field_type) {
         .byte => 1,
         .short => 2,
         .long => 4,
+        .long8 => 8,
         else => return null,
     };
     const at = i * width;
@@ -211,8 +418,16 @@ fn element(bytes: []const u8, field_type: FieldType, i: usize, endian: Endian) ?
         .byte => bytes[at],
         .short => header_mod.readU16(bytes[at..], endian),
         .long => header_mod.readU32(bytes[at..], endian),
+        .long8 => header_mod.readU64(bytes[at..][0..8], endian),
         else => unreachable,
     };
+}
+
+fn indexOf(dir: *const Ifd, tag: u16) ?usize {
+    for (dir.entries, 0..) |entry, i| {
+        if (entry.tag == tag) return i;
+    }
+    return null;
 }
 
 /// The value of an unsigned scalar tag with count 1, or null.
@@ -442,6 +657,174 @@ test "TransferFunction may be BYTE or LONG, and a LONG entry above 65535 is a va
     out = try faultsOf(&long, &cached);
     defer out.deinit(testing.allocator);
     try testing.expectEqualDeep(&[_]Fault{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.transfer_function, .reason = .value, .raw_type = 4, .raw_count = 4, .raw_slot = 0x100 } }}, out.items);
+}
+
+/// Faults for one entry `tag` of `field_type` and `count`, whose value bytes
+/// are `bytes` (served as the cached out-of-line value), after `before`.
+fn faultsWithBytes(before: []const Entry, tag: u16, field_type: FieldType, count: u64, bytes: []u8) !std.ArrayListUnmanaged(Fault) {
+    var entries: [8]Entry = undefined;
+    @memcpy(entries[0..before.len], before);
+    entries[before.len] = inline16(tag, field_type, count, 0x1234);
+    var cached = [_]?[]u8{null} ** 8;
+    cached[before.len] = bytes;
+    return faultsOf(entries[0 .. before.len + 1], cached[0 .. before.len + 1]);
+}
+
+fn expectBytesReason(before: []const Entry, tag: u16, field_type: FieldType, count: u64, text: []const u8, expected: ?Reason) !void {
+    var buf: [64]u8 = undefined;
+    @memcpy(buf[0..text.len], text);
+    var out = try faultsWithBytes(before, tag, field_type, count, buf[0..text.len]);
+    defer out.deinit(testing.allocator);
+    if (expected) |reason| {
+        try testing.expectEqual(@as(usize, 1), out.items.len);
+        try testing.expectEqual(reason, out.items[0].field_invalid.reason);
+    } else {
+        try testing.expectEqual(@as(usize, 0), out.items.len);
+    }
+}
+
+test "ruleFor finds every row and nothing else" {
+    for (&rules) |*rule| try testing.expectEqual(rule, ruleFor(rule.tag).?);
+    for ([_]u16{ 0, 253, 257 + 10000, 34737, 65535 }) |tag| try testing.expect(ruleFor(tag) == null);
+}
+
+test "ASCII: 7-bit, NUL-terminated, and no NUL run before more text" {
+    const none: []const Entry = &.{};
+    try expectBytesReason(none, tags.make, .ascii, 6, "SONY\x00\x00", null); // trailing padding is fine
+    try expectBytesReason(none, tags.make, .ascii, 4, "a\x00b\x00", null); // two strings
+    try expectBytesReason(none, tags.make, .ascii, 4, "SONY", .value); // no NUL
+    try expectBytesReason(none, tags.make, .ascii, 5, "Caf\xc3\x00", .value); // not 7-bit
+    try expectBytesReason(none, tags.make, .ascii, 5, "a\x00\x00b\x00", .value); // a run between strings
+    try expectBytesReason(none, tags.make, .ascii, 0, "", .count);
+    try expectBytesReason(none, tags.make, .undefined, 5, "SONY\x00", .type);
+    try expectBytesReason(none, tags.copyright, .ascii, 3, "(c)", .value); // checked despite its number
+}
+
+test "DateTime is exactly YYYY:MM:DD HH:MM:SS and its NUL" {
+    const none: []const Entry = &.{};
+    try expectBytesReason(none, tags.date_time, .ascii, 20, "2017:07:13 16:58:28\x00", null);
+    try expectBytesReason(none, tags.date_time, .ascii, 20, "2017-07-13 16:58:28\x00", .value);
+    try expectBytesReason(none, tags.date_time, .ascii, 20, "    :  :     :  :  \x00", .value);
+    try expectBytesReason(none, tags.date_time, .ascii, 19, "2017:07:13 16:58:2\x00", .count);
+}
+
+test "RATIONAL fields need RATIONAL and their fixed counts" {
+    const none: []const Entry = &.{};
+    var pair = [_]u8{0} ** 48;
+    try expectBytesReason(none, tags.white_point, .rational, 2, pair[0..16], null);
+    try expectBytesReason(none, tags.white_point, .rational, 3, pair[0..24], .count);
+    try expectBytesReason(none, tags.reference_black_white, .rational, 6, pair[0..48], null);
+    try expectBytesReason(none, tags.x_resolution, .srational, 1, pair[0..8], .type);
+    try expectBytesReason(none, tags.x_resolution, .long, 1, pair[0..4], .type);
+}
+
+test "TileWidth and TileLength are multiples of 16" {
+    var ok = [_]Entry{ inline16(tags.tile_width, .short, 1, 256), inline16(tags.tile_length, .long, 1, 16) };
+    try expectFaults(&ok, &.{});
+    var bad = [_]Entry{inline16(tags.tile_width, .short, 1, 250)};
+    try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.tile_width, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 250 } }});
+}
+
+test "YCbCrSubSampling: each 1, 2 or 4, vertical at most horizontal" {
+    for ([_]u32{ 0x0001_0002, 0x0002_0002, 0x0001_0004, 0x0004_0004, 0x0001_0001 }) |slot| {
+        var ok = [_]Entry{inline16(tags.ycbcr_subsampling, .short, 2, slot)};
+        try expectFaults(&ok, &.{});
+    }
+    for ([_]u32{ 0x0002_0001, 0x0003_0003, 0x0002_0000, 0x0008_0008 }) |slot| {
+        var bad = [_]Entry{inline16(tags.ycbcr_subsampling, .short, 2, slot)};
+        try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.ycbcr_subsampling, .reason = .value, .raw_type = 3, .raw_count = 2, .raw_slot = slot } }});
+    }
+}
+
+test "multi-strip YCbCr RowsPerStrip is a multiple of the vertical subsampling" {
+    // ImageLength 16, YCbCr, default subsampling [2, 2].
+    for ([_]struct { rows: u32, fault: bool }{
+        .{ .rows = 4, .fault = false },
+        .{ .rows = 3, .fault = true },
+        .{ .rows = 17, .fault = false }, // one strip: waits in `pending`
+        .{ .rows = 0xFFFF_FFFF, .fault = false }, // the default, one strip
+    }) |case| {
+        var entries = [_]Entry{
+            inline16(tags.image_length, .short, 1, 16),
+            inline16(tags.photometric, .short, 1, 6),
+            inline16(tags.rows_per_strip, .long, 1, case.rows),
+        };
+        if (case.fault) {
+            try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 2, .tag = tags.rows_per_strip, .reason = .value, .raw_type = 4, .raw_count = 1, .raw_slot = case.rows } }});
+        } else try expectFaults(&entries, &.{});
+    }
+    // Explicit [4, 4] subsampling makes 6 a fault and 8 fine.
+    var four = [_]Entry{
+        inline16(tags.image_length, .short, 1, 16),
+        inline16(tags.photometric, .short, 1, 6),
+        inline16(tags.rows_per_strip, .short, 1, 6),
+        inline16(tags.ycbcr_subsampling, .short, 2, 0x0004_0004),
+    };
+    try expectFaults(&four, &.{.{ .field_invalid = .{ .entry_index = 2, .tag = tags.rows_per_strip, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 6 } }});
+    four[2] = inline16(tags.rows_per_strip, .short, 1, 8);
+    try expectFaults(&four, &.{});
+    // Not YCbCr: no constraint.
+    var rgb = [_]Entry{
+        inline16(tags.image_length, .short, 1, 16),
+        inline16(tags.photometric, .short, 1, 2),
+        inline16(tags.rows_per_strip, .short, 1, 3),
+    };
+    try expectFaults(&rgb, &.{});
+}
+
+test "counts derived from BitsPerSample and SamplesPerPixel" {
+    const bps2 = [_]Entry{inline16(tags.bits_per_sample, .short, 1, 2)};
+    var levels = [_]u8{0} ** 32;
+    try expectBytesReason(&bps2, tags.gray_response_curve, .short, 4, levels[0..8], null);
+    try expectBytesReason(&bps2, tags.gray_response_curve, .short, 5, levels[0..10], .count);
+    try expectBytesReason(&bps2, tags.colormap, .short, 12, levels[0..24], null);
+    try expectBytesReason(&bps2, tags.colormap, .short, 4, levels[0..8], .count);
+    const spp3 = [_]Entry{inline16(tags.samples_per_pixel, .short, 1, 3)};
+    try expectBytesReason(&spp3, tags.dot_range, .short, 6, levels[0..12], null);
+    try expectBytesReason(&spp3, tags.dot_range, .byte, 2, levels[0..2], null);
+    try expectBytesReason(&spp3, tags.dot_range, .short, 4, levels[0..8], .count);
+    // A malformed SamplesPerPixel does not cascade into count faults.
+    var bad_spp = [_]Entry{ inline16(tags.samples_per_pixel, .short, 2, 0x0003_0003), inline16(tags.sample_format, .short, 1, 1) };
+    try expectFaults(&bad_spp, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.samples_per_pixel, .reason = .count, .raw_type = 3, .raw_count = 2, .raw_slot = 0x0003_0003 } }});
+}
+
+test "LONG8 is allowed only for strip and tile offsets and counts, and only in BigTIFF" {
+    var offsets = [_]u8{0} ** 16;
+    std.mem.writeInt(u64, offsets[0..8], 16, .little);
+    std.mem.writeInt(u64, offsets[8..16], 1 << 33, .little);
+    for ([_]ifd_mod.OffsetWidth{ .classic, .big }) |width| {
+        for ([_]u16{ tags.strip_offsets, tags.image_width }) |tag| {
+            var entries = [_]Entry{inline16(tag, .long8, 2, 0)};
+            var cached = [_]?[]u8{&offsets};
+            const dir = Ifd{ .entries = &entries, .next_offset = 0, .offset_width = width, .allocator = testing.allocator, .cached_values = &cached };
+            var out: std.ArrayListUnmanaged(Fault) = .empty;
+            defer out.deinit(testing.allocator);
+            try check(testing.allocator, &dir, .little, &out);
+            const allowed = width == .big and tag == tags.strip_offsets;
+            if (allowed) {
+                try testing.expectEqual(@as(usize, 0), out.items.len);
+            } else {
+                try testing.expectEqual(@as(usize, 1), out.items.len);
+                // ImageWidth also has count 2 here, but type is checked first.
+                try testing.expectEqual(Reason.type, out.items[0].field_invalid.reason);
+            }
+        }
+    }
+}
+
+test "the pending constraints are pinned" {
+    // Removing one of these must come with a row (and its regressions) that
+    // checks it, or with a ruling that it is not a constraint.
+    const expected = [_][]const u8{
+        "ImageWidth, ImageLength, TileWidth and TileLength are multiples of YCbCrSubSampling; a single-strip RowsPerStrip with them",
+        "Compression value set",
+        "PhotometricInterpretation value set",
+        "Predictor value set",
+        "NewSubfileType bits",
+        "ExtraSamples count m from PhotometricInterpretation and SamplesPerPixel",
+    };
+    try testing.expectEqual(expected.len, pending.len);
+    for (expected, pending) |want, got| try testing.expectEqualStrings(want, got.what);
 }
 
 test "entry offsets and payload layout" {

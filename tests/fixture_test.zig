@@ -1888,36 +1888,53 @@ test "audit 1.0 [fixed]: ycbcr-cat.tif ACCEPTED via subsampling-aware extent gat
 // Malformed. This is the must-accept control: it asserts the acceptance we
 // owe, and FAILS until the walk tolerates (or named-unsupports) whatever
 // Canon-specific structure it is tripping on.
-test "CR2 must-accept: canon_eos_40d_sraw2.cr2 validates with two code-16 skips (partial coverage)" {
-    const allocator = std.testing.allocator;
-    const bytes = try loadFile(allocator, "tests/fixtures/cr2/canon_eos_40d_sraw2.cr2");
-    defer allocator.free(bytes);
-    var handle = tiffz.source.BufferHandle.init(bytes);
-    const source = tiffz.Source.fromBuffer(&handle);
-    var dec = try tiffz.Decoder.open(allocator, source);
-    defer dec.deinit();
-    var recorder = FindingRecorder.init(allocator);
-    defer recorder.deinit();
-    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(&recorder));
-    var workspace = tiffz.Workspace.init(allocator);
-    defer workspace.deinit();
+/// A copy of little-endian classic TIFF `bytes` whose IFD0 is rebuilt at the
+/// end of the file with a SamplesPerPixel (277) SHORT entry of `spp` inserted
+/// in tag order, and the header pointed at it. Every value keeps its absolute
+/// offset. Repairs the Canon CR2 IFD0, which gives BitsPerSample three values
+/// but omits SamplesPerPixel (default 1), in memory at test time.
+fn withSamplesPerPixelInIfd0(allocator: std.mem.Allocator, bytes: []const u8, spp: u16) ![]u8 {
+    std.debug.assert(bytes[0] == 'I' and bytes[1] == 'I');
+    const ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    const n: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+    const pad = bytes.len % 2;
+    const at = bytes.len + pad;
+    const out = try allocator.alloc(u8, at + 2 + (n + 1) * 12 + 4);
+    @memcpy(out[0..bytes.len], bytes);
+    if (pad == 1) out[bytes.len] = 0;
+    std.mem.writeInt(u16, out[at..][0..2], @intCast(n + 1), .little);
+    var placed = false;
+    var w: usize = at + 2;
+    for (0..n) |i| {
+        const entry = bytes[ifd + 2 + 12 * i ..][0..12];
+        const tag = std.mem.readInt(u16, entry[0..2], .little);
+        std.debug.assert(tag != 277);
+        if (!placed and tag > 277) {
+            std.mem.writeInt(u16, out[w..][0..2], 277, .little);
+            std.mem.writeInt(u16, out[w + 2 ..][0..2], 3, .little);
+            std.mem.writeInt(u32, out[w + 4 ..][0..4], 1, .little);
+            std.mem.writeInt(u32, out[w + 8 ..][0..4], spp, .little);
+            w += 12;
+            placed = true;
+        }
+        @memcpy(out[w..][0..12], entry);
+        w += 12;
+    }
+    std.debug.assert(placed);
+    @memcpy(out[w..][0..4], bytes[ifd + 2 + 12 * n ..][0..4]);
+    std.mem.writeInt(u32, out[4..8], @intCast(at), .little);
+    return out;
+}
 
-    // The walk must ACCEPT (per Peter's 2026-08-27 partial-coverage ruling)…
-    try dec.validateAllStripsAndTiles(&workspace);
-
-    // …and honestly name the two uncovered portions: IFD0 (full-size JPEG
-    // preview) and IFD3 (Canon sRAW vendor raw), both Compression=6
-    // (old-style JPEG, deliberately never supported). IFD1 has no strip
-    // arrays (JPEGInterchangeFormat only, silently skipped as always);
-    // IFD2 is uncompressed RGB and must decode + gate normally — proven by
-    // the walk not erroring AND exactly two (not three) skips firing.
-    try std.testing.expectEqual(
-        @as(usize, 2),
-        recorder.count(.unsupported_compression_skipped),
-    );
-    // Payload contract (Einstein 2026-08-27 approval): EXACTLY 8 bytes —
-    // u32 LE IFD index, then u32 LE compression code. Skips fire in IFD order;
-    // both of this file's skipped IFDs are Compression=6 (old-style JPEG).
+/// The partial-coverage contract for the Canon 40D CR2 (Peter's 2026-08-27
+/// ruling): the walk accepts and names its two uncovered IFDs, 0 (full-size
+/// JPEG preview) and 3 (Canon sRAW), both Compression=6 (old-style JPEG,
+/// deliberately never supported). IFD1 has no strip arrays; IFD2 is
+/// uncompressed RGB and must decode and gate normally, proven by exactly two
+/// (not three) skips. Payload contract (Einstein 2026-08-27): exactly 8 bytes,
+/// u32 LE IFD index then u32 LE compression code, in IFD order.
+fn expectCr2PartialCoverage(recorder: *const FindingRecorder) !void {
+    try std.testing.expectEqual(@as(usize, 2), recorder.count(.unsupported_compression_skipped));
     var seen: usize = 0;
     const expected_ifds = [2]u32{ 0, 3 };
     for (recorder.findings.items) |f| {
@@ -1929,6 +1946,48 @@ test "CR2 must-accept: canon_eos_40d_sraw2.cr2 validates with two code-16 skips 
         }
     }
     try std.testing.expectEqual(@as(usize, 2), seen);
+}
+
+test "CR2: the Canon 40D is corrupt for its IFD0 BitsPerSample count, and still names its partial coverage" {
+    // IFD0 gives BitsPerSample three values but omits SamplesPerPixel, whose
+    // default is 1: N = SamplesPerPixel (TIFF 6.0 p. 29, default p. 39). Every
+    // CC0 Canon CR2 surveyed does this (validate, 2026-11-04: corrupt pending
+    // its known-defect review).
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/cr2/canon_eos_40d_sraw2.cr2");
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
+    try expectCr2PartialCoverage(&recorder);
+    try std.testing.expectEqual(@as(usize, 1), countConformance(&recorder));
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+        try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, f.verdict);
+        const p = f.payload_bytes;
+        try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[0..4], .little)); // IFD0
+        try std.testing.expectEqual(@as(u64, 42), std.mem.readInt(u64, p[8..16], .little)); // entry offset
+        try std.testing.expectEqual(@as(?u64, 42), f.byte_offset);
+        try std.testing.expectEqual(@as(u16, 258), std.mem.readInt(u16, p[16..18], .little)); // BitsPerSample
+        try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, p[18..20], .little)); // count
+        try std.testing.expectEqual(@as(u64, 3), std.mem.readInt(u64, p[22..30], .little));
+    }
+}
+
+test "CR2 must-accept: the Canon 40D with SamplesPerPixel 3 added to IFD0 validates with two code-16 skips (partial coverage)" {
+    const allocator = std.testing.allocator;
+    const original = try loadFile(allocator, "tests/fixtures/cr2/canon_eos_40d_sraw2.cr2");
+    defer allocator.free(original);
+    const bytes = try withSamplesPerPixelInIfd0(allocator, original, 3);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    // The walk must ACCEPT (per Peter's 2026-08-27 partial-coverage ruling)…
+    try validateRecording(allocator, bytes, &recorder);
+    // …name the two uncovered portions, and pass for the right reason: the
+    // repair leaves no directory-rule finding.
+    try expectCr2PartialCoverage(&recorder);
+    try std.testing.expectEqual(@as(usize, 0), countConformance(&recorder));
 }
 
 test "YCbCr tiled chunky subsampled 2:2 (uncompressed 16x16, one tile) validates via .tile extent branch" {
@@ -2358,17 +2417,28 @@ fn countConformance(recorder: *const FindingRecorder) usize {
 /// The field is inline when it fits in 4 bytes. `tag` must not be one of
 /// the nine baseline tags the builder writes itself.
 fn grayWithField(allocator: std.mem.Allocator, tag: u16, typ: u16, values: []const u32) ![]u8 {
-    const width: u32 = switch (typ) {
+    const width: usize = switch (typ) {
         1 => 1,
         3 => 2,
         4 => 4,
         else => unreachable,
     };
+    var raw: [4096]u8 = undefined;
+    for (values, 0..) |v, i| switch (width) {
+        1 => raw[i] = @intCast(v),
+        2 => std.mem.writeInt(u16, raw[2 * i ..][0..2], @intCast(v), .little),
+        else => std.mem.writeInt(u32, raw[4 * i ..][0..4], v, .little),
+    };
+    return grayWithRaw(allocator, tag, typ, @intCast(values.len), raw[0 .. width * values.len]);
+}
+
+/// As `grayWithField`, with the field given as its type, count and raw
+/// little-endian value bytes (inline when at most 4 bytes).
+fn grayWithRaw(allocator: std.mem.Allocator, tag: u16, typ: u16, count: u32, raw: []const u8) ![]u8 {
     const ntags: usize = 10;
     const field_off: u32 = 8 + 2 + ntags * 12 + 4;
-    const field_bytes: u32 = width * @as(u32, @intCast(values.len));
-    const out_of_line = field_bytes > 4;
-    const strip_off: u32 = field_off + (if (out_of_line) field_bytes else 0);
+    const out_of_line = raw.len > 4;
+    const strip_off: u32 = field_off + (if (out_of_line) @as(u32, @intCast(raw.len)) else 0);
     const buf = try allocator.alloc(u8, strip_off + 2);
     @memset(buf, 0);
     buf[0] = 'I';
@@ -2377,12 +2447,7 @@ fn grayWithField(allocator: std.mem.Allocator, tag: u16, typ: u16, values: []con
     putU32(buf, 4, 8);
     putU16(buf, 8, @intCast(ntags));
     var slot = [_]u8{0} ** 4;
-    const data: []u8 = if (out_of_line) buf[field_off..strip_off] else slot[0..field_bytes];
-    for (values, 0..) |v, i| switch (width) {
-        1 => data[i] = @intCast(v),
-        2 => std.mem.writeInt(u16, data[2 * i ..][0..2], @intCast(v), .little),
-        else => std.mem.writeInt(u32, data[4 * i ..][0..4], v, .little),
-    };
+    if (out_of_line) @memcpy(buf[field_off..strip_off], raw) else @memcpy(slot[0..raw.len], raw);
     const Built = struct { tag: u16, typ: u16, count: u32 = 1, val: u32 };
     var entries = [_]Built{
         .{ .tag = 256, .typ = 4, .val = 2 },
@@ -2394,7 +2459,7 @@ fn grayWithField(allocator: std.mem.Allocator, tag: u16, typ: u16, values: []con
         .{ .tag = 277, .typ = 3, .val = 1 },
         .{ .tag = 278, .typ = 4, .val = 1 },
         .{ .tag = 279, .typ = 4, .val = 2 },
-        .{ .tag = tag, .typ = typ, .count = @intCast(values.len), .val = if (out_of_line) field_off else std.mem.readInt(u32, &slot, .little) },
+        .{ .tag = tag, .typ = typ, .count = count, .val = if (out_of_line) field_off else std.mem.readInt(u32, &slot, .little) },
     };
     std.mem.sort(Built, &entries, {}, struct {
         fn lt(_: void, a: Built, b: Built) bool {
@@ -2443,18 +2508,21 @@ test "IFD-entry rules: SampleFormat and TransferFunction stored as BYTE or LONG 
 
 /// Every single-value enumerated rule, written out independently of
 /// `ifd_conformance.rules` so that dropping or narrowing a row fails here.
-/// `seen` counts the directories carrying the tag across the pinned 165-file
-/// corpus (docs/plan_context/real_corpus_manifest.tsv), as exiftool 13.59 reports
-/// them; 0 means the row rests on the specification text alone.
-const enumerated_rows = [_]struct { tag: u16, lo: u16, hi: u16, citation: []const u8, seen: u32 }{
-    .{ .tag = 255, .lo = 1, .hi = 3, .citation = "SubfileType, TIFF 6.0 pp. 40-41", .seen = 5 },
-    .{ .tag = 263, .lo = 1, .hi = 3, .citation = "Threshholding, TIFF 6.0 p. 41", .seen = 0 },
-    .{ .tag = 266, .lo = 1, .hi = 2, .citation = "FillOrder, TIFF 6.0 p. 32", .seen = 27 },
-    .{ .tag = 274, .lo = 1, .hi = 8, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 149 },
-    .{ .tag = 290, .lo = 1, .hi = 5, .citation = "GrayResponseUnit, TIFF 6.0 pp. 33-34", .seen = 0 },
-    .{ .tag = 296, .lo = 1, .hi = 3, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 182 },
-    .{ .tag = 332, .lo = 1, .hi = 2, .citation = "InkSet, TIFF 6.0 p. 70", .seen = 5 },
-    .{ .tag = 531, .lo = 1, .hi = 2, .citation = "YCbCrPositioning, TIFF 6.0 p. 92", .seen = 50 },
+/// `seen` counts the classic-TIFF IFDs (next chain and SubIFDs) carrying the
+/// tag across the 140 distinct files of the pinned corpus
+/// (docs/plan_context/real_corpus_manifest.tsv); 0 means the row rests on the text alone.
+const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: []const u8, seen: u32, drives_decoding: bool = false }{
+    .{ .tag = 255, .ranges = &.{.{ 1, 3 }}, .citation = "SubfileType, TIFF 6.0 pp. 40-41", .seen = 3 },
+    .{ .tag = 263, .ranges = &.{.{ 1, 3 }}, .citation = "Threshholding, TIFF 6.0 p. 41", .seen = 1 },
+    .{ .tag = 266, .ranges = &.{.{ 1, 2 }}, .citation = "FillOrder, TIFF 6.0 p. 32", .seen = 21 },
+    .{ .tag = 274, .ranges = &.{.{ 1, 8 }}, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 125 },
+    .{ .tag = 284, .ranges = &.{.{ 1, 2 }}, .citation = "PlanarConfiguration, TIFF 6.0 p. 38", .seen = 159, .drives_decoding = true },
+    .{ .tag = 290, .ranges = &.{.{ 1, 5 }}, .citation = "GrayResponseUnit, TIFF 6.0 pp. 33-34", .seen = 0 },
+    .{ .tag = 296, .ranges = &.{.{ 1, 3 }}, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 160 },
+    .{ .tag = 332, .ranges = &.{.{ 1, 2 }}, .citation = "InkSet, TIFF 6.0 p. 70", .seen = 5 },
+    .{ .tag = 512, .ranges = &.{ .{ 1, 1 }, .{ 14, 14 } }, .citation = "JPEGProc, TIFF 6.0 p. 104", .seen = 4 },
+    .{ .tag = 517, .ranges = &.{.{ 1, 7 }}, .citation = "JPEGLosslessPredictors (one sample), TIFF 6.0 p. 106", .seen = 1 },
+    .{ .tag = 531, .ranges = &.{.{ 1, 2 }}, .citation = "YCbCrPositioning, TIFF 6.0 p. 92", .seen = 43 },
 };
 
 fn expectFieldVerdict(allocator: std.mem.Allocator, tag: u16, value: u32, corrupt: bool) !void {
@@ -2489,19 +2557,32 @@ fn expectFieldVerdict(allocator: std.mem.Allocator, tag: u16, value: u32, corrup
 test "IFD-entry rules: each enumerated row validates its range ends and rejects the values just outside" {
     const allocator = std.testing.allocator;
     for (enumerated_rows) |row| {
-        try expectFieldVerdict(allocator, row.tag, row.lo, false);
-        try expectFieldVerdict(allocator, row.tag, row.hi, false);
-        try expectFieldVerdict(allocator, row.tag, row.lo - 1, true);
-        try expectFieldVerdict(allocator, row.tag, row.hi + 1, true);
-        // Private values are never faults.
-        try expectFieldVerdict(allocator, row.tag, 40000, false);
+        for (row.ranges) |range| {
+            try expectFieldVerdict(allocator, row.tag, range[0], false);
+            try expectFieldVerdict(allocator, row.tag, range[1], false);
+            for ([_]u32{ @as(u32, range[0]) -% 1, @as(u32, range[1]) + 1 }) |v| {
+                if (v > 65535) continue;
+                var inside = false;
+                for (row.ranges) |other| inside = inside or (v >= other[0] and v <= other[1]);
+                if (!inside) try expectFieldVerdict(allocator, row.tag, v, true);
+            }
+        }
+        // Private values are never faults. A field that drives decoding is
+        // checked at rule level only, since the decoder rejects a value it
+        // cannot use whatever the rule says.
+        if (!row.drives_decoding) try expectFieldVerdict(allocator, row.tag, 40000, false);
     }
 }
 
-test "IFD-entry rules: the independent row list and the rule table name the same single-value tags" {
+/// Rules with a value set whose count is not one, regressed elsewhere:
+/// SampleFormat, ExtraSamples and YCbCrSubSampling.
+const multi_value_rows = [_]u16{ 338, 339, 530 };
+
+test "IFD-entry rules: the independent row lists and the rule table name the same value-set tags" {
     var table_count: usize = 0;
     for (tiffz.ifd_conformance.rules) |rule| {
-        if (rule.count != .one) continue;
+        if (rule.values == null) continue;
+        if (std.mem.indexOfScalar(u16, &multi_value_rows, rule.tag) != null) continue;
         table_count += 1;
         var found = false;
         for (enumerated_rows) |row| found = found or row.tag == rule.tag;
@@ -2511,6 +2592,253 @@ test "IFD-entry rules: the independent row list and the rule table name the same
         }
     }
     try std.testing.expectEqual(enumerated_rows.len, table_count);
+    for (multi_value_rows) |tag| {
+        var found = false;
+        for (tiffz.ifd_conformance.rules) |rule| found = found or (rule.tag == tag and rule.values != null);
+        try std.testing.expect(found);
+    }
+}
+
+/// Little-endian SHORTs, LONGs, RATIONALs (1/1 each) and NUL-terminated
+/// ASCII, for the row cases below.
+fn le16(comptime values: []const u16) []const u8 {
+    const bytes = comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var out: [values.len * 2]u8 = undefined;
+        for (values, 0..) |v, i| std.mem.writeInt(u16, out[2 * i ..][0..2], v, .little);
+        break :blk out;
+    };
+    return &bytes;
+}
+fn le32(comptime values: []const u32) []const u8 {
+    const bytes = comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var out: [values.len * 4]u8 = undefined;
+        for (values, 0..) |v, i| std.mem.writeInt(u32, out[4 * i ..][0..4], v, .little);
+        break :blk out;
+    };
+    return &bytes;
+}
+fn ones(comptime n: usize) []const u8 {
+    const bytes = comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var out: [n * 8]u8 = undefined;
+        for (0..n) |i| {
+            std.mem.writeInt(u32, out[8 * i ..][0..4], 1, .little);
+            std.mem.writeInt(u32, out[8 * i + 4 ..][0..4], 1, .little);
+        }
+        break :blk out;
+    };
+    return &bytes;
+}
+fn ramp16(comptime n: usize) []const u16 {
+    const values = comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var out: [n]u16 = undefined;
+        for (0..n) |i| out[i] = @intCast(i);
+        break :blk out;
+    };
+    return &values;
+}
+
+const RowField = struct { typ: u16, count: u32, raw: []const u8 };
+fn short(comptime values: []const u16) RowField {
+    return .{ .typ = 3, .count = values.len, .raw = le16(values) };
+}
+fn long(comptime values: []const u32) RowField {
+    return .{ .typ = 4, .count = values.len, .raw = le32(values) };
+}
+fn rational(comptime n: u32) RowField {
+    return .{ .typ = 5, .count = n, .raw = ones(n) };
+}
+fn ascii(comptime text: []const u8) RowField {
+    return .{ .typ = 2, .count = text.len, .raw = text };
+}
+
+/// One clean and one corrupt instance of every rule, written independently
+/// of `ifd_conformance.rules`, in the context of an 8-bit grayscale image
+/// with one sample (BitsPerSample 8, SamplesPerPixel 1). `reason` is the
+/// corrupt instance's expected reason: 1 type, 2 count, 3 value.
+/// `end_to_end` is false where the field also drives decoding, so a built
+/// file would test the decoder more than the rule. `seen` is counted as for
+/// `enumerated_rows`.
+const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reason: u16, end_to_end: bool = true, seen: u32 }{
+    .{ .tag = 254, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 125 },
+    .{ .tag = 255, .clean = short(&.{1}), .corrupt = short(&.{4}), .reason = 3, .seen = 3 },
+    .{ .tag = 256, .clean = long(&.{2}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 182 },
+    .{ .tag = 257, .clean = long(&.{1}), .corrupt = ascii("1\x00"), .reason = 1, .end_to_end = false, .seen = 182 },
+    .{ .tag = 258, .clean = short(&.{8}), .corrupt = short(&.{ 8, 8 }), .reason = 2, .end_to_end = false, .seen = 179 },
+    .{ .tag = 259, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 216 },
+    .{ .tag = 262, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 180 },
+    .{ .tag = 263, .clean = short(&.{1}), .corrupt = short(&.{0}), .reason = 3, .seen = 1 },
+    .{ .tag = 264, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
+    .{ .tag = 265, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
+    .{ .tag = 266, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 21 },
+    .{ .tag = 269, .clean = ascii("doc\x00"), .corrupt = ascii("doc"), .reason = 3, .seen = 41 },
+    .{ .tag = 270, .clean = ascii("a\x00b\x00\x00"), .corrupt = ascii("a\x00\x00b\x00"), .reason = 3, .seen = 43 },
+    .{ .tag = 271, .clean = ascii("Make\x00"), .corrupt = .{ .typ = 1, .count = 5, .raw = "Make\x00" }, .reason = 1, .seen = 57 },
+    .{ .tag = 272, .clean = ascii("Model\x00"), .corrupt = ascii("Mod\xe9l\x00"), .reason = 3, .seen = 57 },
+    .{ .tag = 273, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 169 },
+    .{ .tag = 274, .clean = short(&.{1}), .corrupt = short(&.{9}), .reason = 3, .seen = 125 },
+    .{ .tag = 277, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 176 },
+    .{ .tag = 278, .clean = long(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 160 },
+    .{ .tag = 279, .clean = long(&.{2}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .end_to_end = false, .seen = 168 },
+    .{ .tag = 280, .clean = short(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 27 },
+    .{ .tag = 281, .clean = short(&.{255}), .corrupt = short(&.{ 255, 255 }), .reason = 2, .seen = 3 },
+    .{ .tag = 282, .clean = rational(1), .corrupt = long(&.{72}), .reason = 1, .seen = 167 },
+    .{ .tag = 283, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 167 },
+    .{ .tag = 284, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 159 },
+    .{ .tag = 285, .clean = ascii("page\x00"), .corrupt = ascii("page"), .reason = 3, .seen = 0 },
+    .{ .tag = 286, .clean = rational(1), .corrupt = .{ .typ = 10, .count = 1, .raw = ones(1) }, .reason = 1, .seen = 3 },
+    .{ .tag = 287, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 3 },
+    .{ .tag = 288, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 0 },
+    .{ .tag = 289, .clean = long(&.{0}), .corrupt = .{ .typ = 4, .count = 0, .raw = "" }, .reason = 2, .seen = 0 },
+    .{ .tag = 290, .clean = short(&.{2}), .corrupt = short(&.{6}), .reason = 3, .seen = 0 },
+    .{ .tag = 291, .clean = short(ramp16(256)), .corrupt = short(ramp16(255)), .reason = 2, .seen = 3 },
+    .{ .tag = 292, .clean = long(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 2 },
+    .{ .tag = 293, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 0 },
+    .{ .tag = 296, .clean = short(&.{2}), .corrupt = short(&.{0}), .reason = 3, .seen = 160 },
+    .{ .tag = 297, .clean = short(&.{ 0, 1 }), .corrupt = short(&.{0}), .reason = 2, .seen = 16 },
+    .{ .tag = 301, .clean = short(ramp16(256)), .corrupt = short(ramp16(255)), .reason = 2, .seen = 2 },
+    .{ .tag = 305, .clean = ascii("tiffz\x00"), .corrupt = ascii("tiffz"), .reason = 3, .seen = 94 },
+    .{ .tag = 306, .clean = ascii("2017:07:13 16:58:28\x00"), .corrupt = ascii("2017-07-13 16:58:28\x00"), .reason = 3, .seen = 53 },
+    .{ .tag = 315, .clean = ascii("artist\x00"), .corrupt = ascii("art\xc3\xa9\x00"), .reason = 3, .seen = 16 },
+    .{ .tag = 316, .clean = ascii("host\x00"), .corrupt = .{ .typ = 7, .count = 5, .raw = "host\x00" }, .reason = 1, .seen = 0 },
+    .{ .tag = 317, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .seen = 7 },
+    .{ .tag = 318, .clean = rational(2), .corrupt = rational(1), .reason = 2, .seen = 16 },
+    .{ .tag = 319, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 16 },
+    .{ .tag = 320, .clean = short(ramp16(768)), .corrupt = short(ramp16(767)), .reason = 2, .seen = 7 },
+    .{ .tag = 321, .clean = short(&.{ 0, 255 }), .corrupt = short(&.{0}), .reason = 2, .seen = 2 },
+    .{ .tag = 322, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 11 },
+    .{ .tag = 323, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 13 },
+    .{ .tag = 324, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 9 },
+    .{ .tag = 325, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 9 },
+    .{ .tag = 332, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 5 },
+    .{ .tag = 333, .clean = ascii("Cyan\x00Magenta\x00"), .corrupt = ascii("Cyan\x00\x00Magenta\x00"), .reason = 3, .seen = 0 },
+    .{ .tag = 334, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
+    .{ .tag = 336, .clean = short(&.{ 0, 255 }), .corrupt = short(&.{ 0, 128, 255 }), .reason = 2, .seen = 0 },
+    .{ .tag = 337, .clean = ascii("printer\x00"), .corrupt = ascii("printer"), .reason = 3, .seen = 0 },
+    .{ .tag = 338, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .seen = 1 },
+    .{ .tag = 339, .clean = short(&.{1}), .corrupt = short(&.{5}), .reason = 3, .seen = 21 },
+    .{ .tag = 342, .clean = short(&.{ 0, 255, 0, 255, 0, 255 }), .corrupt = short(&.{ 0, 255, 0, 255, 0 }), .reason = 2, .seen = 0 },
+    .{ .tag = 512, .clean = short(&.{1}), .corrupt = short(&.{2}), .reason = 3, .seen = 4 },
+    .{ .tag = 513, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 42 },
+    .{ .tag = 514, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 42 },
+    .{ .tag = 515, .clean = short(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 1 },
+    .{ .tag = 517, .clean = short(&.{1}), .corrupt = short(&.{8}), .reason = 3, .seen = 1 },
+    .{ .tag = 518, .clean = short(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 1 },
+    .{ .tag = 519, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 6 },
+    .{ .tag = 520, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 2 },
+    .{ .tag = 521, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 2 },
+    .{ .tag = 529, .clean = rational(3), .corrupt = rational(2), .reason = 2, .seen = 15 },
+    .{ .tag = 530, .clean = short(&.{ 2, 2 }), .corrupt = short(&.{ 1, 2 }), .reason = 3, .seen = 18 },
+    .{ .tag = 531, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 43 },
+    .{ .tag = 532, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 16 },
+    .{ .tag = 33432, .clean = ascii("(c) 2026\x00"), .corrupt = ascii("(c) 2026"), .reason = 3, .seen = 19 },
+};
+
+/// Rule-level verdict of one field in the 8-bit grayscale context.
+fn rowFaults(allocator: std.mem.Allocator, tag: u16, field: RowField) !std.ArrayListUnmanaged(tiffz.ifd_conformance.Fault) {
+    const Entry = tiffz.ifd.Entry;
+    const context = [_]struct { tag: u16, value: u16 }{ .{ .tag = 258, .value = 8 }, .{ .tag = 262, .value = 1 }, .{ .tag = 277, .value = 1 } };
+    var entries: [4]Entry = undefined;
+    var cached = [_]?[]u8{null} ** 4;
+    var n: usize = 0;
+    var placed = false;
+    const copy = try allocator.dupe(u8, field.raw);
+    errdefer allocator.free(copy);
+    for (context) |c| {
+        if (!placed and tag < c.tag) {
+            entries[n] = fieldEntry(tag, field);
+            if (field.raw.len > 4) cached[n] = copy;
+            n += 1;
+            placed = true;
+        }
+        if (c.tag == tag) continue;
+        var slot = [_]u8{0} ** 8;
+        std.mem.writeInt(u16, slot[0..2], c.value, .little);
+        entries[n] = .{ .tag = c.tag, .field_type = .short, .raw_type = 3, .count = 1, .raw_value_or_offset = slot };
+        n += 1;
+    }
+    if (!placed) {
+        entries[n] = fieldEntry(tag, field);
+        if (field.raw.len > 4) cached[n] = copy;
+        n += 1;
+    }
+    const dir = tiffz.ifd.Ifd{ .entries = entries[0..n], .next_offset = 0, .offset_width = .classic, .allocator = allocator, .cached_values = cached[0..n] };
+    var out: std.ArrayListUnmanaged(tiffz.ifd_conformance.Fault) = .empty;
+    errdefer out.deinit(allocator);
+    try tiffz.ifd_conformance.check(allocator, &dir, .little, &out);
+    allocator.free(copy);
+    return out;
+}
+
+fn fieldEntry(tag: u16, field: RowField) tiffz.ifd.Entry {
+    var slot = [_]u8{0} ** 8;
+    if (field.raw.len <= 4) @memcpy(slot[0..field.raw.len], field.raw) else std.mem.writeInt(u32, slot[0..4], 4096, .little);
+    return .{ .tag = tag, .field_type = tiffz.ifd.FieldType.fromU16(field.typ), .raw_type = field.typ, .count = field.count, .raw_value_or_offset = slot };
+}
+
+test "IFD-entry rules: every row has a clean and a corrupt case, and every case names a row" {
+    for (tiffz.ifd_conformance.rules) |rule| {
+        var found = false;
+        for (row_cases) |case| found = found or case.tag == rule.tag;
+        if (!found) {
+            std.debug.print("rule for tag {d} has no row case\n", .{rule.tag});
+            return error.TestExpectedEqual;
+        }
+    }
+    try std.testing.expectEqual(tiffz.ifd_conformance.rules.len, row_cases.len);
+}
+
+test "IFD-entry rules: each row's clean case passes and its corrupt case fails for the stated reason" {
+    const allocator = std.testing.allocator;
+    for (row_cases) |case| {
+        var clean = try rowFaults(allocator, case.tag, case.clean);
+        defer clean.deinit(allocator);
+        if (clean.items.len != 0) {
+            std.debug.print("tag {d}: clean case has {d} faults\n", .{ case.tag, clean.items.len });
+            return error.TestExpectedEqual;
+        }
+        var corrupt = try rowFaults(allocator, case.tag, case.corrupt);
+        defer corrupt.deinit(allocator);
+        if (corrupt.items.len != 1 or corrupt.items[0] != .field_invalid or
+            corrupt.items[0].field_invalid.tag != case.tag or
+            @intFromEnum(corrupt.items[0].field_invalid.reason) != case.reason)
+        {
+            std.debug.print("tag {d}: corrupt case gave {any}\n", .{ case.tag, corrupt.items });
+            return error.TestExpectedEqual;
+        }
+    }
+}
+
+test "IFD-entry rules: rows that do not drive decoding classify the same in a built file" {
+    const allocator = std.testing.allocator;
+    for (row_cases) |case| {
+        if (!case.end_to_end) continue;
+        inline for (.{ false, true }) |corrupt| {
+            const field = if (corrupt) case.corrupt else case.clean;
+            const bytes = try grayWithRaw(allocator, case.tag, field.typ, field.count, field.raw);
+            defer allocator.free(bytes);
+            var recorder = FindingRecorder.init(allocator);
+            defer recorder.deinit();
+            const result = validateRecording(allocator, bytes, &recorder);
+            var hits: usize = 0;
+            for (recorder.findings.items) |f| {
+                if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+                if (std.mem.readInt(u16, f.payload_bytes[16..18], .little) == case.tag and
+                    std.mem.readInt(u16, f.payload_bytes[18..20], .little) == case.reason) hits += 1;
+            }
+            const ok = if (corrupt)
+                (if (result) |_| false else |err| err == error.Malformed) and hits == 1 and countConformance(&recorder) == 1
+            else
+                (if (result) |_| true else |_| false) and countConformance(&recorder) == 0;
+            if (!ok) {
+                std.debug.print("tag {d} ({s}): result {any}, conformance findings {d}\n", .{ case.tag, if (corrupt) "corrupt" else "clean", result, countConformance(&recorder) });
+                return error.TestExpectedEqual;
+            }
+        }
+    }
 }
 
 test "IFD-entry rules: a LONG SampleFormat or TransferFunction value above 65535 is corrupt" {

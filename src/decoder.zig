@@ -2265,32 +2265,42 @@ test "raster limit: sample count above max_total_samples is rejected, and the ca
 }
 
 test "raster limit: max_dim is inclusive on both axes for strips and tiles" {
-    // Custom cap 4 keeps every accepted page tiny. The other axis stays 1.
-    // Tiles use a 1×1 page so TileWidth/TileLength, not ImageWidth, is the
-    // value compared with the cap. One past the cap is LimitExceededDimension
-    // before any pixel buffer is required.
-    const cap: u32 = 4;
+    // Custom cap 32 keeps every accepted page small. Strips probe one below,
+    // at and one past the cap with the other axis 1. Tiles must be multiples
+    // of 16 on both axes (TIFF 6.0 pp. 67-68), so they probe 16, 32 and 48
+    // with the other axis 16, on a 1x1 page so that TileWidth/TileLength,
+    // not ImageWidth, is the value compared with the cap. Past the cap is
+    // LimitExceededDimension before any pixel buffer is required, and within
+    // it the page decodes and validates cleanly.
+    const cap: u32 = 32;
     var limits = Limits.default;
     limits.max_dim = cap;
     const Axis = enum { width, length };
-    const points = [_]struct { dim: u32, over: bool }{
+    const Point = struct { dim: u32, over: bool };
+    const strip_points = [_]Point{
         .{ .dim = cap - 1, .over = false },
         .{ .dim = cap, .over = false },
         .{ .dim = cap + 1, .over = true },
     };
+    const tile_points = [_]Point{
+        .{ .dim = cap - 16, .over = false },
+        .{ .dim = cap, .over = false },
+        .{ .dim = cap + 16, .over = true },
+    };
 
-    var storage: [160]u8 = undefined;
-    var dest: [8]u8 = undefined;
+    var storage: [768]u8 = undefined;
+    var dest: [cap * 16]u8 = undefined;
     var ws = Workspace.init(std.testing.allocator);
     defer ws.deinit();
 
     for ([_]bool{ false, true }) |tiled| {
+        const points: []const Point = if (tiled) &tile_points else &strip_points;
+        const across: u32 = if (tiled) 16 else 1;
         for ([_]Axis{ .width, .length }) |axis| {
             for (points) |point| {
-                const across: u32 = 1;
                 const width: u32 = if (axis == .width) point.dim else across;
                 const length: u32 = if (axis == .length) point.dim else across;
-                const payload: usize = if (point.over) 1 else @intCast(point.dim);
+                const payload: usize = if (point.over) 1 else @as(usize, width) * length;
                 const n: usize = if (tiled)
                     writeGrayTile(&storage, 1, 1, width, length, payload)
                 else
@@ -2315,6 +2325,22 @@ test "raster limit: max_dim is inclusive on both axes for strips and tiles" {
             }
         }
     }
+}
+
+test "tiles that are not multiples of 16 decode, and validation reports them" {
+    // TileWidth and TileLength "must be a multiple of 16" (TIFF 6.0 pp. 67-68).
+    // A 5x1 tile still decodes; validation fails Malformed after the walk.
+    var storage: [160]u8 = undefined;
+    var dest: [8]u8 = undefined;
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    const n = writeGrayTile(&storage, 1, 1, 5, 1, 5);
+    var handle = BufferHandle.init(storage[0..n]);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    try std.testing.expectEqual(@as(usize, 5), try dec.decodeTile(0, 0, &dest, &ws));
+    try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&ws));
 }
 
 test "SubIFD: an intact uncompressed child decodes to its byte and validates" {

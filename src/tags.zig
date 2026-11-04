@@ -91,3 +91,45 @@ pub const photometric_icclab: u16 = 9;  // TIFF Tech Note 3: unsigned a/b with b
 /// Planar configuration codes (tag 284).
 pub const planar_chunky: u16 = 1;            // RGBRGBRGB...
 pub const planar_separate: u16 = 2;          // RRR...GGG...BBB...
+
+/// Further TIFF 6.0 fields checked by ifd_conformance (type, count, values).
+pub const new_subfile_type: u16 = 254;       // 0x00FE; LONG, N = 1
+pub const cell_width: u16 = 264;             // 0x0108; SHORT, N = 1
+pub const cell_length: u16 = 265;            // 0x0109; SHORT, N = 1
+pub const document_name: u16 = 269;          // 0x010D; ASCII
+pub const image_description: u16 = 270;      // 0x010E; ASCII
+pub const make: u16 = 271;                   // 0x010F; ASCII
+pub const model: u16 = 272;                  // 0x0110; ASCII
+pub const min_sample_value: u16 = 280;       // 0x0118; SHORT, N = SamplesPerPixel
+pub const max_sample_value: u16 = 281;       // 0x0119; SHORT, N = SamplesPerPixel
+pub const x_resolution: u16 = 282;           // 0x011A; RATIONAL, N = 1
+pub const y_resolution: u16 = 283;           // 0x011B; RATIONAL, N = 1
+pub const page_name: u16 = 285;              // 0x011D; ASCII
+pub const x_position: u16 = 286;             // 0x011E; RATIONAL, N = 1
+pub const y_position: u16 = 287;             // 0x011F; RATIONAL, N = 1
+pub const free_offsets: u16 = 288;           // 0x0120; LONG
+pub const free_byte_counts: u16 = 289;       // 0x0121; LONG
+pub const gray_response_curve: u16 = 291;    // 0x0123; SHORT, N = 2**BitsPerSample
+pub const page_number: u16 = 297;            // 0x0129; SHORT, N = 2
+pub const software: u16 = 305;               // 0x0131; ASCII
+pub const date_time: u16 = 306;              // 0x0132; ASCII, N = 20, "YYYY:MM:DD HH:MM:SS"
+pub const artist: u16 = 315;                 // 0x013B; ASCII
+pub const host_computer: u16 = 316;          // 0x013C; ASCII
+pub const white_point: u16 = 318;            // 0x013E; RATIONAL, N = 2
+pub const primary_chromaticities: u16 = 319; // 0x013F; RATIONAL, N = 6
+pub const halftone_hints: u16 = 321;         // 0x0141; SHORT, N = 2
+pub const ink_names: u16 = 333;              // 0x014D; ASCII
+pub const number_of_inks: u16 = 334;         // 0x014E; SHORT, N = 1
+pub const dot_range: u16 = 336;              // 0x0150; BYTE or SHORT, N = 2 or 2 * SamplesPerPixel
+pub const target_printer: u16 = 337;         // 0x0151; ASCII
+pub const transfer_range: u16 = 342;         // 0x0156; SHORT, N = 6
+pub const jpeg_proc: u16 = 512;              // 0x0200; SHORT, 1 or 14
+pub const jpeg_restart_interval: u16 = 515;  // 0x0203; SHORT, N = 1
+pub const jpeg_lossless_predictors: u16 = 517; // 0x0205; SHORT, N = SamplesPerPixel, 1-7
+pub const jpeg_point_transforms: u16 = 518;  // 0x0206; SHORT, N = SamplesPerPixel
+pub const jpeg_q_tables: u16 = 519;          // 0x0207; LONG, N = SamplesPerPixel
+pub const jpeg_dc_tables: u16 = 520;         // 0x0208; LONG, N = SamplesPerPixel
+pub const jpeg_ac_tables: u16 = 521;         // 0x0209; LONG, N = SamplesPerPixel
+pub const ycbcr_coefficients: u16 = 529;     // 0x0211; RATIONAL, N = 3
+pub const reference_black_white: u16 = 532;  // 0x0214; RATIONAL, N = 6
+pub const copyright: u16 = 33432;            // 0x8298; ASCII (defined by TIFF 6.0 despite its number)
