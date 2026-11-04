@@ -211,3 +211,28 @@ so readers apply it to every sample. Repeating the value to count 3 (stored
 out of line) removes every MinSampleValue finding. The three files with no other
 fault (DCS Pro 14n, 14nx, SLR/n) then validate ok. LibRaw raw data and the
 extracted previews are identical in all six.
+
+## Technical Notes batch rulings (validate, 2026-11-04)
+
+1. XClipPathUnits and YClipPathUnits are "Type = DWORD" in the PageMaker 6.0
+   notes. Only what every reading agrees on is checked: a 32-bit integer type
+   (BYTE, SHORT, LONG or SLONG) and N = 1, with no value or sign check.
+   libtiff registers both as LONG, which is context, not authority.
+2. TIFF Technical Note 2 rewrites TIFF 6.0 Section 21 for every YCbCr
+   image, whatever the compression: "ImageWidth/ImageLength are not
+   constrained" (validate corrected its earlier Compression-7-only reading
+   the same day). Only tile sizes and a multi-strip RowsPerStrip must be
+   multiples of the subsampling. Tile sizes need no separate check, since a
+   multiple of 16 is a multiple of any subsampling factor.
+3. TN2's DCT geometry (multi-strip RowsPerStrip and tile sizes as MCU
+   multiples) and its rule that SOF sampling factors equal YCbCrSubSampling
+   are checked where the SOF is parsed. The finding cites the entry and the
+   SOF offset, and unexamined data counts as reach, never a pass. validate
+   approved `jpeg_segment_geometry_invalid` with changes: exact SOF classes
+   (DCT 0, 1, 2, 5, 6, 9, 10, 13, 14; lossless 3, 7, 11, 15) pinned by a
+   test; every segment scanned, one record per IFD per rule with violating and
+   examined segment counts; luma-to-chroma ratio agreement for
+   PlanarConfiguration 1, with no subsampling for non-YCbCr; all factors 1
+   for PlanarConfiguration 2; and tiffz's own bounded SOF scan for now, with
+   a differential test against jpegz, until jpegz offers a frame-header API.
+   The number needs Einstein, so the rule waits in `ifd_conformance.pending`.

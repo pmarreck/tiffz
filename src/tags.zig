@@ -133,3 +133,12 @@ pub const jpeg_ac_tables: u16 = 521;         // 0x0209; LONG, N = SamplesPerPixe
 pub const ycbcr_coefficients: u16 = 529;     // 0x0211; RATIONAL, N = 3
 pub const reference_black_white: u16 = 532;  // 0x0214; RATIONAL, N = 6
 pub const copyright: u16 = 33432;            // 0x8298; ASCII (defined by TIFF 6.0 despite its number)
+
+/// Fields from the TIFF Technical Notes checked by ifd_conformance.
+pub const clip_path: u16 = 343;              // 0x0157; BYTE (PageMaker 6.0 notes)
+pub const x_clip_path_units: u16 = 344;      // 0x0158; "DWORD", N = 1 (PageMaker 6.0 notes)
+pub const y_clip_path_units: u16 = 345;      // 0x0159; "DWORD", N = 1 (PageMaker 6.0 notes)
+pub const indexed: u16 = 346;                // 0x015A; SHORT, 0-1 (PageMaker 6.0 notes)
+pub const opi_proxy: u16 = 351;              // 0x015F; SHORT, 0-1 (PageMaker 6.0 notes)
+pub const image_id: u16 = 32781;             // 0x800D; ASCII (PageMaker 6.0 notes)
+pub const image_source_data: u16 = 37724;    // 0x935C; UNDEFINED (Photoshop TIFF Technical Notes)

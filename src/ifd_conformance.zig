@@ -78,6 +78,17 @@ const Kind = enum {
     rational,
     /// ASCII only.
     ascii,
+    /// "DWORD" (PageMaker 6.0 notes): a 32-bit integer of either sign, so
+    /// BYTE, SHORT, LONG or SLONG; no value or sign check (validate,
+    /// 2026-11-04).
+    integer32,
+    /// BYTE only: an opaque byte sequence, not an integer field.
+    bytes,
+    /// UNDEFINED only.
+    undefined,
+    /// Offsets of child IFDs: LONG or IFD (13), and in BigTIFF also IFD8
+    /// (PageMaker 6.0 TIFF Technical Notes p. 4; BigTIFF design).
+    ifd_offsets,
 };
 
 const Count = enum {
@@ -98,11 +109,12 @@ const Count = enum {
     dot_range,
     /// At least one.
     any,
+    /// Any count, zero included ("N = number of child IFDs").
+    zero_or_more,
 };
 
 /// A constraint beyond type, count and value set.
 const Extra = enum {
-    none,
     /// Every value is a multiple of 16.
     multiple_of_16,
     /// Two values, the second (vertical) at most the first (horizontal).
@@ -112,6 +124,9 @@ const Extra = enum {
     /// RowsPerStrip of a multi-strip YCbCr image is a multiple of
     /// YCbCrSubsampleVert (default 2).
     rows_multiple_of_vertical_subsampling,
+    /// With Compression 7, PhotometricInterpretation "shall not be 3 (palette
+    /// color) nor 4 (transparency mask)" (TIFF Technical Note 2).
+    not_palette_or_mask_with_jpeg,
 };
 
 const Rule = struct {
@@ -120,7 +135,7 @@ const Rule = struct {
     count: Count,
     /// Inclusive public-range value ranges, or null when unconstrained.
     values: ?[]const [2]u16 = null,
-    extra: Extra = .none,
+    extras: []const Extra = &.{},
     /// Where the rule comes from, so an omission is auditable.
     citation: []const u8,
 };
@@ -133,11 +148,11 @@ const Rule = struct {
 pub const rules = [_]Rule{
     .{ .tag = tags.new_subfile_type, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 36" },
     .{ .tag = tags.subfile_type, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 pp. 40-41" },
-    .{ .tag = tags.image_width, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34" },
-    .{ .tag = tags.image_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34" },
+    .{ .tag = tags.image_width, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
+    .{ .tag = tags.image_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
     .{ .tag = tags.bits_per_sample, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 29" },
     .{ .tag = tags.compression, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 30" },
-    .{ .tag = tags.photometric, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 37" },
+    .{ .tag = tags.photometric, .kind = .unsigned_short, .count = .one, .extras = &.{.not_palette_or_mask_with_jpeg}, .citation = "TIFF 6.0 p. 37; TIFF Technical Note 2" },
     .{ .tag = tags.threshholding, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 41" },
     .{ .tag = tags.cell_width, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 29" },
     .{ .tag = tags.cell_length, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 29" },
@@ -149,7 +164,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.strip_offsets, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 40; BigTIFF" },
     .{ .tag = tags.orientation, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 8 }}, .citation = "TIFF 6.0 pp. 36-37" },
     .{ .tag = tags.samples_per_pixel, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 39" },
-    .{ .tag = tags.rows_per_strip, .kind = .unsigned_long, .count = .one, .extra = .rows_multiple_of_vertical_subsampling, .citation = "TIFF 6.0 pp. 39, 92" },
+    .{ .tag = tags.rows_per_strip, .kind = .unsigned_long, .count = .one, .extras = &.{.rows_multiple_of_vertical_subsampling}, .citation = "TIFF 6.0 pp. 39, 92; TIFF Technical Note 2, Section 21" },
     .{ .tag = tags.strip_byte_counts, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 40; BigTIFF" },
     .{ .tag = tags.min_sample_value, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 35" },
     .{ .tag = tags.max_sample_value, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 35" },
@@ -169,18 +184,19 @@ pub const rules = [_]Rule{
     .{ .tag = tags.page_number, .kind = .unsigned_short, .count = .two, .citation = "TIFF 6.0 p. 55" },
     .{ .tag = tags.transfer_function, .kind = .unsigned_short, .count = .transfer_function, .citation = "TIFF 6.0 p. 84" },
     .{ .tag = tags.software, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 39" },
-    .{ .tag = tags.date_time, .kind = .ascii, .count = .twenty, .extra = .date_time, .citation = "TIFF 6.0 pp. 15-16, 31" },
+    .{ .tag = tags.date_time, .kind = .ascii, .count = .twenty, .extras = &.{.date_time}, .citation = "TIFF 6.0 pp. 15-16, 31" },
     .{ .tag = tags.artist, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 28" },
     .{ .tag = tags.host_computer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 34" },
-    .{ .tag = tags.predictor, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 64" },
+    .{ .tag = tags.predictor, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 64; Adobe Photoshop TIFF Technical Note 3 (2005)" },
     .{ .tag = tags.white_point, .kind = .rational, .count = .two, .citation = "TIFF 6.0 p. 83" },
     .{ .tag = tags.primary_chromaticities, .kind = .rational, .count = .six, .citation = "TIFF 6.0 p. 83" },
     .{ .tag = tags.colormap, .kind = .unsigned_short, .count = .color_map, .citation = "TIFF 6.0 p. 29" },
     .{ .tag = tags.halftone_hints, .kind = .unsigned_short, .count = .two, .citation = "TIFF 6.0 p. 72" },
-    .{ .tag = tags.tile_width, .kind = .unsigned_long, .count = .one, .extra = .multiple_of_16, .citation = "TIFF 6.0 p. 67" },
-    .{ .tag = tags.tile_length, .kind = .unsigned_long, .count = .one, .extra = .multiple_of_16, .citation = "TIFF 6.0 pp. 67-68" },
+    .{ .tag = tags.tile_width, .kind = .unsigned_long, .count = .one, .extras = &.{.multiple_of_16}, .citation = "TIFF 6.0 p. 67 (a multiple of 16 is a multiple of any subsampling factor, as TIFF Technical Note 2 Section 21 requires)" },
+    .{ .tag = tags.tile_length, .kind = .unsigned_long, .count = .one, .extras = &.{.multiple_of_16}, .citation = "TIFF 6.0 pp. 67-68 (a multiple of 16 is a multiple of any subsampling factor, as TIFF Technical Note 2 Section 21 requires)" },
     .{ .tag = tags.tile_offsets, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 68; BigTIFF" },
     .{ .tag = tags.tile_byte_counts, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 68; BigTIFF" },
+    .{ .tag = tags.sub_ifds, .kind = .ifd_offsets, .count = .zero_or_more, .citation = "PageMaker 6.0 TIFF Technical Notes p. 4; BigTIFF" },
     .{ .tag = tags.ink_set, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 70" },
     .{ .tag = tags.ink_names, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 70" },
     .{ .tag = tags.number_of_inks, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 70" },
@@ -189,6 +205,12 @@ pub const rules = [_]Rule{
     .{ .tag = tags.extra_samples, .kind = .unsigned_short, .count = .any, .values = &.{.{ 0, 2 }}, .citation = "TIFF 6.0 pp. 31-32, 77" },
     .{ .tag = tags.sample_format, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 4 }}, .citation = "TIFF 6.0 p. 80" },
     .{ .tag = tags.transfer_range, .kind = .unsigned_short, .count = .six, .citation = "TIFF 6.0 p. 86" },
+    .{ .tag = tags.clip_path, .kind = .bytes, .count = .any, .citation = "PageMaker 6.0 TIFF Technical Notes p. 6" },
+    .{ .tag = tags.x_clip_path_units, .kind = .integer32, .count = .one, .citation = "PageMaker 6.0 TIFF Technical Notes p. 9 (\"Type = DWORD\"; libtiff registers LONG)" },
+    .{ .tag = tags.y_clip_path_units, .kind = .integer32, .count = .one, .citation = "PageMaker 6.0 TIFF Technical Notes p. 10 (\"Type = DWORD\"; libtiff registers LONG)" },
+    .{ .tag = tags.indexed, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .citation = "PageMaker 6.0 TIFF Technical Notes p. 11" },
+    .{ .tag = tags.jpeg_tables, .kind = .undefined, .count = .any, .citation = "TIFF Technical Note 2" },
+    .{ .tag = tags.opi_proxy, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .citation = "PageMaker 6.0 TIFF Technical Notes p. 15" },
     .{ .tag = tags.jpeg_proc, .kind = .unsigned_short, .count = .one, .values = &.{ .{ 1, 1 }, .{ 14, 14 } }, .citation = "TIFF 6.0 p. 104" },
     .{ .tag = tags.jpeg_interchange_format, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 105" },
     .{ .tag = tags.jpeg_interchange_format_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 105" },
@@ -199,10 +221,12 @@ pub const rules = [_]Rule{
     .{ .tag = tags.jpeg_dc_tables, .kind = .unsigned_long, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
     .{ .tag = tags.jpeg_ac_tables, .kind = .unsigned_long, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
     .{ .tag = tags.ycbcr_coefficients, .kind = .rational, .count = .three, .citation = "TIFF 6.0 p. 90" },
-    .{ .tag = tags.ycbcr_subsampling, .kind = .unsigned_short, .count = .two, .values = &.{ .{ 1, 2 }, .{ 4, 4 } }, .extra = .vertical_at_most_horizontal, .citation = "TIFF 6.0 pp. 91-92" },
+    .{ .tag = tags.ycbcr_subsampling, .kind = .unsigned_short, .count = .two, .values = &.{ .{ 1, 2 }, .{ 4, 4 } }, .extras = &.{.vertical_at_most_horizontal}, .citation = "TIFF 6.0 pp. 91-92" },
     .{ .tag = tags.ycbcr_positioning, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 92" },
     .{ .tag = tags.reference_black_white, .kind = .rational, .count = .six, .citation = "TIFF 6.0 p. 86" },
+    .{ .tag = tags.image_id, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16; PageMaker 6.0 TIFF Technical Notes p. 15" },
     .{ .tag = tags.copyright, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 31" },
+    .{ .tag = tags.image_source_data, .kind = .undefined, .count = .any, .citation = "Adobe Photoshop TIFF Technical Notes (2002)" },
 };
 
 /// Constraints a claimed specification states that are not yet checked,
@@ -210,12 +234,11 @@ pub const rules = [_]Rule{
 /// disappears; a test pins this list.
 pub const Pending = struct { what: []const u8, citation: []const u8, waits_for: []const u8 };
 pub const pending = [_]Pending{
-    .{ .what = "ImageWidth, ImageLength, TileWidth and TileLength are multiples of YCbCrSubSampling; a single-strip RowsPerStrip with them", .citation = "TIFF 6.0 p. 92", .waits_for = "the Technical Notes batch (any TN2 JPEG exemption)" },
-    .{ .what = "Compression value set", .citation = "TIFF 6.0 pp. 30, 49, 104", .waits_for = "Adobe Deflate, TIFF-FX and other claimed codecs" },
-    .{ .what = "PhotometricInterpretation value set", .citation = "TIFF 6.0 p. 37", .waits_for = "ICCLab (TN), ITULab (TIFF-FX), CFA and LinearRaw (TIFF/EP, DNG)" },
-    .{ .what = "Predictor value set", .citation = "TIFF 6.0 p. 64", .waits_for = "floating-point Predictor 3 (Adobe Technical Note 3)" },
+    .{ .what = "Compression value set", .citation = "TIFF 6.0 pp. 30, 49, 104", .waits_for = "JBIG 9 and 10 (TIFF-FX); Deflate 8 is in the Photoshop notes" },
+    .{ .what = "PhotometricInterpretation value set", .citation = "TIFF 6.0 p. 37", .waits_for = "ITULab 10 (TIFF-FX); ICCLab 9 is in the Photoshop notes" },
     .{ .what = "NewSubfileType bits", .citation = "TIFF 6.0 p. 36", .waits_for = "bits defined by TIFF-FX and DNG" },
     .{ .what = "ExtraSamples count m from PhotometricInterpretation and SamplesPerPixel", .citation = "TIFF 6.0 p. 31", .waits_for = "the PhotometricInterpretation value set" },
+    .{ .what = "DCT JPEG multi-strip RowsPerStrip and tile sizes are MCU multiples, and SOF sampling factors equal YCbCrSubSampling", .citation = "TIFF Technical Note 2", .waits_for = "a finding that cites the entry and the SOF offset, checked where the SOF is parsed (Namespace B sign-off)" },
 };
 
 comptime {
@@ -281,6 +304,11 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
         .offsets_or_counts => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long or
             (entry.field_type == .long8 and dir.offset_width == .big),
         .rational => entry.field_type == .rational,
+        .integer32 => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long or entry.field_type == .slong,
+        .bytes => entry.field_type == .byte,
+        .undefined => entry.field_type == .undefined,
+        .ifd_offsets => entry.field_type == .long or entry.raw_type == 13 or
+            (entry.field_type == .ifd8 and dir.offset_width == .big),
         .ascii => entry.field_type == .ascii,
     };
     if (!type_ok) return .type;
@@ -312,15 +340,16 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
         },
         .dot_range => entry.count == 2 or entry.count == 2 * spp,
         .any => entry.count >= 1,
+        .zero_or_more => true,
     };
     if (!count_ok) return .count;
 
     const bytes = dir.entryValueSlice(index);
     switch (rule.kind) {
-        .rational => return null,
+        .rational, .bytes, .undefined, .ifd_offsets, .integer32 => return null,
         .ascii => {
             if (!isAscii(bytes)) return .value;
-            if (rule.extra == .date_time and !isDateTime(bytes)) return .value;
+            if (hasExtra(rule, .date_time) and !isDateTime(bytes)) return .value;
             return null;
         },
         .unsigned_short, .unsigned_long, .offsets_or_counts => {},
@@ -334,38 +363,51 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
     while (i < entry.count) : (i += 1) {
         const value = element(bytes, entry.field_type, i, endian) orelse return .count;
         if (value > max) return .value;
-        if (rule.extra == .multiple_of_16 and value % 16 != 0) return .value;
+        if (hasExtra(rule, .multiple_of_16) and value % 16 != 0) return .value;
         const ranges = rule.values orelse continue;
         if (value >= 32768) continue; // private range, not a violation
         if (!inRanges(@intCast(value), ranges)) return .value;
     }
-    switch (rule.extra) {
+    for (rule.extras) |extra| switch (extra) {
         .vertical_at_most_horizontal => {
             const horizontal = element(bytes, entry.field_type, 0, endian) orelse return .count;
             const vertical = element(bytes, entry.field_type, 1, endian) orelse return .count;
             if (vertical > horizontal) return .value;
         },
         .rows_multiple_of_vertical_subsampling => {
-            // Only a YCbCr image with more than one strip: the effective
-            // rows per strip is min(RowsPerStrip, ImageLength), and a single
-            // strip reduces to the ImageLength rule, which waits in `pending`
-            // (validate, 2026-11-04).
-            const photometric = scalar(dir, tags.photometric, endian) orelse return null;
-            if (photometric != tags.photometric_ycbcr) return null;
+            // Only a YCbCr image with more than one strip: the effective rows
+            // per strip is min(RowsPerStrip, ImageLength), and a single strip
+            // reduces to the ImageLength rule (validate, 2026-11-04).
+            const vertical = subsampling(dir, endian, 1) orelse continue;
             const rows = element(bytes, entry.field_type, 0, endian) orelse return .count;
-            const length = scalar(dir, tags.image_length, endian) orelse return null;
-            if (rows >= length) return null;
-            const vertical = vertical: {
-                const index_ss = indexOf(dir, tags.ycbcr_subsampling) orelse break :vertical 2;
-                const ss = dir.entries[index_ss];
-                if (ss.count != 2) return null; // its own count fault
-                break :vertical element(dir.entryValueSlice(index_ss), ss.field_type, 1, endian) orelse return null;
-            };
-            if (vertical == 0 or rows % vertical != 0) return .value;
+            const length = scalar(dir, tags.image_length, endian) orelse continue;
+            if (rows < length and rows % vertical != 0) return .value;
         },
-        .none, .multiple_of_16, .date_time => {},
-    }
+        .not_palette_or_mask_with_jpeg => {
+            const compression = scalar(dir, tags.compression, endian) orelse continue;
+            const value = element(bytes, entry.field_type, 0, endian) orelse return .count;
+            if (compression == tags.compression_jpeg and (value == 3 or value == 4)) return .value;
+        },
+        .multiple_of_16, .date_time => {},
+    };
     return null;
+}
+
+fn hasExtra(rule: Rule, extra: Extra) bool {
+    return std.mem.indexOfScalar(Extra, rule.extras, extra) != null;
+}
+
+/// YCbCrSubSampling factor `axis` (0 horizontal, 1 vertical) of a YCbCr image,
+/// default 2 (TIFF 6.0 p. 92); null when the image is not YCbCr or the field
+/// is malformed (its own fault).
+fn subsampling(dir: *const Ifd, endian: Endian, axis: usize) ?u64 {
+    const photometric = scalar(dir, tags.photometric, endian) orelse return null;
+    if (photometric != tags.photometric_ycbcr) return null;
+    const index = indexOf(dir, tags.ycbcr_subsampling) orelse return 2;
+    const entry = dir.entries[index];
+    if (entry.count != 2) return null;
+    const factor = element(dir.entryValueSlice(index), entry.field_type, axis, endian) orelse return null;
+    return if (factor == 0) null else factor;
 }
 
 /// TIFF 6.0 p. 15: "8-bit byte that contains a 7-bit ASCII code; the last
@@ -812,16 +854,75 @@ test "LONG8 is allowed only for strip and tile offsets and counts, and only in B
     }
 }
 
+test "YCbCr image dimensions are not constrained by the subsampling (TIFF Technical Note 2)" {
+    // TN2 rewrites TIFF 6.0 Section 21: "ImageWidth/ImageLength are not
+    // constrained", whatever the compression (validate, 2026-11-04).
+    for ([_]u32{ 1, 5, 6, 7 }) |compression| {
+        var entries = [_]Entry{
+            inline16(tags.image_width, .short, 1, 5),
+            inline16(tags.image_length, .short, 1, 3),
+            inline16(tags.compression, .short, 1, compression),
+            inline16(tags.photometric, .short, 1, 6),
+        };
+        try expectFaults(&entries, &.{});
+    }
+}
+
+test "with Compression 7, PhotometricInterpretation is not palette or transparency mask" {
+    for ([_]struct { compression: u32, photometric: u32, fault: bool }{
+        .{ .compression = 7, .photometric = 3, .fault = true },
+        .{ .compression = 7, .photometric = 4, .fault = true },
+        .{ .compression = 7, .photometric = 2, .fault = false },
+        .{ .compression = 5, .photometric = 3, .fault = false },
+    }) |case| {
+        var entries = [_]Entry{
+            inline16(tags.compression, .short, 1, case.compression),
+            inline16(tags.photometric, .short, 1, case.photometric),
+        };
+        if (case.fault) {
+            try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.photometric, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = case.photometric } }});
+        } else try expectFaults(&entries, &.{});
+    }
+}
+
+test "Technical Notes kinds: BYTE-only, UNDEFINED-only, DWORD and IFD offsets" {
+    const none: []const Entry = &.{};
+    var four = [_]u8{0} ** 8;
+    try expectBytesReason(none, tags.clip_path, .byte, 4, four[0..4], null);
+    try expectBytesReason(none, tags.clip_path, .undefined, 4, four[0..4], .type);
+    try expectBytesReason(none, tags.jpeg_tables, .undefined, 4, four[0..4], null);
+    try expectBytesReason(none, tags.jpeg_tables, .byte, 4, four[0..4], .type);
+    try expectBytesReason(none, tags.image_source_data, .undefined, 4, four[0..4], null);
+    for ([_]FieldType{ .byte, .short, .long, .slong }) |t| {
+        var ok = [_]Entry{inline16(tags.x_clip_path_units, t, 1, 1000)};
+        try expectFaults(&ok, &.{});
+    }
+    for ([_]FieldType{ .ascii, .float, .rational, .undefined }) |t| {
+        var bad = [_]Entry{inline16(tags.y_clip_path_units, t, 1, 1000)};
+        try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.y_clip_path_units, .reason = .type, .raw_type = @intFromEnum(t), .raw_count = 1, .raw_slot = 1000 } }});
+    }
+    var two = [_]Entry{inline16(tags.x_clip_path_units, .long, 2, 0)};
+    try expectFaults(&two, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.x_clip_path_units, .reason = .count, .raw_type = 4, .raw_count = 2, .raw_slot = 0 } }});
+    // SubIFDs: LONG or IFD (13); IFD8 only in BigTIFF; not SHORT.
+    var long = [_]Entry{inline16(tags.sub_ifds, .long, 1, 8)};
+    try expectFaults(&long, &.{});
+    var ifd13 = [_]Entry{.{ .tag = tags.sub_ifds, .field_type = .unknown, .raw_type = 13, .count = 1, .raw_value_or_offset = [_]u8{ 8, 0, 0, 0, 0, 0, 0, 0 } }};
+    try expectFaults(&ifd13, &.{});
+    var short = [_]Entry{inline16(tags.sub_ifds, .short, 1, 8)};
+    try expectFaults(&short, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.sub_ifds, .reason = .type, .raw_type = 3, .raw_count = 1, .raw_slot = 8 } }});
+    var ifd8 = [_]Entry{inline16(tags.sub_ifds, .ifd8, 1, 8)};
+    try expectFaults(&ifd8, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.sub_ifds, .reason = .type, .raw_type = 18, .raw_count = 1, .raw_slot = 8 } }});
+}
+
 test "the pending constraints are pinned" {
     // Removing one of these must come with a row (and its regressions) that
     // checks it, or with a ruling that it is not a constraint.
     const expected = [_][]const u8{
-        "ImageWidth, ImageLength, TileWidth and TileLength are multiples of YCbCrSubSampling; a single-strip RowsPerStrip with them",
         "Compression value set",
         "PhotometricInterpretation value set",
-        "Predictor value set",
         "NewSubfileType bits",
         "ExtraSamples count m from PhotometricInterpretation and SamplesPerPixel",
+        "DCT JPEG multi-strip RowsPerStrip and tile sizes are MCU multiples, and SOF sampling factors equal YCbCrSubSampling",
     };
     try testing.expectEqual(expected.len, pending.len);
     for (expected, pending) |want, got| try testing.expectEqualStrings(want, got.what);

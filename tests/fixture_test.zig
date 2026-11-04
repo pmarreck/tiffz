@@ -1881,13 +1881,11 @@ test "audit 1.0 [fixed]: ycbcr-cat.tif ACCEPTED via subsampling-aware extent gat
     try expectFixtureValidates("tests/fixtures/labeled_good/ycbcr-cat.tif");
 }
 
-// validate 2026-08-15: labeled-good Canon EOS 40D sRAW2 CR2 (byte-identical
-// vendor of their ground_truth fixture; exiftool -validate says OK, libraw
-// accepted it for years) is rejected error.Malformed by the open/IFD walk.
-// CR2 is in tiffz's stated structural scope; a clean file must not be
-// Malformed. This is the must-accept control: it asserts the acceptance we
-// owe, and FAILS until the walk tolerates (or named-unsupports) whatever
-// Canon-specific structure it is tripping on.
+// Canon EOS 40D sRAW2 CR2 (byte-identical to validate's ground-truth file).
+// Since 2026-08-15 tiffz must accept its structure with partial coverage. Since
+// 2026-11-04 its IFD0 BitsPerSample count is a tag_field_invalid finding, so
+// the original is corrupt, and the must-accept contract is held by a copy
+// repaired in memory.
 /// A copy of little-endian classic TIFF `bytes` whose IFD0 is rebuilt at the
 /// end of the file with a SamplesPerPixel (277) SHORT entry of `spp` inserted
 /// in tag order, and the header pointed at it. Every value keeps its absolute
@@ -2518,8 +2516,11 @@ const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: 
     .{ .tag = 274, .ranges = &.{.{ 1, 8 }}, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 125 },
     .{ .tag = 284, .ranges = &.{.{ 1, 2 }}, .citation = "PlanarConfiguration, TIFF 6.0 p. 38", .seen = 159, .drives_decoding = true },
     .{ .tag = 290, .ranges = &.{.{ 1, 5 }}, .citation = "GrayResponseUnit, TIFF 6.0 pp. 33-34", .seen = 0 },
+    .{ .tag = 317, .ranges = &.{.{ 1, 3 }}, .citation = "Predictor, TIFF 6.0 p. 64; Adobe TN3 (2005)", .seen = 7, .drives_decoding = true },
     .{ .tag = 296, .ranges = &.{.{ 1, 3 }}, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 160 },
     .{ .tag = 332, .ranges = &.{.{ 1, 2 }}, .citation = "InkSet, TIFF 6.0 p. 70", .seen = 5 },
+    .{ .tag = 346, .ranges = &.{.{ 0, 1 }}, .citation = "Indexed, PageMaker 6.0 TIFF Technical Notes p. 11", .seen = 0 },
+    .{ .tag = 351, .ranges = &.{.{ 0, 1 }}, .citation = "OPIProxy, PageMaker 6.0 TIFF Technical Notes p. 15", .seen = 0 },
     .{ .tag = 512, .ranges = &.{ .{ 1, 1 }, .{ 14, 14 } }, .citation = "JPEGProc, TIFF 6.0 p. 104", .seen = 4 },
     .{ .tag = 517, .ranges = &.{.{ 1, 7 }}, .citation = "JPEGLosslessPredictors (one sample), TIFF 6.0 p. 106", .seen = 1 },
     .{ .tag = 531, .ranges = &.{.{ 1, 2 }}, .citation = "YCbCrPositioning, TIFF 6.0 p. 92", .seen = 43 },
@@ -2558,20 +2559,33 @@ test "IFD-entry rules: each enumerated row validates its range ends and rejects 
     const allocator = std.testing.allocator;
     for (enumerated_rows) |row| {
         for (row.ranges) |range| {
-            try expectFieldVerdict(allocator, row.tag, range[0], false);
-            try expectFieldVerdict(allocator, row.tag, range[1], false);
+            try expectRowVerdict(allocator, row.tag, range[0], false, row.drives_decoding);
+            try expectRowVerdict(allocator, row.tag, range[1], false, row.drives_decoding);
             for ([_]u32{ @as(u32, range[0]) -% 1, @as(u32, range[1]) + 1 }) |v| {
                 if (v > 65535) continue;
                 var inside = false;
                 for (row.ranges) |other| inside = inside or (v >= other[0] and v <= other[1]);
-                if (!inside) try expectFieldVerdict(allocator, row.tag, v, true);
+                if (!inside) try expectRowVerdict(allocator, row.tag, v, true, row.drives_decoding);
             }
         }
-        // Private values are never faults. A field that drives decoding is
-        // checked at rule level only, since the decoder rejects a value it
-        // cannot use whatever the rule says.
-        if (!row.drives_decoding) try expectFieldVerdict(allocator, row.tag, 40000, false);
+        // Private values are never faults.
+        try expectRowVerdict(allocator, row.tag, 40000, false, row.drives_decoding);
     }
+}
+
+/// A SHORT value of `tag` checked end to end in a built file, or at rule
+/// level for a field that drives decoding: the decoder rejects a value it
+/// cannot use (Predictor 3 on 8-bit integer data, a private
+/// PlanarConfiguration) whatever the rule says.
+fn expectRowVerdict(allocator: std.mem.Allocator, tag: u16, value: u32, corrupt: bool, drives_decoding: bool) !void {
+    if (!drives_decoding) return expectFieldVerdict(allocator, tag, value, corrupt);
+    var raw: [2]u8 = undefined;
+    std.mem.writeInt(u16, &raw, @intCast(value), .little);
+    var faults = try rowFaults(allocator, tag, .{ .typ = 3, .count = 1, .raw = &raw });
+    defer faults.deinit(allocator);
+    if (!corrupt) return std.testing.expectEqual(@as(usize, 0), faults.items.len);
+    try std.testing.expectEqual(@as(usize, 1), faults.items.len);
+    try std.testing.expectEqual(tiffz.ifd_conformance.Reason.value, faults.items[0].field_invalid.reason);
 }
 
 /// Rules with a value set whose count is not one, regressed elsewhere:
@@ -2713,6 +2727,7 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 323, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 13 },
     .{ .tag = 324, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 9 },
     .{ .tag = 325, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 9 },
+    .{ .tag = 330, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 37 },
     .{ .tag = 332, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 5 },
     .{ .tag = 333, .clean = ascii("Cyan\x00Magenta\x00"), .corrupt = ascii("Cyan\x00\x00Magenta\x00"), .reason = 3, .seen = 0 },
     .{ .tag = 334, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
@@ -2721,6 +2736,12 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 338, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .seen = 1 },
     .{ .tag = 339, .clean = short(&.{1}), .corrupt = short(&.{5}), .reason = 3, .seen = 21 },
     .{ .tag = 342, .clean = short(&.{ 0, 255, 0, 255, 0, 255 }), .corrupt = short(&.{ 0, 255, 0, 255, 0 }), .reason = 2, .seen = 0 },
+    .{ .tag = 343, .clean = .{ .typ = 1, .count = 4, .raw = "\x00\x00\x00\x00" }, .corrupt = .{ .typ = 7, .count = 4, .raw = "\x00\x00\x00\x00" }, .reason = 1, .seen = 0 },
+    .{ .tag = 344, .clean = long(&.{1000}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .seen = 0 },
+    .{ .tag = 345, .clean = .{ .typ = 9, .count = 1, .raw = le32(&.{1000}) }, .corrupt = long(&.{ 1000, 1000 }), .reason = 2, .seen = 0 },
+    .{ .tag = 346, .clean = short(&.{1}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 },
+    .{ .tag = 347, .clean = .{ .typ = 7, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .corrupt = .{ .typ = 1, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .reason = 1, .seen = 4 },
+    .{ .tag = 351, .clean = short(&.{0}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 },
     .{ .tag = 512, .clean = short(&.{1}), .corrupt = short(&.{2}), .reason = 3, .seen = 4 },
     .{ .tag = 513, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 42 },
     .{ .tag = 514, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 42 },
@@ -2734,7 +2755,9 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 530, .clean = short(&.{ 2, 2 }), .corrupt = short(&.{ 1, 2 }), .reason = 3, .seen = 18 },
     .{ .tag = 531, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 43 },
     .{ .tag = 532, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 16 },
+    .{ .tag = 32781, .clean = ascii("hires.tif\x00"), .corrupt = ascii("hires.tif"), .reason = 3, .seen = 0 },
     .{ .tag = 33432, .clean = ascii("(c) 2026\x00"), .corrupt = ascii("(c) 2026"), .reason = 3, .seen = 19 },
+    .{ .tag = 37724, .clean = .{ .typ = 7, .count = 2, .raw = "8B" }, .corrupt = ascii("8B\x00"), .reason = 1, .seen = 0 },
 };
 
 /// Rule-level verdict of one field in the 8-bit grayscale context.
