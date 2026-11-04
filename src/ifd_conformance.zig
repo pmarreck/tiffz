@@ -39,6 +39,24 @@ pub const Reason = enum(u16) {
     type = 1,
     count = 2,
     value = 3,
+    /// SamplesPerPixel, as stored or as its default of 1, is not the color
+    /// channels C the PhotometricInterpretation implies, and ExtraSamples is
+    /// absent (TIFF 6.0 p. 32: it "must be present if there are extra
+    /// samples"). A mismatch between fields, not an invalid value of the
+    /// entry it is anchored on (validate, 2026-11-04). The payload carries
+    /// a `ChannelMismatch`.
+    channel_mismatch = 4,
+};
+
+/// What a `channel_mismatch` compared: the photometric, the SamplesPerPixel
+/// used (stored, or the default 1 when absent, p. 39) and the channel counts
+/// C the photometric allows (equal when it allows one).
+pub const ChannelMismatch = struct {
+    photometric: u16,
+    samples: u16,
+    samples_stored: bool,
+    channels_a: u16,
+    channels_b: u16,
 };
 
 pub const Fault = union(enum) {
@@ -53,6 +71,8 @@ pub const Fault = union(enum) {
         /// The value/offset slot read as an unsigned integer in the file's
         /// byte order: u32 for classic TIFF, u64 for BigTIFF.
         raw_slot: u64,
+        /// Set for `Reason.channel_mismatch` only.
+        channels: ?ChannelMismatch = null,
     },
 
     pub fn entryIndex(self: Fault) u32 {
@@ -153,6 +173,11 @@ const Extra = enum {
     /// neither SamplesPerPixel nor ExtraSamples is present: the default of
     /// one sample must suit the photometric.
     channels_without_samples_per_pixel,
+    /// PhotometricInterpretation 3: "ColorMap must be present" (TIFF 6.0 p. 37).
+    palette_has_color_map,
+    /// BitsPerSample of a transparency mask (PhotometricInterpretation 4):
+    /// "SamplesPerPixel and BitsPerSample must be 1" (TIFF 6.0 p. 37).
+    one_bit_for_transparency_mask,
 };
 
 const Rule = struct {
@@ -176,9 +201,9 @@ pub const rules = [_]Rule{
     .{ .tag = tags.subfile_type, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 pp. 40-41" },
     .{ .tag = tags.image_width, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
     .{ .tag = tags.image_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
-    .{ .tag = tags.bits_per_sample, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 29" },
+    .{ .tag = tags.bits_per_sample, .kind = .unsigned_short, .count = .samples_per_pixel, .extras = &.{.one_bit_for_transparency_mask}, .citation = "TIFF 6.0 pp. 29, 37" },
     .{ .tag = tags.compression, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 10 }}, .citation = "TIFF 6.0 pp. 30, 49, 104 (1-7); Photoshop TIFF Technical Notes (8); RFC 3949 pp. 44, 56 (9, 10)" },
-    .{ .tag = tags.photometric, .kind = .unsigned_short, .count = .one, .values = &.{ .{ 0, 6 }, .{ 8, 10 } }, .extras = &.{ .not_palette_or_mask_with_jpeg, .channels_without_samples_per_pixel }, .citation = "TIFF 6.0 p. 37 (0-6, 8); Photoshop TIFF Technical Notes (9); RFC 3949 p. 48 (10); TIFF Technical Note 2 (not 3 or 4 with JPEG); TIFF 6.0 p. 32 (channels, when SamplesPerPixel is absent)" },
+    .{ .tag = tags.photometric, .kind = .unsigned_short, .count = .one, .values = &.{ .{ 0, 6 }, .{ 8, 10 } }, .extras = &.{ .not_palette_or_mask_with_jpeg, .channels_without_samples_per_pixel, .palette_has_color_map }, .citation = "TIFF 6.0 p. 37 (0-6, 8); Photoshop TIFF Technical Notes (9); RFC 3949 p. 48 (10); TIFF Technical Note 2 (not 3 or 4 with JPEG); TIFF 6.0 p. 32 (channels, when SamplesPerPixel is absent); TIFF 6.0 p. 37 (palette needs ColorMap)" },
     .{ .tag = tags.threshholding, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 41" },
     .{ .tag = tags.cell_width, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 29" },
     .{ .tag = tags.cell_length, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 29" },
@@ -275,7 +300,6 @@ pub const rules = [_]Rule{
 pub const Pending = struct { what: []const u8, citation: []const u8, waits_for: []const u8 };
 pub const pending = [_]Pending{
     .{ .what = "NewSubfileType bits", .citation = "TIFF 6.0 p. 36", .waits_for = "DNG (TIFF-FX adds bit 4, MRC, RFC 3949 p. 64)" },
-    .{ .what = "PhotometricInterpretation 3 needs ColorMap; 4 needs BitsPerSample 1", .citation = "TIFF 6.0 p. 37", .waits_for = "the next TIFF 6.0 cross-field increment, after ExtraSamples" },
     .{ .what = "DCT JPEG multi-strip RowsPerStrip and tile sizes are MCU multiples, and SOF sampling factors equal YCbCrSubSampling", .citation = "TIFF Technical Note 2", .waits_for = "a finding that cites the entry and the SOF offset, checked where the SOF is parsed (Namespace B sign-off)" },
 };
 
@@ -323,6 +347,7 @@ pub fn check(
                 .raw_type = entry.raw_type,
                 .raw_count = entry.count,
                 .raw_slot = rawSlot(entry, dir.offset_width, endian),
+                .channels = if (reason == .channel_mismatch) channelMismatch(dir, endian) else null,
             } });
         }
     }
@@ -439,18 +464,39 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
         },
         .not_with_rows_per_strip => if (indexOf(dir, tags.rows_per_strip) != null) return .value,
         .channels_plus_extra_samples => {
+            const c = channels(dir, endian) orelse continue;
             if (entry.tag == tags.extra_samples) {
                 const samples = scalar(dir, tags.samples_per_pixel, endian) orelse
                     if (indexOf(dir, tags.samples_per_pixel) == null) 1 else continue;
-                if (!channelsFit(dir, endian, samples, entry.count)) return .count;
-            } else if (indexOf(dir, tags.extra_samples) == null) {
+                // A palette or mask with SamplesPerPixel other than 1 is
+                // reported on SamplesPerPixel alone (p. 37).
+                if (c.one_sample_only and samples != 1) continue;
+                if (!c.fits(samples, entry.count)) return .count;
+            } else {
                 const samples = element(bytes, entry.field_type, 0, endian) orelse return .count;
-                if (!channelsFit(dir, endian, samples, 0)) return .value;
+                // "SamplesPerPixel must be 1" for palette and transparency
+                // mask (p. 37), whatever ExtraSamples says.
+                if (c.one_sample_only and samples != 1) return .value;
+                if (indexOf(dir, tags.extra_samples) == null and !c.fits(samples, 0)) return .channel_mismatch;
             }
         },
         .channels_without_samples_per_pixel => {
             if (indexOf(dir, tags.samples_per_pixel) != null or indexOf(dir, tags.extra_samples) != null) continue;
-            if (!channelsFit(dir, endian, 1, 0)) return .value;
+            const c = channels(dir, endian) orelse continue;
+            if (!c.fits(1, 0)) return .channel_mismatch;
+        },
+        .palette_has_color_map => {
+            const value = element(bytes, entry.field_type, 0, endian) orelse return .count;
+            if (value == tags.photometric_palette and indexOf(dir, tags.colormap) == null) return .value;
+        },
+        .one_bit_for_transparency_mask => {
+            const photometric = scalar(dir, tags.photometric, endian) orelse continue;
+            if (photometric != tags.photometric_transparency_mask) continue;
+            var k: usize = 0;
+            while (k < entry.count) : (k += 1) {
+                const bits = element(bytes, entry.field_type, k, endian) orelse return .count;
+                if (bits != 1) return .value;
+            }
         },
         .multiple_of_16, .date_time => {},
     };
@@ -465,29 +511,61 @@ fn hasExtra(rule: Rule, extra: Extra) bool {
 /// PhotometricInterpretation implies (validate's table, 2026-11-04). True
 /// when the photometric is absent, malformed, private or undefined (each its
 /// own fault or no constraint), or when an ink field it needs is malformed.
-fn channelsFit(dir: *const Ifd, endian: Endian, samples: u64, extra: u64) bool {
-    const photometric = scalar(dir, tags.photometric, endian) orelse return true;
+const Channels = struct {
+    photometric: u16,
+    /// The channel counts C allowed; equal when only one is.
+    a: u64,
+    b: u64,
+    /// Palette and transparency mask: "SamplesPerPixel must be 1" (p. 37).
+    one_sample_only: bool = false,
+
+    fn fits(self: Channels, samples: u64, extra: u64) bool {
+        return samples == self.a + extra or samples == self.b + extra;
+    }
+};
+
+/// The color channels C the PhotometricInterpretation implies (validate's
+/// table, 2026-11-04), or null when the photometric is absent, malformed,
+/// private or undefined (each its own fault or no constraint), or when an
+/// ink field it needs is malformed.
+fn channels(dir: *const Ifd, endian: Endian) ?Channels {
+    const photometric = scalar(dir, tags.photometric, endian) orelse return null;
+    const p: u16 = std.math.cast(u16, photometric) orelse return null;
     return switch (photometric) {
         // WhiteIsZero and BlackIsZero (p. 37).
-        0, 1 => samples == 1 + extra,
-        // Palette and transparency mask: "SamplesPerPixel must be 1" (p. 37),
-        // so no extra samples either.
-        3, 4 => samples == 1 and extra == 0,
+        0, 1 => .{ .photometric = p, .a = 1, .b = 1 },
+        // Palette and transparency mask (p. 37).
+        3, 4 => .{ .photometric = p, .a = 1, .b = 1, .one_sample_only = true },
         // RGB (p. 24) and YCbCr (p. 94).
-        2, 6 => samples == 3 + extra,
+        2, 6 => .{ .photometric = p, .a = 3, .b = 3 },
         // Separated: NumberOfInks, default 4 (p. 70). With InkSet 1 (CMYK,
         // the default) and NumberOfInks other than 4, either is accepted.
         5 => blk: {
             const inks = scalar(dir, tags.number_of_inks, endian) orelse
-                if (indexOf(dir, tags.number_of_inks) == null) 4 else break :blk true;
+                if (indexOf(dir, tags.number_of_inks) == null) 4 else return null;
             const ink_set = scalar(dir, tags.ink_set, endian) orelse
-                if (indexOf(dir, tags.ink_set) == null) 1 else break :blk true;
-            break :blk samples == inks + extra or (ink_set == 1 and samples == 4 + extra);
+                if (indexOf(dir, tags.ink_set) == null) 1 else return null;
+            break :blk .{ .photometric = p, .a = inks, .b = if (ink_set == 1) 4 else inks };
         },
         // CIELab (p. 111), ICCLab (Photoshop notes) and ITULab (RFC 3949):
         // L* may stand alone.
-        8, 9, 10 => samples == 3 + extra or samples == 1 + extra,
-        else => true,
+        8, 9, 10 => .{ .photometric = p, .a = 3, .b = 1 },
+        else => null,
+    };
+}
+
+/// The detail of a `channel_mismatch` in `dir`; null if there is none.
+fn channelMismatch(dir: *const Ifd, endian: Endian) ?ChannelMismatch {
+    const c = channels(dir, endian) orelse return null;
+    const stored = indexOf(dir, tags.samples_per_pixel) != null;
+    const samples = if (stored) scalar(dir, tags.samples_per_pixel, endian) orelse return null else 1;
+    const sat = std.math.maxInt(u16);
+    return .{
+        .photometric = c.photometric,
+        .samples = std.math.cast(u16, samples) orelse sat,
+        .samples_stored = stored,
+        .channels_a = std.math.cast(u16, c.a) orelse sat,
+        .channels_b = std.math.cast(u16, c.b) orelse sat,
     };
 }
 
@@ -593,8 +671,16 @@ pub const unsorted_payload_len = 20;
 
 /// Payload of finding 18 `tag_field_invalid`, little-endian: u32 IFD index,
 /// u32 entry index, u64 absolute entry offset, u16 tag, u16 reason, u16 raw
-/// type, u64 raw count, u64 raw value/offset slot (see `Fault`).
+/// type, u64 raw count, u64 raw value/offset slot (see `Fault`). Reason 4
+/// `channel_mismatch` appends `channel_mismatch_extension_len` bytes: u16
+/// PhotometricInterpretation, u16 SamplesPerPixel used, u16 1 if it is stored
+/// or 0 if absent (the default 1, TIFF 6.0 p. 39), then u16 and u16 the
+/// channel counts C allowed (equal when one is). ExtraSamples is always
+/// absent for this reason.
 pub const field_invalid_payload_len = 38;
+pub const channel_mismatch_extension_len = 10;
+/// Room for the longest payload of finding 17 or 18.
+pub const max_payload_len = field_invalid_payload_len + channel_mismatch_extension_len;
 
 /// Absolute offset of entry `entry_index` in the IFD at `ifd_offset`.
 pub fn entryOffset(ifd_offset: u64, entry_index: u32, width: ifd_mod.OffsetWidth) u64 {
@@ -605,7 +691,7 @@ pub fn entryOffset(ifd_offset: u64, entry_index: u32, width: ifd_mod.OffsetWidth
 }
 
 /// Write `fault`'s payload into `buf` and return the used prefix.
-pub fn encodePayload(fault: Fault, ifd_index: u32, entry_offset: u64, buf: *[field_invalid_payload_len]u8) []const u8 {
+pub fn encodePayload(fault: Fault, ifd_index: u32, entry_offset: u64, buf: *[max_payload_len]u8) []const u8 {
     std.mem.writeInt(u32, buf[0..4], ifd_index, .little);
     std.mem.writeInt(u32, buf[4..8], fault.entryIndex(), .little);
     std.mem.writeInt(u64, buf[8..16], entry_offset, .little);
@@ -621,7 +707,13 @@ pub fn encodePayload(fault: Fault, ifd_index: u32, entry_offset: u64, buf: *[fie
             std.mem.writeInt(u16, buf[20..22], f.raw_type, .little);
             std.mem.writeInt(u64, buf[22..30], f.raw_count, .little);
             std.mem.writeInt(u64, buf[30..38], f.raw_slot, .little);
-            return buf[0..field_invalid_payload_len];
+            const c = f.channels orelse return buf[0..field_invalid_payload_len];
+            std.mem.writeInt(u16, buf[38..40], c.photometric, .little);
+            std.mem.writeInt(u16, buf[40..42], c.samples, .little);
+            std.mem.writeInt(u16, buf[42..44], @intFromBool(c.samples_stored), .little);
+            std.mem.writeInt(u16, buf[44..46], c.channels_a, .little);
+            std.mem.writeInt(u16, buf[46..48], c.channels_b, .little);
+            return buf[0..max_payload_len];
         },
     }
 }
@@ -979,15 +1071,66 @@ test "with Compression 7, PhotometricInterpretation is not palette or transparen
         .{ .compression = 7, .photometric = 2, .fault = false },
         .{ .compression = 5, .photometric = 3, .fault = false },
     }) |case| {
+        // A 1-bit ColorMap, so that a palette fails only for JPEG.
         var entries = [_]Entry{
             inline16(tags.compression, .short, 1, case.compression),
             inline16(tags.photometric, .short, 1, case.photometric),
             inline16(tags.samples_per_pixel, .short, 1, impliedChannels(case.photometric)),
+            inline16(tags.colormap, .short, 6, 0),
         };
+        var map = [_]u8{0} ** 12;
+        var cached = [_]?[]u8{ null, null, null, &map };
+        var out = try faultsOf(&entries, &cached);
+        defer out.deinit(testing.allocator);
         if (case.fault) {
-            try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.photometric, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = case.photometric } }});
-        } else try expectFaults(&entries, &.{});
+            try testing.expectEqualDeep(@as([]const Fault, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.photometric, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = case.photometric } }}), out.items);
+        } else try testing.expectEqual(@as(usize, 0), out.items.len);
     }
+}
+
+test "a palette image needs a ColorMap, and a transparency mask one bit per sample (TIFF 6.0 p. 37)" {
+    var no_map = [_]Entry{inline16(tags.photometric, .short, 1, 3)};
+    try expectFaults(&no_map, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.photometric, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 3 } }});
+    var map = [_]u8{0} ** 12;
+    var with_map = [_]Entry{ inline16(tags.photometric, .short, 1, 3), inline16(tags.colormap, .short, 6, 0) };
+    var cached = [_]?[]u8{ null, &map };
+    var out = try faultsOf(&with_map, &cached);
+    defer out.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+    // A ColorMap without a palette is not this rule's concern.
+    var gray = [_]Entry{inline16(tags.photometric, .short, 1, 1)};
+    try expectFaults(&gray, &.{});
+
+    var mask_default = [_]Entry{inline16(tags.photometric, .short, 1, 4)};
+    try expectFaults(&mask_default, &.{});
+    var mask1 = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 1), inline16(tags.photometric, .short, 1, 4) };
+    try expectFaults(&mask1, &.{});
+    for ([_]FieldType{ .short, .byte }) |t| {
+        var mask8 = [_]Entry{ inline16(tags.bits_per_sample, t, 1, 8), inline16(tags.photometric, .short, 1, 4) };
+        try expectFaults(&mask8, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.bits_per_sample, .reason = .value, .raw_type = @intFromEnum(t), .raw_count = 1, .raw_slot = 8 } }});
+    }
+    var gray8 = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 8), inline16(tags.photometric, .short, 1, 1) };
+    try expectFaults(&gray8, &.{});
+}
+
+test "a channel mismatch says what it compared, in its payload too" {
+    // BlackIsZero with three samples and no ExtraSamples: anchored on
+    // SamplesPerPixel, which is stored.
+    var stored = [_]Entry{ inline16(tags.photometric, .short, 1, 1), inline16(tags.samples_per_pixel, .short, 1, 3) };
+    try expectFaults(&stored, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.samples_per_pixel, .reason = .channel_mismatch, .raw_type = 3, .raw_count = 1, .raw_slot = 3, .channels = .{ .photometric = 1, .samples = 3, .samples_stored = true, .channels_a = 1, .channels_b = 1 } } }});
+    // YCbCr with SamplesPerPixel absent: anchored on the photometric; the
+    // default of 1 is what fails.
+    var absent = [_]Entry{inline16(tags.photometric, .short, 1, 6)};
+    const fault: Fault = .{ .field_invalid = .{ .entry_index = 0, .tag = tags.photometric, .reason = .channel_mismatch, .raw_type = 3, .raw_count = 1, .raw_slot = 6, .channels = .{ .photometric = 6, .samples = 1, .samples_stored = false, .channels_a = 3, .channels_b = 3 } } };
+    try expectFaults(&absent, &.{fault});
+    var buf: [max_payload_len]u8 = undefined;
+    const payload = encodePayload(fault, 0, 34, &buf);
+    try testing.expectEqual(@as(usize, 48), payload.len);
+    try testing.expectEqual(@as(u16, 4), std.mem.readInt(u16, payload[18..20], .little));
+    try testing.expectEqualSlices(u8, &.{ 6, 0, 1, 0, 0, 0, 3, 0, 3, 0 }, payload[38..48]);
+    // Lab allows 3 or 1.
+    var lab = [_]Entry{ inline16(tags.photometric, .short, 1, 8), inline16(tags.samples_per_pixel, .short, 1, 2) };
+    try expectFaults(&lab, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.samples_per_pixel, .reason = .channel_mismatch, .raw_type = 3, .raw_count = 1, .raw_slot = 2, .channels = .{ .photometric = 8, .samples = 2, .samples_stored = true, .channels_a = 3, .channels_b = 1 } } }});
 }
 
 test "Technical Notes kinds: BYTE-only, UNDEFINED-only, DWORD and IFD offsets" {
@@ -1071,39 +1214,52 @@ test "SamplesPerPixel is the photometric's color channels plus the ExtraSamples 
         .{ .photometric = 1, .spp = 1 },
         .{ .photometric = 1, .spp = null },
         .{ .photometric = 1, .spp = 2, .extra = 1 },
-        .{ .photometric = 1, .spp = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 1, .spp = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .channel_mismatch } },
         .{ .photometric = 0, .spp = 3, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
         .{ .photometric = 2, .spp = 3 },
         .{ .photometric = 2, .spp = 4, .extra = 1 },
-        .{ .photometric = 2, .spp = 4, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 2, .spp = 4, .fault = .{ .tag = tags.samples_per_pixel, .reason = .channel_mismatch } },
         .{ .photometric = 2, .spp = 3, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
-        .{ .photometric = 2, .spp = null, .fault = .{ .tag = tags.photometric, .reason = .value } },
+        .{ .photometric = 2, .spp = null, .fault = .{ .tag = tags.photometric, .reason = .channel_mismatch } },
         .{ .photometric = 2, .spp = null, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
         .{ .photometric = 3, .spp = 1 },
+        // Palette and mask: SamplesPerPixel other than 1 is a value fault on
+        // it alone (p. 37); with 1, ExtraSamples is a count fault.
         .{ .photometric = 3, .spp = 3, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
-        .{ .photometric = 4, .spp = 2, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
+        .{ .photometric = 3, .spp = 2, .extra = 1, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 3, .spp = 1, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
+        .{ .photometric = 3, .spp = null, .extra = 1, .fault = .{ .tag = tags.extra_samples, .reason = .count } },
+        .{ .photometric = 4, .spp = 2, .extra = 1, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 4, .spp = 1 },
         .{ .photometric = 5, .spp = 4 },
         .{ .photometric = 5, .spp = 5, .extra = 1 },
-        .{ .photometric = 5, .spp = 3, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 5, .spp = 3, .fault = .{ .tag = tags.samples_per_pixel, .reason = .channel_mismatch } },
         .{ .photometric = 5, .spp = 2, .inks = 2 },
         .{ .photometric = 5, .spp = 4, .inks = 2 }, // InkSet 1 by default: 4 also accepted
-        .{ .photometric = 5, .spp = 4, .inks = 2, .ink_set = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 5, .spp = 4, .inks = 2, .ink_set = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .channel_mismatch } },
         .{ .photometric = 5, .spp = 6, .inks = 6, .ink_set = 2 },
         .{ .photometric = 6, .spp = 3 },
-        .{ .photometric = 6, .spp = 1, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 6, .spp = 1, .fault = .{ .tag = tags.samples_per_pixel, .reason = .channel_mismatch } },
         .{ .photometric = 8, .spp = 1 },
         .{ .photometric = 8, .spp = 3 },
         .{ .photometric = 9, .spp = 4, .extra = 1 },
-        .{ .photometric = 10, .spp = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .value } },
+        .{ .photometric = 10, .spp = 2, .fault = .{ .tag = tags.samples_per_pixel, .reason = .channel_mismatch } },
         .{ .photometric = 32803, .spp = 1 }, // CFA: private, skipped
         .{ .photometric = 7, .spp = 9, .fault = .{ .tag = tags.photometric, .reason = .value } }, // undefined: its own fault only
     }) |case| {
-        var entries: [5]Entry = undefined;
+        var entries: [6]Entry = undefined;
         var n: usize = 0;
         entries[n] = inline16(tags.photometric, .short, 1, case.photometric);
         n += 1;
         if (case.spp) |v| {
             entries[n] = inline16(tags.samples_per_pixel, .short, 1, v);
+            n += 1;
+        }
+        var cached = [_]?[]u8{null} ** 16;
+        var map = [_]u8{0} ** 12; // a 1-bit ColorMap, which palette needs (p. 37)
+        if (case.photometric == 3) {
+            entries[n] = inline16(tags.colormap, .short, 6, 0);
+            cached[n] = &map;
             n += 1;
         }
         if (case.ink_set) |v| {
@@ -1120,7 +1276,6 @@ test "SamplesPerPixel is the photometric's color channels plus the ExtraSamples 
             entries[n] = inline16(tags.extra_samples, .short, m, if (m == 2) 0x0001_0001 else 1);
             n += 1;
         }
-        var cached = [_]?[]u8{null} ** 16;
         var out = try faultsOf(entries[0..n], cached[0..n]);
         defer out.deinit(testing.allocator);
         if (case.fault) |want| {
@@ -1157,7 +1312,6 @@ test "the pending constraints are pinned" {
     // checks it, or with a ruling that it is not a constraint.
     const expected = [_][]const u8{
         "NewSubfileType bits",
-        "PhotometricInterpretation 3 needs ColorMap; 4 needs BitsPerSample 1",
         "DCT JPEG multi-strip RowsPerStrip and tile sizes are MCU multiples, and SOF sampling factors equal YCbCrSubSampling",
     };
     try testing.expectEqual(expected.len, pending.len);
@@ -1167,7 +1321,7 @@ test "the pending constraints are pinned" {
 test "entry offsets and payload layout" {
     try testing.expectEqual(@as(u64, 8 + 2 + 3 * 12), entryOffset(8, 3, .classic));
     try testing.expectEqual(@as(u64, 16 + 8 + 3 * 20), entryOffset(16, 3, .big));
-    var buf: [field_invalid_payload_len]u8 = undefined;
+    var buf: [max_payload_len]u8 = undefined;
     const unsorted = encodePayload(.{ .unsorted = .{ .entry_index = 2, .tag = 296, .prev_tag = 8476 } }, 1, 34, &buf);
     try testing.expectEqualSlices(u8, &.{ 1, 0, 0, 0, 2, 0, 0, 0, 34, 0, 0, 0, 0, 0, 0, 0, 0x28, 0x01, 0x1c, 0x21 }, unsorted);
     const invalid = encodePayload(.{ .field_invalid = .{ .entry_index = 5, .tag = 274, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 257 } }, 0, 70, &buf);

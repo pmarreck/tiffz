@@ -110,7 +110,7 @@ typedef void (*tiffz_finding_callback_t)(
 | `tiled_geometry_via_strip_tags_tolerated` (15) | none | once when complete tile geometry uses complete strip arrays and both canonical tile arrays are absent |
 | `unsupported_compression_skipped` (16) | u32 LE IFD index, u32 LE compression | per IFD skipped because tiffz never supports its compression (partial coverage) |
 | `ifd_entries_unsorted` (17) | 20 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 preceding tag | per entry whose tag is not larger than the one before it (TIFF 6.0 p. 15); verdict corrupt |
-| `tag_field_invalid` (18) | 38 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 reason (1 type, 2 count, 3 value), u16 raw type, u64 raw count, u64 raw value/offset slot | per entry that breaks its tag's rule in `src/ifd_conformance.zig`; verdict corrupt |
+| `tag_field_invalid` (18) | 38 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 reason (1 type, 2 count, 3 value, 4 channel mismatch), u16 raw type, u64 raw count, u64 raw value/offset slot. Reason 4 adds 10 bytes (48 in all): u16 PhotometricInterpretation, u16 SamplesPerPixel used, u16 1 if stored or 0 if absent (default 1), u16 and u16 the channel counts allowed | per entry that breaks its tag's rule in `src/ifd_conformance.zig`; verdict corrupt |
 
 Codes 17 and 18 are tiffz's only native findings with a `corrupt` verdict.
 They are proven TIFF violations (validate's ruling, 2026-11-03), so

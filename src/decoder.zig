@@ -295,7 +295,7 @@ pub const Decoder = struct {
                 .unsorted => "ifd_entries_unsorted",
                 .field_invalid => "tag_field_invalid",
             });
-            var buf: [conformance.field_invalid_payload_len]u8 = undefined;
+            var buf: [conformance.max_payload_len]u8 = undefined;
             self.emitDetailed(
                 .tiffz,
                 @intCast(@intFromEnum(finding)),

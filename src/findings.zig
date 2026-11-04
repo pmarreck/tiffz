@@ -100,8 +100,8 @@ pub const InfoFinding = enum(u32) {
     ifd_entries_unsorted = 17,
     /// An entry's type, count or value violates its tag's rule in
     /// `ifd_conformance.rules`. Verdict corrupt, as for 17. Once per
-    /// offending entry. Payload: 38 bytes, see
-    /// `ifd_conformance.field_invalid_payload_len`.
+    /// offending entry. Payload: 38 bytes, or 48 for reason 4
+    /// (`channel_mismatch`); see `ifd_conformance.field_invalid_payload_len`.
     tag_field_invalid = 18,
     _,
 };

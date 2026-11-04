@@ -301,3 +301,40 @@ without ImageWidth, ImageLength or SamplesPerPixel. The DCS 3 SubIFD is a
 160x128 three-plane thumbnail (PlanarConfiguration 2) labeled BlackIsZero.
 Per-row occurrences: ExtraSamples 0, SamplesPerPixel 1,
 PhotometricInterpretation 2.
+
+## ExtraSamples re-anchoring and the p. 37 rows (validate, 2026-11-04)
+
+validate accepted choice 2 above, and changed the anchoring:
+
+- Palette 3 or transparency mask 4 with SamplesPerPixel other than 1: one
+  value fault on SamplesPerPixel (p. 37), whether or not ExtraSamples is
+  present, and no second fault on ExtraSamples. With SamplesPerPixel 1 (or
+  absent) and ExtraSamples present, the general rule gives a count fault
+  on ExtraSamples (pp. 31-32).
+- SamplesPerPixel that is not C, with ExtraSamples absent, is a mismatch
+  between fields, not an invalid SamplesPerPixel value. It is reason 4
+  `channel_mismatch`, anchored on SamplesPerPixel, or on
+  PhotometricInterpretation when SamplesPerPixel is absent and its default
+  of 1 (p. 39) is what fails.
+
+Finding 18's payload for reason 4 is 48 bytes: the usual 38, then u16
+PhotometricInterpretation, u16 SamplesPerPixel used, u16 1 if stored or 0
+if absent, and u16, u16 for the channel counts C allowed (equal when one
+is; Lab gives 3 and 1, Separated with InkSet 1 gives NumberOfInks and 4).
+Reasons 1 to 3 keep their 38 bytes.
+
+New rows, approved the same day: PhotometricInterpretation 3 without a
+ColorMap is a value fault on PhotometricInterpretation ("ColorMap must be
+present", p. 37), and a transparency mask's BitsPerSample other than 1 is a
+value fault on BitsPerSample ("SamplesPerPixel and BitsPerSample must be
+1", p. 37). An absent BitsPerSample takes its default of 1.
+
+Corpus report (140 distinct sha256), against the build before ExtraSamples:
+no verdict changes, and the same three Kodak files as above, now reason 4.
+The KDC payload extension reads photometric 6, SamplesPerPixel 1 absent, C
+3; the DCS 3 SubIFD's reads photometric 1, SamplesPerPixel 3 stored, C 1.
+The p. 37 rows change nothing: an independent tiffdump scan finds seven
+palette IFDs, all with a ColorMap, and no transparency masks. Controlled
+reds: dropping the ColorMap rule, or the mask rule alone, failed the p. 37
+test; reporting the mismatch as a value fault failed the channel table and
+the payload test.
