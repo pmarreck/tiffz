@@ -122,19 +122,26 @@ pub const Verdict = enum(i32) {
     _,
 };
 
-/// Classify one finding from jpegz's own T.81/T.87 validator the way jpegz's
-/// classic leg classifies its findings (classifyClassicFindings, jpegz
-/// d88957b), so a TIFF consumer sees the codec's own judgment per finding.
-/// Recovered truncation and restart faults are corruption whatever their
-/// severity, all-zero Huffman padding is a known encoder defect, and an
-/// unknown marker or unchecked JFIF version leaves the outcome indeterminate.
+/// jpegz's own verdict for one finding from its T.81/T.87 validator
+/// (`jpegz.classicFindingVerdict`, exported at jpegz 37231b9), so a TIFF
+/// consumer sees the codec's judgment per finding. Recovered truncation and
+/// restart faults are corruption whatever their severity, all-zero Huffman
+/// padding is a known encoder defect, and an unknown marker or unchecked
+/// JFIF version leaves the outcome indeterminate. These are per-finding
+/// labels: never fold them into a report verdict by taking the worst one.
 pub fn classicFindingVerdict(code: @import("jpegz").FindingCode, severity: @import("jpegz").Severity) Verdict {
-    if (severity == .fail) return .corrupt;
-    return switch (code) {
-        .missing_eoi, .insufficient_data, .restart_marker_missing, .restart_marker_unexpected => .corrupt,
-        .entropy_padding_zero_bits => .known_defect,
-        .unknown_marker, .jfif_version_unchecked, .unrecognized_container, .jxl_validator_unavailable => .indeterminate,
-        else => .valid,
+    return fromStrictVerdict(@import("jpegz").classicFindingVerdict(code, severity));
+}
+
+/// The same outcome as a tiffz Verdict. The switch is exhaustive, so a
+/// verdict jpegz appends fails to compile here until tiffz maps it.
+pub fn fromStrictVerdict(verdict: @import("jpegz").StrictVerdict) Verdict {
+    return switch (verdict) {
+        .valid => .valid,
+        .corrupt => .corrupt,
+        .unsupported => .unsupported,
+        .indeterminate => .indeterminate,
+        .known_defect => .known_defect,
     };
 }
 
@@ -179,12 +186,14 @@ pub fn strictFindingVerdict(finding: @import("jpegz").StrictFinding) Verdict {
 }
 
 test "classic JPEG finding verdict follows jpegz's classification over every code and severity" {
-    // jpegz d88957b classifyClassicFindings: any fail is corrupt; recovered
-    // truncation and restart faults are corrupt at any severity; all-zero
-    // Huffman padding is a known encoder defect; an unknown marker or
-    // unchecked JFIF version leaves the result indeterminate, as do the two
-    // validateAny meta-findings. Everything else a decoder recovers from is
-    // valid.
+    // The rules tiffz relies on, as a literal table independent of jpegz's
+    // implementation: any fail is corrupt; recovered truncation and restart
+    // faults are corrupt at any severity (BDFN, 2026-11-03: a fault the
+    // decoder works around is corrupt or a known defect, never a warning);
+    // all-zero Huffman padding is a known encoder defect; an unknown marker
+    // or unchecked JFIF version leaves the result indeterminate, as do the
+    // two validateAny meta-findings. Everything else a decoder recovers from
+    // is valid. A jpegz change to any of these fails here.
     @setEvalBranchQuota(100_000);
     const testing = @import("std").testing;
     const jpegz = @import("jpegz");
