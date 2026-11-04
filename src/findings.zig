@@ -103,6 +103,14 @@ pub const InfoFinding = enum(u32) {
     /// offending entry. Payload: 38 bytes, or 48 for reason 4
     /// (`channel_mismatch`); see `ifd_conformance.field_invalid_payload_len`.
     tag_field_invalid = 18,
+    /// A Compression 7 (JPEG-in-TIFF) segment whose frame header disagrees with
+    /// the TIFF fields TIFF Technical Note 2 binds it to: RowsPerStrip or tile
+    /// sizes not in whole MCUs for a DCT SOF, or SOF sampling factors that do
+    /// not match YCbCrSubSampling or PlanarConfiguration. Verdict corrupt, as
+    /// for 17. One record per IFD per rule, with counts. Payload: 44 bytes,
+    /// see `jpeg_geometry.payload_len`. The finding's byte offset is the first
+    /// violating segment's SOF marker, exact.
+    jpeg_segment_geometry_invalid = 19,
     _,
 };
 

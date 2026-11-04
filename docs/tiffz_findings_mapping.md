@@ -111,6 +111,7 @@ typedef void (*tiffz_finding_callback_t)(
 | `unsupported_compression_skipped` (16) | u32 LE IFD index, u32 LE compression | per IFD skipped because tiffz never supports its compression (partial coverage) |
 | `ifd_entries_unsorted` (17) | 20 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 preceding tag | per entry whose tag is not larger than the one before it (TIFF 6.0 p. 15); verdict corrupt |
 | `tag_field_invalid` (18) | 38 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 reason (1 type, 2 count, 3 value, 4 channel mismatch), u16 raw type, u64 raw count, u64 raw value/offset slot. Reason 4 adds 10 bytes (48 in all): u16 PhotometricInterpretation, u16 SamplesPerPixel used, u16 1 if stored or 0 if absent (default 1), u16 and u16 the channel counts allowed | per entry that breaks its tag's rule in `src/ifd_conformance.zig`; verdict corrupt |
+| `jpeg_segment_geometry_invalid` (19) | 44 bytes LE: u32 IFD index, u32 first violating segment, u64 TIFF entry offset, u64 SOF marker offset, u16 rule (1 RowsPerStrip, 2 TileWidth, 3 TileLength, 4 sampling factors, 5 separate-plane factors), u16 SOF type, u32 TIFF value, u32 required multiple or component (index << 16 | H << 8 | V), u32 violating segments, u32 examined segments | per Compression 7 IFD and rule whose JPEG frame headers disagree with RowsPerStrip, tile sizes, YCbCrSubSampling or PlanarConfiguration (TIFF Technical Note 2); byte offset is the first violating SOF; verdict corrupt |
 
 Codes 17 and 18 are tiffz's only native findings with a `corrupt` verdict.
 They are proven TIFF violations (validate's ruling, 2026-11-03), so
@@ -177,6 +178,7 @@ forward-compat unknowns.
 | `tiled_geometry_via_strip_tags_tolerated` | warn      | `warning_message = "TIFF tile geometry uses strip offset/count tags"`  |
 | `ifd_entries_unsorted`            | fail             | detail for the `Malformed` failure: "TIFF IFD entries out of tag order" |
 | `tag_field_invalid`               | fail             | detail for the `Malformed` failure: "TIFF tag has an invalid type, count or value" |
+| `jpeg_segment_geometry_invalid`   | fail             | detail for the `Malformed` failure: "JPEG-in-TIFF segment geometry disagrees with its TIFF fields" |
 
 Notes on taxonomy:
 
@@ -310,6 +312,7 @@ pub const TiffzInfoFinding = enum(u32) {
     unsupported_compression_skipped = 16,
     ifd_entries_unsorted = 17,
     tag_field_invalid = 18,
+    jpeg_segment_geometry_invalid = 19,
     _, // forward-compat: new tiffz versions may introduce codes
 };
 
@@ -343,6 +346,7 @@ pub fn routeInfoFinding(finding: TiffzInfoFinding, payload_u32: ?u32) RoutedFind
         // The file already fails Malformed; these carry the entry detail.
         .ifd_entries_unsorted  => .{ .other = "TIFF IFD entries out of tag order" },
         .tag_field_invalid     => .{ .other = "TIFF tag has an invalid type, count or value" },
+        .jpeg_segment_geometry_invalid => .{ .other = "JPEG-in-TIFF segment geometry disagrees with its TIFF fields" },
         _                      => .{ .other = "unknown tiffz finding code" },
     };
 }

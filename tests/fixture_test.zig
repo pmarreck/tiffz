@@ -3118,3 +3118,101 @@ test "KNOWN_DEFECT controls: each synthetic exemplar and near-match fails with e
         };
     }
 }
+
+// Finding 19 `jpeg_segment_geometry_invalid` (owner-approved 2026-11-04):
+// JPEG-in-TIFF segments checked against the fields TIFF Technical Note 2
+// binds them to. The expected offsets are found independently of tiffz: the
+// SOF is the first FF C0 in the file, and TIFF entries are located by walking
+// IFD0 here.
+const JpegGeometryCase = struct {
+    path: []const u8,
+    /// IFD0 tag whose two SHORT values to overwrite before validating.
+    patch: ?struct { tag: u16, values: [2]u16 } = null,
+    /// null: validation succeeds with no finding 19.
+    want: ?struct { rule: u16, entry_tag: u16, tiff_value: u32, required: u32, violating: u32, examined: u32 } = null,
+};
+const jpeg_geometry_cases = [_]JpegGeometryCase{
+    .{ .path = "tests/fixtures/jpeg/rgb-jpeg.tif" },
+    .{ .path = "tests/fixtures/jpeg/ycbcr_jpeg.tif" },
+    .{ .path = "tests/fixtures/jpeg_geometry/rows-ok.tif" },
+    // Rule 1: RowsPerStrip 8 with 2x2 luma sampling (MCU height 16), two strips.
+    .{ .path = "tests/fixtures/jpeg_geometry/rows-bad.tif", .want = .{ .rule = 1, .entry_tag = 278, .tiff_value = 8, .required = 16, .violating = 2, .examined = 2 } },
+    // Rule 2: TileWidth 16 with 4x1 luma sampling (MCU width 32).
+    .{ .path = "tests/fixtures/jpeg_geometry/tile-width-bad.tif", .want = .{ .rule = 2, .entry_tag = 322, .tiff_value = 16, .required = 32, .violating = 1, .examined = 1 } },
+    // Rule 4 on a real file: its SOF has luma 2x2 and chroma 1x1, so
+    // YCbCrSubSampling [2, 1] disagrees on the vertical axis; component 0
+    // (luma, H 2, V 2) is reported.
+    .{ .path = "tests/fixtures/jpeg/ycbcr_jpeg.tif", .patch = .{ .tag = 530, .values = .{ 2, 1 } }, .want = .{ .rule = 4, .entry_tag = 530, .tiff_value = 0x0002_0001, .required = 0x0000_0202, .violating = 1, .examined = 1 } },
+};
+
+/// Absolute offset of IFD0's entry for `tag` in a little-endian classic TIFF.
+fn ifd0EntryOffset(bytes: []const u8, tag: u16) ?usize {
+    const ifd = std.mem.readInt(u32, bytes[4..8], .little);
+    const n = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+    for (0..n) |i| {
+        const at = ifd + 2 + 12 * i;
+        if (std.mem.readInt(u16, bytes[at..][0..2], .little) == tag) return at;
+    }
+    return null;
+}
+
+test "finding 19: JPEG-in-TIFF segment geometry against RowsPerStrip, tile sizes and YCbCrSubSampling" {
+    const allocator = std.testing.allocator;
+    for (jpeg_geometry_cases) |case| {
+        const bytes = try loadFile(allocator, case.path);
+        defer allocator.free(bytes);
+        try std.testing.expectEqualSlices(u8, "II", bytes[0..2]);
+        if (case.patch) |p| {
+            const at = ifd0EntryOffset(bytes, p.tag) orelse return error.TestUnexpectedResult;
+            std.mem.writeInt(u16, bytes[at + 8 ..][0..2], p.values[0], .little);
+            std.mem.writeInt(u16, bytes[at + 10 ..][0..2], p.values[1], .little);
+        }
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        const result = validateRecording(allocator, bytes, &recorder);
+        var records: usize = 0;
+        for (recorder.findings.items) |f| {
+            if (f.source != .tiffz) continue;
+            if (f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.ifd_entries_unsorted) or
+                f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid))
+            {
+                std.debug.print("{s}: unexpected directory finding {d}\n", .{ case.path, f.finding_code });
+                return error.TestUnexpectedResult;
+            }
+            if (f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.jpeg_segment_geometry_invalid)) continue;
+            records += 1;
+            const want = case.want orelse {
+                std.debug.print("{s}: unexpected finding 19\n", .{case.path});
+                return error.TestUnexpectedResult;
+            };
+            const p = f.payload_bytes;
+            try std.testing.expectEqual(@as(usize, 44), f.payload_len);
+            try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, f.verdict);
+            const sof = std.mem.indexOf(u8, bytes, "\xFF\xC0") orelse return error.TestUnexpectedResult;
+            const entry = ifd0EntryOffset(bytes, want.entry_tag) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[0..4], .little)); // IFD 0
+            try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[4..8], .little)); // first segment
+            try std.testing.expectEqual(@as(u64, entry), std.mem.readInt(u64, p[8..16], .little));
+            try std.testing.expectEqual(@as(u64, sof), std.mem.readInt(u64, p[16..24], .little));
+            try std.testing.expectEqual(@as(?u64, sof), f.byte_offset);
+            try std.testing.expectEqual(want.rule, std.mem.readInt(u16, p[24..26], .little));
+            try std.testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, p[26..28], .little)); // SOF0
+            try std.testing.expectEqual(want.tiff_value, std.mem.readInt(u32, p[28..32], .little));
+            try std.testing.expectEqual(want.required, std.mem.readInt(u32, p[32..36], .little));
+            try std.testing.expectEqual(want.violating, std.mem.readInt(u32, p[36..40], .little));
+            try std.testing.expectEqual(want.examined, std.mem.readInt(u32, p[40..44], .little));
+        }
+        if (case.want != null) {
+            try std.testing.expectEqual(@as(usize, 1), records);
+            std.testing.expectError(error.Malformed, result) catch |err| {
+                std.debug.print("{s}: not rejected Malformed\n", .{case.path});
+                return err;
+            };
+        } else {
+            result catch |err| {
+                std.debug.print("{s}: control failed with {s}\n", .{ case.path, @errorName(err) });
+                return err;
+            };
+        }
+    }
+}

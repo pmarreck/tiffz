@@ -300,7 +300,6 @@ pub const rules = [_]Rule{
 pub const Pending = struct { what: []const u8, citation: []const u8, waits_for: []const u8 };
 pub const pending = [_]Pending{
     .{ .what = "NewSubfileType bits", .citation = "TIFF 6.0 p. 36", .waits_for = "DNG (TIFF-FX adds bit 4, MRC, RFC 3949 p. 64)" },
-    .{ .what = "DCT JPEG multi-strip RowsPerStrip and tile sizes are MCU multiples, and SOF sampling factors equal YCbCrSubSampling", .citation = "TIFF Technical Note 2", .waits_for = "a finding that cites the entry and the SOF offset, checked where the SOF is parsed (Namespace B sign-off)" },
 };
 
 comptime {
@@ -1312,7 +1311,6 @@ test "the pending constraints are pinned" {
     // checks it, or with a ruling that it is not a constraint.
     const expected = [_][]const u8{
         "NewSubfileType bits",
-        "DCT JPEG multi-strip RowsPerStrip and tile sizes are MCU multiples, and SOF sampling factors equal YCbCrSubSampling",
     };
     try testing.expectEqual(expected.len, pending.len);
     for (expected, pending) |want, got| try testing.expectEqualStrings(want, got.what);

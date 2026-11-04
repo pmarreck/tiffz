@@ -39,3 +39,39 @@ coverage findings name what was not examined; no extra marker is needed.
 
 Use `jpegz.frameHeader` (jpegz 6f2b881, CI-green at 38a348b) instead of an own
 SOF scanner, with a differential check against jpegz decode over the corpus.
+
+## Delivery notes (2026-11-04)
+
+- The frame header is read with `jpegz.frameHeader` (jpegz 38a348b) where the
+  JPEG branch of the decoder already holds each segment's bytes, so no
+  segment is read twice. A segment the decoder retries with a larger buffer
+  is counted once.
+- Rule 4 reports, in its required field, the first component that breaks it:
+  index 2 when the chroma components disagree, index 0 (luma) when luma is
+  not YCbCrSubSampling times chroma, and for other photometrics the first
+  component that differs from component 0. The TIFF value is
+  YCbCrSubSampling packed H << 16 | V for YCbCr, otherwise the photometric.
+- The cited entry is RowsPerStrip, TileWidth, TileLength, PlanarConfiguration,
+  or YCbCrSubSampling (PhotometricInterpretation when the default [2, 2]
+  applies or the image is not YCbCr).
+- A malformed YCbCrSubSampling (its own finding 18) disables rule 4 for that
+  IFD rather than standing in for a value.
+
+## Corpus report (140 distinct sha256, pinned manifest)
+
+No verdict changes. tiffz emits no finding 19 on any corpus file. An
+independent oracle (its own TIFF walk, JPEG marker walk to the first SOFn and
+rules) finds 25 Compression 7 IFDs and predicts rule 4 on five DNG preview
+IFDs whose JPEGs are 4:2:2 (luma 2x1) while YCbCrSubSampling is absent, so the
+default [2, 2] applies (libtiff warns about the same mismatch):
+
+| file | sha256 | IFDs | why tiffz does not reach them |
+|---|---|---|---|
+| Leica M11 DNG (validate ground truth), 78877156 bytes | bb85af7615824dd3afd44d9da0bfa6a9ec5e3d7bb5bcf48e11fbd10752a8cc45 | four preview SubIFDs | already invalid: the walk stops at IFD0 (JpegInTiffPayload) |
+| Ricoh GR DNG (raw.pixls.us, CC0), 12129815 bytes | 7ceec1ea31c56b6e0414202504581b915f17818ffe018b4c8bba1393332c405e | one preview SubIFD | already invalid: a jpegz corrupt finding in another SubIFD stops the walk |
+
+With copies whose header points straight at each preview SubIFD, tiffz and
+the oracle agree on every record: rule 4, one violating of one examined
+segment, TIFF value 0x00020002, component 0 with H 2, V 1. The pattern is a
+producer pattern candidate that would surface if those files' other faults
+were absent; validate was asked how to treat it.

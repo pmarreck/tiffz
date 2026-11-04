@@ -33,6 +33,7 @@ const compressions_lerc = @import("compressions/lerc.zig");
 const predictors_mod = @import("predictors.zig");
 const findings_mod = @import("findings.zig");
 const conformance = @import("ifd_conformance.zig");
+const jpeg_geometry = @import("jpeg_geometry.zig");
 
 /// One tag 330 value plus the directory that named it. The parent index is
 /// how a pointer back at an ancestor is told from a second name for a page
@@ -124,6 +125,12 @@ pub const Decoder = struct {
     active_chunk_offset: ?u64 = null,
     /// Rows fully decoded before CCITT T.6 EOFB. Absent unless that outcome fired.
     facsimile_rows: ?u32 = null,
+    /// Finding 19 evidence for the Compression 7 IFD being validated: each
+    /// segment's frame header, read where the JPEG branch holds its bytes.
+    /// Null outside `validatePages`.
+    jpeg_geometry: ?*jpeg_geometry.Accumulator = null,
+    /// Index of the chunk `validatePages` is decoding, for `jpeg_geometry`.
+    active_chunk_index: u32 = 0,
 
     pub fn open(allocator: Allocator, source: Source) errors.Error!Decoder {
         return openWithLimits(allocator, source, .{});
@@ -742,9 +749,21 @@ pub const Decoder = struct {
                 self.noteDiscrepancy(.warning, self.ifdFileOffset(ifd_index), "tiled_geometry_via_strip_tags_tolerated");
             }
 
+            // Finding 19: each Compression 7 segment's frame header is checked
+            // against the fields TIFF Technical Note 2 binds it to. The JPEG
+            // branch of `decodeBytes` feeds the accumulator as it reads each
+            // segment; the records are emitted once the IFD's walk ends.
+            var geometry: ?jpeg_geometry.Accumulator = null;
+            if (((try readScalarU16(dir.*, tags.compression, self.endian)) orelse tags.compression_none) == tags.compression_jpeg) {
+                geometry = .{ .fields = try self.jpegGeometryFields(dir, ifd_index, layout) };
+                self.jpeg_geometry = &geometry.?;
+            }
+            defer self.jpeg_geometry = null;
+
             var chunk_index: u32 = 0;
             while (chunk_index < layout.count) : (chunk_index += 1) {
                 self.active_chunk_offset = self.chunkFileOffset(dir, layout, chunk_index);
+                self.active_chunk_index = chunk_index;
                 const ext = self.expectedChunkBytes(dir, layout.kind, chunk_index, layout.count) catch |err| {
                     self.noteFileClaim(err, self.active_chunk_offset);
                     return err;
@@ -785,8 +804,77 @@ pub const Decoder = struct {
                     return err;
                 };
             }
+            if (geometry) |*g| {
+                if (self.emitJpegGeometry(g, ifd_index)) nonconforming = true;
+            }
         }
         if (nonconforming) return error.Malformed;
+    }
+
+    /// The fields finding 19 checks one Compression 7 IFD's segments against,
+    /// with the absolute offset of each entry a record cites. A field whose
+    /// own encoding is malformed (finding 18's business) disables the rules
+    /// that need it rather than standing in with a guess.
+    fn jpegGeometryFields(self: *Decoder, dir: *const Ifd, ifd_index: usize, layout: ChunkLayout) errors.Error!jpeg_geometry.Fields {
+        const length = readScalarU32(dir.*, tags.image_length, self.endian) catch null;
+        const rows = readScalarU32(dir.*, tags.rows_per_strip, self.endian) catch null;
+        const photometric = readScalarU16(dir.*, tags.photometric, self.endian) catch null;
+        const planar = (readScalarU16(dir.*, tags.planar_configuration, self.endian) catch null) orelse 1;
+        const subsampling: ?[2]u16 = readYCbCrSubSampling(dir.*, self.endian) catch null;
+        const photometric_entry = self.tagEntryOffset(dir, ifd_index, tags.photometric);
+        return .{
+            .tiled = layout.kind == .tile,
+            // An absent or unreadable RowsPerStrip or ImageLength leaves one
+            // strip per plane as far as rule 1 can tell.
+            .multi_strip = if (rows) |r| if (length) |l| r < l else false else false,
+            .rows_per_strip = rows orelse 0,
+            .tile_width = (readScalarU32(dir.*, tags.tile_width, self.endian) catch null) orelse 0,
+            .tile_length = (readScalarU32(dir.*, tags.tile_length, self.endian) catch null) orelse 0,
+            .planar = planar,
+            .photometric = photometric,
+            .subsampling = subsampling orelse .{ 2, 2 },
+            .sampling_known = subsampling != null,
+            .rows_entry = self.tagEntryOffset(dir, ifd_index, tags.rows_per_strip),
+            .tile_width_entry = self.tagEntryOffset(dir, ifd_index, tags.tile_width),
+            .tile_length_entry = self.tagEntryOffset(dir, ifd_index, tags.tile_length),
+            .sampling_entry = if (photometric == tags.photometric_ycbcr and dir.get(tags.ycbcr_subsampling) != null)
+                self.tagEntryOffset(dir, ifd_index, tags.ycbcr_subsampling)
+            else
+                photometric_entry,
+            .planar_entry = self.tagEntryOffset(dir, ifd_index, tags.planar_configuration),
+        };
+    }
+
+    /// Absolute offset of `tag`'s entry in IFD `ifd_index`, or 0 when absent.
+    fn tagEntryOffset(self: *Decoder, dir: *const Ifd, ifd_index: usize, tag: u16) u64 {
+        const base = self.ifdFileOffset(ifd_index) orelse return 0;
+        for (dir.entries, 0..) |entry, i| {
+            if (entry.tag == tag) return conformance.entryOffset(base, @intCast(i), dir.offset_width);
+        }
+        return 0;
+    }
+
+    /// Emit one corrupt finding 19 per rule `acc` saw violated; true if any.
+    fn emitJpegGeometry(self: *Decoder, acc: *const jpeg_geometry.Accumulator, ifd_index: usize) bool {
+        var any = false;
+        inline for (@typeInfo(jpeg_geometry.Rule).@"enum".fields) |field| {
+            if (acc.record(@enumFromInt(field.value))) |r| {
+                any = true;
+                self.noteDiscrepancy(.@"error", r.sof_offset, "jpeg_segment_geometry_invalid");
+                var buf: [jpeg_geometry.payload_len]u8 = undefined;
+                self.emitDetailed(
+                    .tiffz,
+                    @intCast(@intFromEnum(findings_mod.InfoFinding.jpeg_segment_geometry_invalid)),
+                    null,
+                    .corrupt,
+                    r.sof_offset,
+                    null,
+                    true,
+                    jpeg_geometry.encodePayload(r, @intCast(ifd_index), &buf),
+                );
+            }
+        }
+        return any;
     }
 
     const ChunkLayout = struct {
@@ -1516,6 +1604,16 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+
+                // Finding 19 evidence: the segment's own frame header (TN2
+                // keeps one in every strip or tile, in both modes). A header
+                // that cannot be read leaves the segment unexamined; jpegz's
+                // validation below reports why.
+                if (self.jpeg_geometry) |acc| {
+                    if (compressions_jpeg.jpegz.frameHeader(scratch[0..byte_count])) |frame| {
+                        acc.add(self.active_chunk_index, offset + frame.sof_offset, &frame);
+                    } else |_| {}
+                }
 
                 // Read JPEGTables tag (347) if present — TIFF Tech Note 2
                 // Mode 2. The value is eagerly cached on the Ifd at

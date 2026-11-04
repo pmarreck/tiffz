@@ -30,6 +30,7 @@ pub const predictors = @import("predictors.zig");
 pub const dng = @import("dng.zig");
 pub const findings = @import("findings.zig");
 pub const ifd_conformance = @import("ifd_conformance.zig");
+pub const jpeg_geometry = @import("jpeg_geometry.zig");
 pub const compressions = struct {
     pub const none = @import("compressions/none.zig");
     pub const packbits = @import("compressions/packbits.zig");

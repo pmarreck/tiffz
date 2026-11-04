@@ -45,12 +45,17 @@ Used by `docs/tiffz_coverage_matrix.md`:
   Equal integers from different sources do not collide.
 - **Verdict:** `valid`, `corrupt`, `unsupported`, `indeterminate`,
   `known_defect`. Nested strict-facade findings keep their own;
-  native tiffz INFO/WARN findings use `valid`, and findings 17 and 18
-  use `corrupt`.
+  native tiffz INFO/WARN findings use `valid`, and findings 17, 18 and
+  19 use `corrupt`.
 - **Findings 17 / 18** (`ifd_entries_unsorted`, `tag_field_invalid`):
   proven IFD-entry violations (validate's ruling, 2026-11-03). The walk
   finishes, then validation fails `Malformed`. Tolerance belongs in
   the decoder, never in the verdict.
+- **Finding 19** (`jpeg_segment_geometry_invalid`): a Compression 7
+  segment's JPEG frame header disagrees with the TIFF fields TIFF
+  Technical Note 2 binds it to (RowsPerStrip or tile sizes in whole MCUs,
+  sampling factors against YCbCrSubSampling or PlanarConfiguration). One
+  record per IFD per rule, with counts; corrupt, failing after the walk.
 - **Finding 16** (`unsupported_compression_skipped`): the walk
   skipped a never-supported compression IFD (payload: u32 LE IFD
   index, then u32 LE compression). Partial coverage, not a file-level
