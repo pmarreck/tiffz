@@ -33,7 +33,10 @@ Proprietary camera RAW is not tiffz's product. See Scope.
   CFA/opcode *parse*, ZSTD-in-TIFF, LERC, GeoTIFF tags).
 - Consumers can distinguish corrupt data, tolerated encoder deviations,
   and incomplete coverage. Nested JPEG-family findings keep their own
-  source identity and four-way verdict.
+  source identity and verdict. A JPEG fault that jpegz can work around
+  (missing EOI, cut-off data, restart-marker faults) is corrupt, and a
+  recognized encoder defect is `known_defect`. Neither is ever a mere
+  warning just because the decoder recovered (BDFN, 2026-11-03).
 - Bounded-memory validation of large TIFFs (multi-GB scans) via
   `Source`. The whole file need not sit decoded in RAM.
 - A minimal writer, in scope since 2026-10-23 by BDFN's decision:
