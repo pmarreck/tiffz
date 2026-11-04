@@ -105,7 +105,8 @@ reference) verify output. Do not copy GPL TIFF code.
 (`LICENSING_NOTES.md`, SPEC §4.)
 
 **Findings ABI.** Namespace B codes are append-only; never renumber.
-New codes need Einstein sign-off. Identity is
+New codes need Einstein sign-off. Whether a deviation is an error or a
+warning is validate's call: ask the validate agent (BDFN, 2026-11-03). Identity is
 `(source_decoder, finding_code)`. Nested jpegz/jp2z/libjxlz findings
 stay in their own source; do not flatten them into tiffz InfoFinding.
 (`docs/tiffz_findings_mapping.md`, `src/findings.zig`.)

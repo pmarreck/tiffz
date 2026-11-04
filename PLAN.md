@@ -7,8 +7,8 @@ Open work and the latest completions. Older narrative:
 
 Order (BDFN, 2026-10-23): coverage gate, then build-layout conformance, then writer and conversion CLI.
 
-- [ ] Adopt jpegz's exported per-finding classic classification once it ships (asked 2026-11-02), so tiffz stops mirroring `classifyClassicFindings` in `findings.classicFindingVerdict`.
-- [ ] Blocked on Einstein sign-off (asked 2026-11-02): add InfoFinding 17 `ifd_entries_unsorted_tolerated` and 18 `tag_value_ignored`, then raise floors. Diagnosed: all 12 accepted open cases (master 42) are IFD-entry faults in tags tiffz never reads, or unsorted entries (6), none touching samples.
+- [ ] Waiting on jpegz's revision (accepted 2026-11-03, ships after its fuzz-gate commit): repin, and replace `findings.classicFindingVerdict` with `jpegz.classicFindingVerdict`. Keep the per-finding labels; never recompute a report verdict as their max.
+- [ ] Blocked on Einstein sign-off (asked 2026-11-02) and validate's error-or-warning answer (asked 2026-11-03): add InfoFinding 17 `ifd_entries_unsorted_tolerated` and 18 `tag_value_ignored`, then raise floors. Diagnosed: all 12 accepted open cases (master 42) are IFD-entry faults in tags tiffz never reads, or unsorted entries (6), none touching samples. Cases kept in `docs/plan_context/ifd_fault_cases.md`. validate queued its ruling for a normative review (2026-11-03); keep the cases and floors until then.
 - [ ] Shared PATH cutover to `bin/<PF>` (dotfiles owner), then drop the legacy `result` and `zig-out/bin/tiffz` links from `./build`'s publish().
 
 ## Done
