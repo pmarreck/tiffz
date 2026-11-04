@@ -125,3 +125,27 @@ with the same findings minus code 17. LibRaw's unprocessed raw data and the
 extracted PreviewImage and ThumbnailImage are unchanged. validate recorded
 the pattern as a KNOWN_DEFECT candidate on 2026-11-04. Admission is the
 owner's decision, and validate will not adopt finding 17 until it is made.
+
+## Wider corpus (2026-11-04)
+
+165 real files: the 63 above, libtiff's pics-3.8.0 archive (61 TIFFs; tarball
+sha256 e0e34732b61e1ce49eff2c7a079994c856d2a5f772f5228c84678272bc6829a9), the
+11 Sony ARWs, and 30 CC0 raw.pixls.us files covering one per other maker and
+format, plus 7 more Kodak TIFF-based raws. Beyond the Sony pattern, these files
+have findings 17 or 18:
+
+| file | firmware | sha256 | bytes | finding | verdict |
+|---|---|---|---|---|---|
+| Kodak DCS760C | 3.2.8 | d0e6bd0a3339daff884e73a08fed8e75b20fe05bba438fc185e3f0bd019d0da8 | 7547392 | 18 Orientation = 9 | ok -> invalid |
+| Kodak DCS520C | 3.2.3 | d95e983bea9cf13f356e49b0f59629306bc7a51882ff20766c74ccff5f007d69 | 1970973 | 18 Orientation = 9 | invalid (other cause) |
+| Kodak DCS Pro SLR/c | 5.4.9 | dca493a81bd4f87428d1584fa4ee6a4e98c97d6540b16a7a42d25916b0fd6107 | 14920832 | 18 ResolutionUnit = 0 (new row) | ok -> invalid |
+| Samsung NX500 | (none) | 156e43118811bcecb6fcc600b5f41ee1773c4f00b6a5b2dd72e177e35f6596ab | 20750652 | 17 SubIFDs after ExifOffset in IFD0 | invalid (other cause) |
+
+exiftool flags each one too. Kodak's 3.x firmware writing Orientation 9 is a
+producer-pattern candidate with two exemplars. The other two are single files.
+All were reported to validate, and none is admitted.
+
+The corpus is pinned in `real_corpus_manifest.tsv` (sha256, size, source and
+name per file), so later reports run against the same baseline and list any
+added files explicitly. Rule rows are batched by specification section,
+with one corpus report per batch (validate, 2026-11-04).

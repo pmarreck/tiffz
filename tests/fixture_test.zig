@@ -2354,8 +2354,9 @@ fn countConformance(recorder: *const FindingRecorder) usize {
 }
 
 /// Classic little-endian 2x1 8-bit grayscale TIFF, uncompressed, with one
-/// extra field `tag` (above 279, so the entries stay sorted) of type `typ`
-/// holding `values`. The field is inline when it fits in 4 bytes.
+/// extra field `tag` of type `typ` holding `values`, placed in sorted order.
+/// The field is inline when it fits in 4 bytes. `tag` must not be one of
+/// the nine baseline tags the builder writes itself.
 fn grayWithField(allocator: std.mem.Allocator, tag: u16, typ: u16, values: []const u32) ![]u8 {
     const width: u32 = switch (typ) {
         1 => 1,
@@ -2382,7 +2383,8 @@ fn grayWithField(allocator: std.mem.Allocator, tag: u16, typ: u16, values: []con
         2 => std.mem.writeInt(u16, data[2 * i ..][0..2], @intCast(v), .little),
         else => std.mem.writeInt(u32, data[4 * i ..][0..4], v, .little),
     };
-    const entries = [_]struct { tag: u16, typ: u16, count: u32 = 1, val: u32 }{
+    const Built = struct { tag: u16, typ: u16, count: u32 = 1, val: u32 };
+    var entries = [_]Built{
         .{ .tag = 256, .typ = 4, .val = 2 },
         .{ .tag = 257, .typ = 4, .val = 1 },
         .{ .tag = 258, .typ = 3, .val = 8 },
@@ -2394,6 +2396,12 @@ fn grayWithField(allocator: std.mem.Allocator, tag: u16, typ: u16, values: []con
         .{ .tag = 279, .typ = 4, .val = 2 },
         .{ .tag = tag, .typ = typ, .count = @intCast(values.len), .val = if (out_of_line) field_off else std.mem.readInt(u32, &slot, .little) },
     };
+    std.mem.sort(Built, &entries, {}, struct {
+        fn lt(_: void, a: Built, b: Built) bool {
+            return a.tag < b.tag;
+        }
+    }.lt);
+    for (entries[1..], 0..) |entry, i| std.debug.assert(entry.tag != entries[i].tag);
     for (entries, 0..) |entry, i| {
         const at = 10 + i * 12;
         putU16(buf, at, entry.tag);
@@ -2431,6 +2439,78 @@ test "IFD-entry rules: SampleFormat and TransferFunction stored as BYTE or LONG 
         };
         try std.testing.expectEqual(@as(usize, 0), countConformance(&recorder));
     }
+}
+
+/// Every single-value enumerated rule, written out independently of
+/// `ifd_conformance.rules` so that dropping or narrowing a row fails here.
+/// `seen` counts the directories carrying the tag across the pinned 165-file
+/// corpus (docs/plan_context/real_corpus_manifest.tsv), as exiftool 13.59 reports
+/// them; 0 means the row rests on the specification text alone.
+const enumerated_rows = [_]struct { tag: u16, lo: u16, hi: u16, citation: []const u8, seen: u32 }{
+    .{ .tag = 255, .lo = 1, .hi = 3, .citation = "SubfileType, TIFF 6.0 pp. 40-41", .seen = 5 },
+    .{ .tag = 263, .lo = 1, .hi = 3, .citation = "Threshholding, TIFF 6.0 p. 41", .seen = 0 },
+    .{ .tag = 266, .lo = 1, .hi = 2, .citation = "FillOrder, TIFF 6.0 p. 32", .seen = 27 },
+    .{ .tag = 274, .lo = 1, .hi = 8, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 149 },
+    .{ .tag = 290, .lo = 1, .hi = 5, .citation = "GrayResponseUnit, TIFF 6.0 pp. 33-34", .seen = 0 },
+    .{ .tag = 296, .lo = 1, .hi = 3, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 182 },
+    .{ .tag = 332, .lo = 1, .hi = 2, .citation = "InkSet, TIFF 6.0 p. 70", .seen = 5 },
+    .{ .tag = 531, .lo = 1, .hi = 2, .citation = "YCbCrPositioning, TIFF 6.0 p. 92", .seen = 50 },
+};
+
+fn expectFieldVerdict(allocator: std.mem.Allocator, tag: u16, value: u32, corrupt: bool) !void {
+    const bytes = try grayWithField(allocator, tag, 3, &.{value});
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const result = validateRecording(allocator, bytes, &recorder);
+    if (!corrupt) {
+        result catch |err| {
+            std.debug.print("tag {d} = {d}: unexpected {s}\n", .{ tag, value, @errorName(err) });
+            return err;
+        };
+        try std.testing.expectEqual(@as(usize, 0), countConformance(&recorder));
+        return;
+    }
+    std.testing.expectError(error.Malformed, result) catch |err| {
+        std.debug.print("tag {d} = {d} was not rejected\n", .{ tag, value });
+        return err;
+    };
+    var matched: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+        try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, f.verdict);
+        try std.testing.expectEqual(tag, std.mem.readInt(u16, f.payload_bytes[16..18], .little));
+        try std.testing.expectEqual(@as(u16, 3), std.mem.readInt(u16, f.payload_bytes[18..20], .little));
+        matched += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), matched);
+}
+
+test "IFD-entry rules: each enumerated row validates its range ends and rejects the values just outside" {
+    const allocator = std.testing.allocator;
+    for (enumerated_rows) |row| {
+        try expectFieldVerdict(allocator, row.tag, row.lo, false);
+        try expectFieldVerdict(allocator, row.tag, row.hi, false);
+        try expectFieldVerdict(allocator, row.tag, row.lo - 1, true);
+        try expectFieldVerdict(allocator, row.tag, row.hi + 1, true);
+        // Private values are never faults.
+        try expectFieldVerdict(allocator, row.tag, 40000, false);
+    }
+}
+
+test "IFD-entry rules: the independent row list and the rule table name the same single-value tags" {
+    var table_count: usize = 0;
+    for (tiffz.ifd_conformance.rules) |rule| {
+        if (rule.count != .one) continue;
+        table_count += 1;
+        var found = false;
+        for (enumerated_rows) |row| found = found or row.tag == rule.tag;
+        if (!found) {
+            std.debug.print("rule for tag {d} has no row in enumerated_rows\n", .{rule.tag});
+            return error.TestExpectedEqual;
+        }
+    }
+    try std.testing.expectEqual(enumerated_rows.len, table_count);
 }
 
 test "IFD-entry rules: a LONG SampleFormat or TransferFunction value above 65535 is corrupt" {

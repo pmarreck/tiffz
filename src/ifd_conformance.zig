@@ -90,10 +90,16 @@ const Rule = struct {
 /// One row per constrained tag. Growing this table to every tag a claimed
 /// specification constrains is tracked in PLAN.md.
 pub const rules = [_]Rule{
+    .{ .tag = tags.subfile_type, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 pp. 40-41" },
+    .{ .tag = tags.threshholding, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 41" },
     .{ .tag = tags.fill_order, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 32" },
     .{ .tag = tags.orientation, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 8 }}, .citation = "TIFF 6.0 pp. 36-37" },
+    .{ .tag = tags.gray_response_unit, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 5 }}, .citation = "TIFF 6.0 pp. 33-34" },
+    .{ .tag = tags.resolution_unit, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 38" },
     .{ .tag = tags.transfer_function, .kind = .unsigned_short, .count = .transfer_function, .values = null, .citation = "TIFF 6.0 p. 84" },
+    .{ .tag = tags.ink_set, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 70" },
     .{ .tag = tags.sample_format, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 4 }}, .citation = "TIFF 6.0 p. 80" },
+    .{ .tag = tags.ycbcr_positioning, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 92" },
 };
 
 comptime {
@@ -334,6 +340,32 @@ test "BYTE, SHORT and LONG are all acceptable for an unsigned scalar, other type
         var entries = [_]Entry{inline16(tags.fill_order, t, 1, 1)};
         try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.fill_order, .reason = .type, .raw_type = @intFromEnum(t), .raw_count = 1, .raw_slot = 1 } }});
     }
+}
+
+test "every single-value rule accepts its range ends and rejects the values just outside" {
+    var checked: usize = 0;
+    for (rules) |rule| {
+        if (rule.count != .one) continue;
+        const ranges = rule.values orelse continue;
+        for (ranges) |range| {
+            for ([_]u16{ range[0], range[1] }) |v| {
+                var ok = [_]Entry{inline16(rule.tag, .short, 1, v)};
+                try expectFaults(&ok, &.{});
+            }
+            for ([_]u32{ range[0] -% 1, range[1] + 1 }) |v| {
+                if (v >= 32768) continue; // private, never a fault
+                var inside = false;
+                for (ranges) |other| inside = inside or (v >= other[0] and v <= other[1]);
+                if (inside) continue;
+                var bad = [_]Entry{inline16(rule.tag, .short, 1, v)};
+                try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = v } }});
+            }
+            checked += 1;
+        }
+        var two = [_]Entry{inline16(rule.tag, .short, 2, ranges[0][0] | (@as(u32, ranges[0][0]) << 16))};
+        try expectFaults(&two, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .count, .raw_type = 3, .raw_count = 2, .raw_slot = ranges[0][0] | (@as(u32, ranges[0][0]) << 16) } }});
+    }
+    try testing.expect(checked >= 8);
 }
 
 test "out-of-range public values are invalid; private-range values are not" {
