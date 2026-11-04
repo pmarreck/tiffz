@@ -236,3 +236,27 @@ extracted previews are identical in all six.
    for PlanarConfiguration 2; and tiffz's own bounded SOF scan for now, with
    a differential test against jpegz, until jpegz offers a frame-header API.
    The number needs Einstein, so the rule waits in `ifd_conformance.pending`.
+
+## ExtraSamples count ruling (validate, 2026-11-04)
+
+m is the count of ExtraSamples, or 0 when the field is absent. It must equal
+SamplesPerPixel - C, where C is the number of color channels the photometric
+implies. ExtraSamples (p. 32): "This field must be present if there are extra
+samples", and readers "must not assume a particular SamplesPerPixel value based
+on the value of the PhotometricInterpretation field". C is:
+
+- 1 for 0 and 1, the one-component WhiteIsZero and BlackIsZero definitions
+  (p. 37).
+- 3 for RGB 2 (p. 24).
+- 1 for palette 3 and transparency mask 4 ("SamplesPerPixel must be 1",
+  p. 37).
+- NumberOfInks for Separated 5, default 4 (p. 70), for any InkSet. With
+  InkSet 1 (CMYK) and an explicit NumberOfInks other than 4, either value is
+  accepted.
+- 3 for YCbCr 6 (p. 94).
+- 3 or 1 for CIELab 8 (p. 111), ICCLab 9 (Photoshop notes) and ITULab 10
+  (RFC 3949), since L* may stand alone.
+
+Private photometrics are skipped. A wrong count with ExtraSamples present is a
+count fault on ExtraSamples. With it absent, the mismatch is reported once on
+SamplesPerPixel, since the file cannot say which field is wrong.

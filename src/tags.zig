@@ -142,3 +142,19 @@ pub const indexed: u16 = 346;                // 0x015A; SHORT, 0-1 (PageMaker 6.
 pub const opi_proxy: u16 = 351;              // 0x015F; SHORT, 0-1 (PageMaker 6.0 notes)
 pub const image_id: u16 = 32781;             // 0x800D; ASCII (PageMaker 6.0 notes)
 pub const image_source_data: u16 = 37724;    // 0x935C; UNDEFINED (Photoshop TIFF Technical Notes)
+
+/// TIFF-FX fields (RFC 3949, which obsoletes RFC 2301) checked by ifd_conformance.
+pub const bad_fax_lines: u16 = 326;          // 0x0146; SHORT or LONG, N = 1
+pub const clean_fax_data: u16 = 327;         // 0x0147; SHORT, 0-2
+pub const consecutive_bad_fax_lines: u16 = 328; // 0x0148; LONG or SHORT, N = 1
+pub const global_parameters_ifd: u16 = 400;  // 0x0190; IFD or LONG
+pub const profile_type: u16 = 401;           // 0x0191; LONG, 0-1
+pub const fax_profile: u16 = 402;            // 0x0192; BYTE, 0-6
+pub const coding_methods: u16 = 403;         // 0x0193; LONG bit flags
+pub const version_year: u16 = 404;           // 0x0194; BYTE[4], e.g. '1997'
+pub const mode_number: u16 = 405;            // 0x0195; BYTE
+pub const decode: u16 = 433;                 // 0x01B1; SRATIONAL[2 * SamplesPerPixel]
+pub const image_base_color: u16 = 434;       // 0x01B2; SHORT[SamplesPerPixel] (RFC 2301: DefaultImageColor)
+pub const t82_options: u16 = 435;            // 0x01B3; LONG (RFC 3949 only)
+pub const strip_row_counts: u16 = 559;       // 0x022F; LONG[number of strips]
+pub const image_layer: u16 = 34732;          // 0x87AC; LONG[2] (RFC 2301: SHORT or LONG)

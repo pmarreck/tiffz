@@ -14,11 +14,19 @@
 # Set 2026-10-28 with corruption-reader 0.8.0 (a7ea995), 385 decisive
 # trials per profile. Raised 2026-11-03 for findings 17 and 18 (IFD-entry
 # rules): sniper +6/+1/+1, bolter +3/+0/+1.
+# Changed 2026-11-04 for the Compression and PhotometricInterpretation
+# value sets: sniper uncompressed 17 -> 19, checksummed 47 -> 46. The
+# new rules caught PhotometricInterpretation 1026 in rgb16.tif (round
+# 336 case 6, accepted before; libtiff accepts it too) and Compression
+# 16385 in gray16_geotiff.tif (round 273 case 20, reach before). Sniper
+# therefore reached 385 decisive trials one draw sooner, and the last
+# checksummed case (predictor3_deflate_fp32.tif round 378 case 11,
+# detected) was not drawn. No case lost detection.
 
 master=42 trials=385
-sniper uncompressed 17
+sniper uncompressed 19
 sniper unchecked 64
-sniper checksummed 47
+sniper checksummed 46
 bolter uncompressed 12
 bolter unchecked 91
 bolter checksummed 53

@@ -93,17 +93,20 @@ Per profile and class:
 - `stricter` counts detections of clean cases. These are not failures:
   tiffz caught something libtiff accepts.
 
-## Measured on 2026-11-03
+## Measured on 2026-11-04
 
 corruption-reader 0.8.0 (a7ea995), master 42, 385 decisive trials per
-profile, tiffz with findings 17 and 18 (IFD-entry rules), libtiff 4.7.2. No
-false alarms.
+profile, tiffz with findings 17 and 18 (IFD-entry rules) and the
+Compression and PhotometricInterpretation value sets, libtiff 4.7.2. No
+false alarms. Only the sniper rows differ from 2026-11-03: two more
+uncompressed detections ended the deterministic draw one case sooner,
+so one detected checksummed case was no longer drawn.
 
 | profile | class | decisive | detect | free | clean | ceiling | ceiling_est | rate | stricter |
 |---|---|---|---|---|---|---|---|---|---|
-| sniper | uncompressed | 186 | 17 | 156 | 14 | 0.161 | 0.086 | 0.091 | 1 |
+| sniper | uncompressed | 187 | 19 | 156 | 14 | 0.166 | 0.091 | 0.102 | 2 |
 | sniper | unchecked | 146 | 64 | 0 | 93 | ≤1.000 | 0.363 | 0.438 | 11 |
-| sniper | checksummed | 53 | 47 | 0 | 6 | ≤1.000 | 0.887 | 0.887 | 0 |
+| sniper | checksummed | 52 | 46 | 0 | 6 | ≤1.000 | 0.885 | 0.885 | 0 |
 | bolter | uncompressed | 185 | 12 | 162 | 11 | 0.124 | 0.065 | 0.065 | 0 |
 | bolter | unchecked | 147 | 91 | 0 | 71 | ≤1.000 | 0.517 | 0.619 | 15 |
 | bolter | checksummed | 53 | 53 | 0 | 0 | ≤1.000 | 1.000 | 1.000 | 0 |
@@ -118,7 +121,7 @@ The two ceilings, as estimated:
 
 | profile | worst case (uncompressed) | best case (checksummed) |
 |---|---|---|
-| sniper (1 bit) | 0.086 (bound 0.161) | 0.887 |
+| sniper (1 bit) | 0.091 (bound 0.166) | 0.885 |
 | bolter (1 byte) | 0.065 (bound 0.124) | 1.000 |
 | shotgun (8 to 16 bits) | 0.077 (bound 0.126) | 0.983 |
 | nuke (4096 bytes) | 0.449 | 1.000 |
@@ -137,10 +140,12 @@ libtiff warns about and tiffz decoded around without saying so. validate
 ruled them corrupt (2026-11-03). They are kept as regressions in
 `tests/fixture_test.zig` and listed in
 `docs/plan_context/ifd_fault_cases.md`. tiffz's sniper uncompressed rate
-(0.091) now exceeds that class's ceiling estimate (0.086) because it
-also catches one case libtiff accepts (`stricter` 1).
+(0.102) now exceeds that class's ceiling estimate (0.091) because it
+also catches two cases libtiff accepts (`stricter` 2). One is a
+PhotometricInterpretation of 1026, which no claimed specification
+defines.
 
-Across all classes, the overall rates are 0.332 (sniper), 0.405
+Across all classes, the overall rates are 0.335 (sniper), 0.405
 (bolter), 0.457 (shotgun) and 0.732 (nuke). They mix populations whose
 ceilings differ by an order of magnitude, so they say little on their own.
 

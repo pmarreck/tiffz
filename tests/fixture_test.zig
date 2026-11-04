@@ -2509,8 +2509,10 @@ test "IFD-entry rules: SampleFormat and TransferFunction stored as BYTE or LONG 
 /// `seen` counts the classic-TIFF IFDs (next chain and SubIFDs) carrying the
 /// tag across the 140 distinct files of the pinned corpus
 /// (docs/plan_context/real_corpus_manifest.tsv); 0 means the row rests on the text alone.
-const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: []const u8, seen: u32, drives_decoding: bool = false }{
+const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: []const u8, seen: u32, drives_decoding: bool = false, max: u32 = 65535 }{
     .{ .tag = 255, .ranges = &.{.{ 1, 3 }}, .citation = "SubfileType, TIFF 6.0 pp. 40-41", .seen = 3 },
+    .{ .tag = 259, .ranges = &.{.{ 1, 10 }}, .citation = "Compression, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 216, .drives_decoding = true },
+    .{ .tag = 262, .ranges = &.{ .{ 0, 6 }, .{ 8, 10 } }, .citation = "PhotometricInterpretation, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 180, .drives_decoding = true },
     .{ .tag = 263, .ranges = &.{.{ 1, 3 }}, .citation = "Threshholding, TIFF 6.0 p. 41", .seen = 1 },
     .{ .tag = 266, .ranges = &.{.{ 1, 2 }}, .citation = "FillOrder, TIFF 6.0 p. 32", .seen = 21 },
     .{ .tag = 274, .ranges = &.{.{ 1, 8 }}, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 125 },
@@ -2518,9 +2520,12 @@ const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: 
     .{ .tag = 290, .ranges = &.{.{ 1, 5 }}, .citation = "GrayResponseUnit, TIFF 6.0 pp. 33-34", .seen = 0 },
     .{ .tag = 317, .ranges = &.{.{ 1, 3 }}, .citation = "Predictor, TIFF 6.0 p. 64; Adobe TN3 (2005)", .seen = 7, .drives_decoding = true },
     .{ .tag = 296, .ranges = &.{.{ 1, 3 }}, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 160 },
+    .{ .tag = 327, .ranges = &.{.{ 0, 2 }}, .citation = "CleanFaxData, RFC 3949 p. 33", .seen = 2 },
     .{ .tag = 332, .ranges = &.{.{ 1, 2 }}, .citation = "InkSet, TIFF 6.0 p. 70", .seen = 5 },
     .{ .tag = 346, .ranges = &.{.{ 0, 1 }}, .citation = "Indexed, PageMaker 6.0 TIFF Technical Notes p. 11", .seen = 0 },
     .{ .tag = 351, .ranges = &.{.{ 0, 1 }}, .citation = "OPIProxy, PageMaker 6.0 TIFF Technical Notes p. 15", .seen = 0 },
+    .{ .tag = 401, .ranges = &.{.{ 0, 1 }}, .citation = "ProfileType, RFC 3949 p. 19", .seen = 0 },
+    .{ .tag = 402, .ranges = &.{.{ 0, 6 }}, .citation = "FaxProfile (BYTE), RFC 3949 p. 19", .seen = 0, .max = 255 },
     .{ .tag = 512, .ranges = &.{ .{ 1, 1 }, .{ 14, 14 } }, .citation = "JPEGProc, TIFF 6.0 p. 104", .seen = 4 },
     .{ .tag = 517, .ranges = &.{.{ 1, 7 }}, .citation = "JPEGLosslessPredictors (one sample), TIFF 6.0 p. 106", .seen = 1 },
     .{ .tag = 531, .ranges = &.{.{ 1, 2 }}, .citation = "YCbCrPositioning, TIFF 6.0 p. 92", .seen = 43 },
@@ -2568,8 +2573,8 @@ test "IFD-entry rules: each enumerated row validates its range ends and rejects 
                 if (!inside) try expectRowVerdict(allocator, row.tag, v, true, row.drives_decoding);
             }
         }
-        // Private values are never faults.
-        try expectRowVerdict(allocator, row.tag, 40000, false, row.drives_decoding);
+        // Private values are never faults, where the defined type can hold one.
+        if (row.max >= 40000) try expectRowVerdict(allocator, row.tag, 40000, false, row.drives_decoding);
     }
 }
 
@@ -2727,6 +2732,9 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 323, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 13 },
     .{ .tag = 324, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 9 },
     .{ .tag = 325, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 9 },
+    .{ .tag = 326, .clean = long(&.{3}), .corrupt = rational(1), .reason = 1, .seen = 2 },
+    .{ .tag = 327, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 2 },
+    .{ .tag = 328, .clean = short(&.{2}), .corrupt = short(&.{ 2, 2 }), .reason = 2, .seen = 2 },
     .{ .tag = 330, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 37 },
     .{ .tag = 332, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 5 },
     .{ .tag = 333, .clean = ascii("Cyan\x00Magenta\x00"), .corrupt = ascii("Cyan\x00\x00Magenta\x00"), .reason = 3, .seen = 0 },
@@ -2742,6 +2750,15 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 346, .clean = short(&.{1}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 },
     .{ .tag = 347, .clean = .{ .typ = 7, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .corrupt = .{ .typ = 1, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .reason = 1, .seen = 4 },
     .{ .tag = 351, .clean = short(&.{0}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 },
+    .{ .tag = 400, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 0 },
+    .{ .tag = 401, .clean = long(&.{1}), .corrupt = long(&.{2}), .reason = 3, .seen = 0 },
+    .{ .tag = 402, .clean = .{ .typ = 1, .count = 1, .raw = "\x06" }, .corrupt = short(&.{256}), .reason = 3, .seen = 0 },
+    .{ .tag = 403, .clean = long(&.{2}), .corrupt = long(&.{ 2, 2 }), .reason = 2, .seen = 0 },
+    .{ .tag = 404, .clean = .{ .typ = 1, .count = 4, .raw = "1997" }, .corrupt = .{ .typ = 1, .count = 2, .raw = "97" }, .reason = 2, .seen = 0 },
+    .{ .tag = 405, .clean = .{ .typ = 1, .count = 1, .raw = "\x00" }, .corrupt = .{ .typ = 2, .count = 1, .raw = "\x00" }, .reason = 1, .seen = 0 },
+    .{ .tag = 433, .clean = .{ .typ = 10, .count = 2, .raw = ones(2) }, .corrupt = rational(2), .reason = 1, .seen = 0 },
+    .{ .tag = 434, .clean = short(&.{255}), .corrupt = short(&.{ 255, 255 }), .reason = 2, .seen = 0 },
+    .{ .tag = 435, .clean = long(&.{0}), .corrupt = .{ .typ = 2, .count = 2, .raw = "0\x00" }, .reason = 1, .seen = 0 },
     .{ .tag = 512, .clean = short(&.{1}), .corrupt = short(&.{2}), .reason = 3, .seen = 4 },
     .{ .tag = 513, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 42 },
     .{ .tag = 514, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 42 },
@@ -2755,8 +2772,10 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 530, .clean = short(&.{ 2, 2 }), .corrupt = short(&.{ 1, 2 }), .reason = 3, .seen = 18 },
     .{ .tag = 531, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 43 },
     .{ .tag = 532, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 16 },
+    .{ .tag = 559, .clean = long(&.{1}), .corrupt = .{ .typ = 4, .count = 0, .raw = "" }, .reason = 2, .end_to_end = false, .seen = 1 },
     .{ .tag = 32781, .clean = ascii("hires.tif\x00"), .corrupt = ascii("hires.tif"), .reason = 3, .seen = 0 },
     .{ .tag = 33432, .clean = ascii("(c) 2026\x00"), .corrupt = ascii("(c) 2026"), .reason = 3, .seen = 19 },
+    .{ .tag = 34732, .clean = long(&.{ 2, 1 }), .corrupt = long(&.{ 4, 1 }), .reason = 3, .seen = 0 },
     .{ .tag = 37724, .clean = .{ .typ = 7, .count = 2, .raw = "8B" }, .corrupt = ascii("8B\x00"), .reason = 1, .seen = 0 },
 };
 
