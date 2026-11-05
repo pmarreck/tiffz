@@ -596,6 +596,39 @@ pub fn colorPlanes(ifds: []const Ifd, endian: Endian) ?u32 {
     return found;
 }
 
+/// Finding 19 rule 6 (DNG 1.6.0.0 Chapter 3, Compression; owner,
+/// 2026-11-04): with Compression 7, "if PhotometricInterpretation = 6
+/// (YCbCr) and BitsPerSample = 8/8/8, or if PhotometricInterpretation = 1
+/// (BlackIsZero) and BitsPerSample = 8, then the JPEG variant must be
+/// baseline DCT JPEG. Otherwise, the JPEG variant must be lossless Huffman
+/// JPEG." True when baseline DCT is required, false when lossless is. Null
+/// when the rule does not apply: not a DNG, or a DNG of unknown version (D2),
+/// or a field it needs is absent or malformed (its own fault). The text has
+/// stood since DNG 1.0.0.0, so it applies to every known version.
+pub fn dngBaselineJpeg(dir: *const Ifd, endian: Endian, dng: ?Dng) ?bool {
+    const d = dng orelse return null;
+    if (!d.from(0x01000000)) return null;
+    const photometric = scalar(dir, tags.photometric, endian) orelse return null;
+    const samples: u64 = if (indexOf(dir, tags.samples_per_pixel) != null) scalar(dir, tags.samples_per_pixel, endian) orelse return null else 1;
+    const baseline_samples: u64 = switch (photometric) {
+        tags.photometric_ycbcr => 3,
+        tags.photometric_black_is_zero => 1,
+        else => return false,
+    };
+    if (samples != baseline_samples) return false;
+    // BitsPerSample defaults to 1, which is not 8.
+    const k = indexOf(dir, tags.bits_per_sample) orelse return false;
+    const entry = dir.entries[k];
+    if (entry.field_type != .short or entry.count != samples) return null;
+    const bytes = dir.entryValueSlice(k);
+    var i: usize = 0;
+    while (i < samples) : (i += 1) {
+        const bits = element(bytes, entry.field_type, i, endian) orelse return null;
+        if (bits != 8) return false;
+    }
+    return true;
+}
+
 /// Append every fault in `dir` to `out`, in entry order. `dng` is what IFD 0
 /// of the same file declares (`Dng.fromIfd0`), or null.
 pub fn check(
@@ -2137,6 +2170,50 @@ fn expectDngOne(dng: ?Dng, entry: Entry, bytes: ?[]u8, expected: ?Reason) !void 
     var entries = [_]Entry{entry};
     var cached = [_]?[]u8{bytes};
     try expectDng(&entries, &cached, dng, entry.tag, expected);
+}
+
+test "finding 19 rule 6: which JPEG variant a DNG IFD requires" {
+    var eights = [_]u8{ 8, 0, 8, 0, 8, 0 };
+    var mixed = [_]u8{ 8, 0, 8, 0, 16, 0 };
+    const Case = struct { photometric: u32, spp: ?u32, bps: ?Entry, bytes: ?[]u8, dng: ?Dng, want: ?bool };
+    const cases = [_]Case{
+        // YCbCr 8/8/8 and BlackIsZero 8: baseline DCT.
+        .{ .photometric = 6, .spp = 3, .bps = inline16(tags.bits_per_sample, .short, 3, 0), .bytes = &eights, .dng = v1_6, .want = true },
+        .{ .photometric = 1, .spp = null, .bps = inline16(tags.bits_per_sample, .short, 1, 8), .bytes = null, .dng = v1_6, .want = true },
+        // Any later known version too.
+        .{ .photometric = 1, .spp = 1, .bps = inline16(tags.bits_per_sample, .short, 1, 8), .bytes = null, .dng = .{ .version = 0x01070100 }, .want = true },
+        // Otherwise lossless.
+        .{ .photometric = 6, .spp = 3, .bps = inline16(tags.bits_per_sample, .short, 3, 0), .bytes = &mixed, .dng = v1_6, .want = false },
+        .{ .photometric = 1, .spp = 1, .bps = inline16(tags.bits_per_sample, .short, 1, 16), .bytes = null, .dng = v1_6, .want = false },
+        .{ .photometric = 1, .spp = 1, .bps = null, .bytes = null, .dng = v1_6, .want = false },
+        .{ .photometric = 2, .spp = 3, .bps = inline16(tags.bits_per_sample, .short, 3, 0), .bytes = &eights, .dng = v1_6, .want = false },
+        .{ .photometric = tags.photometric_color_filter_array, .spp = 1, .bps = inline16(tags.bits_per_sample, .short, 1, 8), .bytes = null, .dng = v1_6, .want = false },
+        .{ .photometric = 6, .spp = 1, .bps = inline16(tags.bits_per_sample, .short, 1, 8), .bytes = null, .dng = v1_6, .want = false },
+        // Not a DNG, or a DNG of unknown version: no rule.
+        .{ .photometric = 2, .spp = 3, .bps = inline16(tags.bits_per_sample, .short, 3, 0), .bytes = &eights, .dng = null, .want = null },
+        .{ .photometric = 2, .spp = 3, .bps = inline16(tags.bits_per_sample, .short, 3, 0), .bytes = &eights, .dng = unknown_version, .want = null },
+        // A malformed BitsPerSample (its own finding 18): no rule.
+        .{ .photometric = 6, .spp = 3, .bps = inline16(tags.bits_per_sample, .short, 2, 0x0008_0008), .bytes = null, .dng = v1_6, .want = null },
+        .{ .photometric = 1, .spp = 1, .bps = inline16(tags.bits_per_sample, .long, 1, 8), .bytes = null, .dng = v1_6, .want = null },
+    };
+    for (cases) |c| {
+        var entries: [3]Entry = undefined;
+        var cached = [_]?[]u8{null} ** 3;
+        var n: usize = 0;
+        if (c.bps) |b| {
+            entries[n] = b;
+            cached[n] = c.bytes;
+            n += 1;
+        }
+        entries[n] = inline16(tags.photometric, .short, 1, c.photometric);
+        n += 1;
+        if (c.spp) |spp| {
+            entries[n] = inline16(tags.samples_per_pixel, .short, 1, spp);
+            n += 1;
+        }
+        const dir = Ifd{ .entries = entries[0..n], .next_offset = 0, .offset_width = .classic, .allocator = testing.allocator, .cached_values = cached[0..n] };
+        try testing.expectEqual(c.want, dngBaselineJpeg(&dir, .little, c.dng));
+    }
 }
 
 test "DNG rows apply only in a DNG file, and only from the edition that added the tag" {

@@ -10,6 +10,12 @@
 //!    times the chroma factors and both chroma components agree; otherwise
 //!    every component has the same factors.
 //! 5. PlanarConfiguration 2: every factor is 1.
+//! 6. In a DNG of known version (DNG 1.6.0.0 Chapter 3, Compression; owner,
+//!    2026-11-04): YCbCr with BitsPerSample 8/8/8 or BlackIsZero with
+//!    BitsPerSample 8 must be baseline DCT JPEG (SOF0); anything else must
+//!    be lossless Huffman JPEG (SOF3). The record cites Compression, its TIFF
+//!    value is the PhotometricInterpretation and its required value the SOF
+//!    type the rule requires.
 //!
 //! Lossless SOFs (3, 7, 11, 15) are exempt from rules 1 to 3. Every segment
 //! is examined; one record per IFD per violated rule carries the first
@@ -27,6 +33,7 @@ pub const Rule = enum(u16) {
     tile_length = 3,
     sampling_factors = 4,
     planar_factors = 5,
+    dng_variant = 6,
 };
 const rule_count = @typeInfo(Rule).@"enum".fields.len;
 
@@ -63,6 +70,11 @@ pub const Fields = struct {
     /// default subsampling applies or the image is not YCbCr.
     sampling_entry: u64,
     planar_entry: u64,
+    /// Rule 6: true when DNG requires baseline DCT, false when it requires
+    /// lossless Huffman JPEG, null when the rule does not apply (not a DNG
+    /// of known version, or a field it needs is absent or malformed).
+    dng_baseline: ?bool = null,
+    compression_entry: u64 = 0,
 };
 
 pub const Record = struct {
@@ -91,6 +103,12 @@ pub const Accumulator = struct {
         if (self.last_segment) |last| if (last == segment) return;
         self.last_segment = segment;
         self.examined += 1;
+        const f = self.fields;
+        if (f.dng_baseline) |baseline| {
+            const want: u4 = if (baseline) baseline_sof else lossless_huffman_sof;
+            if (header.sof_type != want)
+                self.note(.dng_variant, segment, sof_host_offset, header.sof_type, f.compression_entry, f.photometric orelse 0, want);
+        }
         const comps = header.components();
         if (comps.len == 0) return;
         var hmax: u32 = 0;
@@ -99,7 +117,6 @@ pub const Accumulator = struct {
             hmax = @max(hmax, c.h);
             vmax = @max(vmax, c.v);
         }
-        const f = self.fields;
         const dct = header.kind.isDct();
         // Factors outside 1..4 are jpegz's finding; no MCU size exists then.
         const mcu_ok = hmax >= 1 and hmax <= 4 and vmax >= 1 and vmax <= 4;
@@ -155,6 +172,9 @@ pub const Accumulator = struct {
 };
 
 const ycbcr: u16 = 6;
+/// T.81 Table B.1: SOF0 is baseline DCT, SOF3 lossless sequential Huffman.
+const baseline_sof: u4 = 0;
+const lossless_huffman_sof: u4 = 3;
 
 fn packComponent(index: usize, c: jpegz.FrameComponent) u32 {
     return @as(u32, @intCast(index)) << 16 | @as(u32, c.h) << 8 | c.v;
@@ -347,6 +367,41 @@ test "rule 5: separate planes need factors of 1" {
     try testing.expectEqual(@as(u32, 1), r.first_segment);
     try testing.expectEqual(@as(u32, 0x0201), r.required);
     try testing.expectEqual(@as(u32, 2), r.examined);
+}
+
+test "rule 6: DNG requires baseline DCT or lossless Huffman JPEG, by photometric and depth" {
+    const ycc = [_][2]u4{ .{ 2, 2 }, .{ 1, 1 }, .{ 1, 1 } };
+    const cases = [_]struct { baseline: ?bool, sof: u4, required: ?u32 }{
+        .{ .baseline = true, .sof = 0, .required = null },
+        .{ .baseline = true, .sof = 1, .required = 0 },
+        .{ .baseline = true, .sof = 3, .required = 0 },
+        .{ .baseline = false, .sof = 3, .required = null },
+        .{ .baseline = false, .sof = 0, .required = 3 },
+        .{ .baseline = false, .sof = 7, .required = 3 },
+        .{ .baseline = false, .sof = 11, .required = 3 },
+        // Not a DNG of known version: no rule 6.
+        .{ .baseline = null, .sof = 1, .required = null },
+        .{ .baseline = null, .sof = 3, .required = null },
+    };
+    for (cases) |c| {
+        var f = stripFields(16);
+        f.dng_baseline = c.baseline;
+        f.compression_entry = 400;
+        var acc = Accumulator{ .fields = f };
+        const factors: []const [2]u4 = if (sofClass(c.sof) == .lossless) &.{ .{ 1, 1 }, .{ 1, 1 }, .{ 1, 1 } } else &ycc;
+        if (sofClass(c.sof) == .lossless) acc.fields.photometric = 2;
+        acc.add(0, 7, &frameOf(c.sof, factors));
+        acc.add(1, 8, &frameOf(c.sof, factors));
+        if (c.required) |want| {
+            const r = acc.record(.dng_variant).?;
+            try testing.expectEqual(want, r.required);
+            try testing.expectEqual(@as(u4, c.sof), r.sof_type);
+            try testing.expectEqual(@as(u64, 400), r.entry_offset);
+            try testing.expectEqual(@as(u32, acc.fields.photometric.?), r.tiff_value);
+            try testing.expectEqual(@as(u32, 2), r.violating);
+            try testing.expectEqual(@as(u32, 2), r.examined);
+        } else try testing.expectEqual(@as(?Record, null), acc.record(.dng_variant));
+    }
 }
 
 test "payload layout" {

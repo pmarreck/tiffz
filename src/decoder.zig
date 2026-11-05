@@ -787,7 +787,8 @@ pub const Decoder = struct {
             }
 
             // Finding 19: each Compression 7 segment's frame header is checked
-            // against the fields TIFF Technical Note 2 binds it to. The JPEG
+            // against the fields TIFF Technical Note 2 binds it to, and in a
+            // DNG against the JPEG variant Chapter 3 requires (rule 6). The JPEG
             // branch of `decodeBytes` feeds the accumulator as it reads each
             // segment; the records are emitted once the IFD's walk ends.
             var geometry: ?jpeg_geometry.Accumulator = null;
@@ -879,6 +880,8 @@ pub const Decoder = struct {
             else
                 photometric_entry,
             .planar_entry = self.tagEntryOffset(dir, ifd_index, tags.planar_configuration),
+            .dng_baseline = conformance.dngBaselineJpeg(dir, self.endian, self.dngContext()),
+            .compression_entry = self.tagEntryOffset(dir, ifd_index, tags.compression),
         };
     }
 

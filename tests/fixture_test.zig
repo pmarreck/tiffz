@@ -3425,15 +3425,16 @@ test "KNOWN_DEFECT controls: each synthetic exemplar and near-match fails with e
 
 // Finding 19 `jpeg_segment_geometry_invalid` (owner-approved 2026-11-04):
 // JPEG-in-TIFF segments checked against the fields TIFF Technical Note 2
-// binds them to. The expected offsets are found independently of tiffz: the
-// SOF is the first FF C0 in the file, and TIFF entries are located by walking
-// IFD0 here.
+// binds them to, and in a DNG against the JPEG variant DNG 1.6.0.0 Chapter 3
+// requires (rule 6). The expected offsets are found independently of tiffz:
+// the SOF is the first FF Cn in the file for the expected SOF type n, and
+// TIFF entries are located by walking IFD0 here.
 const JpegGeometryCase = struct {
     path: []const u8,
     /// IFD0 tag whose two SHORT values to overwrite before validating.
     patch: ?struct { tag: u16, values: [2]u16 } = null,
     /// null: validation succeeds with no finding 19.
-    want: ?struct { rule: u16, entry_tag: u16, tiff_value: u32, required: u32, violating: u32, examined: u32 } = null,
+    want: ?struct { rule: u16, entry_tag: u16, tiff_value: u32, required: u32, violating: u32, examined: u32, sof_type: u8 = 0 } = null,
 };
 const jpeg_geometry_cases = [_]JpegGeometryCase{
     .{ .path = "tests/fixtures/jpeg/rgb-jpeg.tif" },
@@ -3447,6 +3448,12 @@ const jpeg_geometry_cases = [_]JpegGeometryCase{
     // YCbCrSubSampling [2, 1] disagrees on the vertical axis; component 0
     // (luma, H 2, V 2) is reported.
     .{ .path = "tests/fixtures/jpeg/ycbcr_jpeg.tif", .patch = .{ .tag = 530, .values = .{ 2, 1 } }, .want = .{ .rule = 4, .entry_tag = 530, .tiff_value = 0x0002_0001, .required = 0x0000_0202, .violating = 1, .examined = 1 } },
+    // Rule 6, DNG 1.6.0.0 previews: YCbCr 8/8/8 must be baseline DCT (SOF0),
+    // RGB 8/8/8 lossless Huffman (SOF3). The non-DNG RGB file above is the
+    // control for the DNGVersion gate.
+    .{ .path = "tests/fixtures/jpeg_geometry/dng-ycbcr-ok.tif" },
+    .{ .path = "tests/fixtures/jpeg_geometry/dng-ycbcr-sof1.tif", .want = .{ .rule = 6, .entry_tag = 259, .tiff_value = 6, .required = 0, .violating = 1, .examined = 1, .sof_type = 1 } },
+    .{ .path = "tests/fixtures/jpeg_geometry/dng-rgb-sof0.tif", .want = .{ .rule = 6, .entry_tag = 259, .tiff_value = 2, .required = 3, .violating = 1, .examined = 1 } },
 };
 
 /// Absolute offset of IFD0's entry for `tag` in a little-endian classic TIFF.
@@ -3492,7 +3499,7 @@ test "finding 19: JPEG-in-TIFF segment geometry against RowsPerStrip, tile sizes
             const p = f.payload_bytes;
             try std.testing.expectEqual(@as(usize, 44), f.payload_len);
             try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, f.verdict);
-            const sof = std.mem.indexOf(u8, bytes, "\xFF\xC0") orelse return error.TestUnexpectedResult;
+            const sof = std.mem.indexOf(u8, bytes, &.{ 0xFF, 0xC0 + want.sof_type }) orelse return error.TestUnexpectedResult;
             const entry = ifd0EntryOffset(bytes, want.entry_tag) orelse return error.TestUnexpectedResult;
             try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[0..4], .little)); // IFD 0
             try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[4..8], .little)); // first segment
@@ -3500,7 +3507,7 @@ test "finding 19: JPEG-in-TIFF segment geometry against RowsPerStrip, tile sizes
             try std.testing.expectEqual(@as(u64, sof), std.mem.readInt(u64, p[16..24], .little));
             try std.testing.expectEqual(@as(?u64, sof), f.byte_offset);
             try std.testing.expectEqual(want.rule, std.mem.readInt(u16, p[24..26], .little));
-            try std.testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, p[26..28], .little)); // SOF0
+            try std.testing.expectEqual(@as(u16, want.sof_type), std.mem.readInt(u16, p[26..28], .little));
             try std.testing.expectEqual(want.tiff_value, std.mem.readInt(u32, p[28..32], .little));
             try std.testing.expectEqual(want.required, std.mem.readInt(u32, p[32..36], .little));
             try std.testing.expectEqual(want.violating, std.mem.readInt(u32, p[36..40], .little));

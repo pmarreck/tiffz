@@ -15,7 +15,8 @@ disagrees with the TIFF fields TIFF Technical Note 2 binds it to:
 4. PlanarConfiguration 1: SOF sampling factors whose luma-to-chroma ratio
    differs from YCbCrSubSampling, or chroma components that differ from each
    other; for non-YCbCr images, unequal factors.
-5. PlanarConfiguration 2: any SOF sampling factor other than 1.
+. In a DNG: a JPEG variant other than the one DNG 1.6.0.0 Chapter 3
+   requires (baseline DCT or lossless Huffman; see "Rule 6" below).
 
 SOF classes are exact and pinned by a test: DCT 0, 1, 2, 5, 6, 9, 10, 13, 14;
 lossless 3, 7, 11, 15. Lossless SOFs are exempt from rules 1 to 3. Every
@@ -75,3 +76,74 @@ the oracle agree on every record: rule 4, one violating of one examined
 segment, TIFF value 0x00020002, component 0 with H 2, V 1. The pattern is a
 producer pattern candidate that would surface if those files' other faults
 were absent; validate was asked how to treat it.
+
+## Rule 6: the DNG JPEG variant (owner, 2026-11-04)
+
+The owner approved this rule on 2026-11-04; validate relayed it as decision 7.
+It enforces DNG 1.6.0.0 Chapter 3, Compression: "If PhotometricInterpretation
+= 6 (YCbCr) and BitsPerSample = 8/8/8, or if PhotometricInterpretation = 1
+(BlackIsZero) and BitsPerSample = 8, then the JPEG variant must be baseline
+DCT JPEG. Otherwise, the JPEG variant must be lossless Huffman JPEG."
+
+- **Readings:**
+  - Baseline DCT is SOF0 only.
+  - Lossless Huffman JPEG is SOF3 only. SOF7 is hierarchical, and SOF11
+    and SOF15 are arithmetic-coded.
+  - These are reversible choices, reported to validate with the landing.
+- **Scope:** Compression 7 IFDs in a DNG of known version. The text has
+  stood since DNG 1.0.0.0, so it applies to every known version. An
+  unknown version gets no rule (D2).
+- **Inputs:** PhotometricInterpretation, SamplesPerPixel (default 1) and
+  BitsPerSample.
+  - BitsPerSample is absent: the default of 1 is not 8, so lossless is
+    required.
+  - Photometric is absent, or BitsPerSample is malformed (not SHORT, or
+    its count is not SamplesPerPixel): no rule. That is its own fault.
+- **Payload:** finding 19's payload is unchanged.
+  - The record cites the Compression entry.
+  - The TIFF value is the PhotometricInterpretation.
+  - The required value is the SOF type the rule requires (0 or 3).
+  - The SOF type field holds the type found.
+  - As for rules 1 to 5, there is one record per IFD, with the first
+    violating segment and the counts.
+
+Fixtures (tests/fixtures/jpeg_geometry, from gen.pl) are one-IFD DNG 1.6.0.0
+previews:
+- dng-ycbcr-ok.tif: YCbCr 8/8/8 with SOF0, a control with no record.
+- dng-ycbcr-sof1.tif: the same stream marked SOF1, so baseline is required
+  and the file gets a record.
+- dng-rgb-sof0.tif: RGB 8/8/8 with SOF0, so lossless is required and the
+  file gets a record.
+
+The non-DNG RGB SOF0 fixture (tests/fixtures/jpeg/rgb-jpeg.tif) is the
+control for the DNGVersion gate.
+
+### Corpus report (263 files: the pinned manifest, KNOWN_DEFECT fixtures and patched controls)
+
+No verdict changes, and tiffz emits no finding 19 on any file. The
+finding 19 oracle, extended with rule 6, examines the 52 Compression 7
+IFDs, 32 of them in DNGs. It predicts one record:
+
+| file | sha256 | IFD | prediction | why tiffz does not reach it |
+|---|---|---|---|---|
+| Blackmagic Micro Cinema DNG (validate ground truth, DNG 1.2.0.0), 1228096 bytes | 4c65b8cda205087cfb94d8931811e53e15eb4df538ad67c1b4a3e76c1185b277 | 0 (raw, CFA, 12-bit) | rule 6, required SOF3, 2 of 2 tiles violate: they are SOF1, 12-bit extended DCT, 1952x552 frames in 976x1104 tiles | already invalid (Malformed, with tiled_layout and jpegz findings); finding 19 records are emitted only once every segment of the IFD decodes |
+
+The Blackmagic file is lossy DCT under Compression 7 in a CFA raw IFD. DNG
+1.4.0.0 added code 34892 for lossy JPEG, so in a 1.2.0.0 file this is a
+producer pattern candidate, not a reader matter. validate has been told.
+
+**Real-file control.** The Adobe DNG Converter 9.8 Canon EOS 5D Mark III DNG
+(sha256 b22f1e36331f679abb8b13e433b9bbde3988723adf10fee7aa0dda6381016a98)
+validates ok. A copy with IFD 0's preview SOF0 changed to SOF1, at offset
+199126, gives one rule 6 record from tiffz:
+- IFD 0, first segment 0;
+- Compression entry at 58;
+- SOF type 1, TIFF value 6, required 0;
+- 1 of 1 segments.
+
+The oracle predicts the same record. The previous build validates the copy
+ok.
+
+**Controlled red.** Applying the rule outside DNG files failed the finding
+19 fixture test (on the non-DNG RGB control) and the rule 6 unit test.
+Restoring the gate made both pass again.
