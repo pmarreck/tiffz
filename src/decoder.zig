@@ -93,6 +93,9 @@ pub const Decoder = struct {
     /// current next-IFD link is 0, so existing chain indices stay put
     /// and children follow that chain.
     pending_subifds: std.ArrayListUnmanaged(SubIfdJob) = .empty,
+    /// How many IFDs, in walk order, have had their directory rules checked
+    /// by the current validation walk; a stop checks the rest.
+    rules_checked: usize = 0,
     pending_subifd_read: usize = 0,
     /// Next materialized IFD whose tag 330 list has not been queued.
     subifd_scan: usize = 0,
@@ -678,11 +681,31 @@ pub const Decoder = struct {
     pub fn validateAllStripsAndTiles(self: *Decoder, workspace: *Workspace) errors.Error!void {
         self.validatePages(workspace) catch |err| {
             if (errors.isLimit(err)) return self.noteLimit(err, self.budget.last_offset, self.progressIfdIndex());
+            // A decode or graph stop leaves every parsed IFD checkable: the
+            // directory rules read only parsed entries. Their faults follow
+            // the stopping error, which is still the one returned and
+            // reported first (validate, 2026-11-04; reach-gap.md). OutOfMemory
+            // and Bug stop everything, as a limit does.
+            if (err != error.OutOfMemory and err != error.Bug) self.checkUnreachedConformance();
             return err;
         };
     }
 
+    /// After a stopping error, check the directory rules of every parsed IFD
+    /// the walk did not reach, in walk order. Best effort: running out of
+    /// memory here ends the pass and keeps the original error.
+    fn checkUnreachedConformance(self: *Decoder) void {
+        if (self.ifds.items.len == 0) return;
+        const dng = conformance.Dng.fromIfd0(&self.ifds.items[0], self.endian);
+        var i = self.rules_checked;
+        while (i < self.ifds.items.len) : (i += 1) {
+            _ = self.checkIfdConformance(&self.ifds.items[i], i, dng) catch return;
+        }
+        self.rules_checked = self.ifds.items.len;
+    }
+
     fn validatePages(self: *Decoder, workspace: *Workspace) errors.Error!void {
+        self.rules_checked = 0;
         const max_dest_bytes: usize = self.limits.max_decompressed_strip_bytes;
         const initial: usize = @min(@as(usize, 1024 * 1024), max_dest_bytes);
         var dest_buf = self.allocator.alloc(u8, initial) catch return error.OutOfMemory;
@@ -718,6 +741,7 @@ pub const Decoder = struct {
                 return err;
             };
             if (try self.checkIfdConformance(dir, ifd_index, dng)) nonconforming = true;
+            self.rules_checked = ifd_index + 1;
             // No strip/tile arrays. A JPEGInterchangeFormat thumbnail (CR2
             // IFD1) is still a known page with nothing for this walk to
             // decode. Any other main-chain IFD in that shape is not an

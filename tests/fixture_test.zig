@@ -3087,6 +3087,118 @@ test "IFD-entry rules: rows that do not drive decoding classify the same in a bu
     }
 }
 
+/// Two one-strip 2x1 8-bit gray IFDs in the next chain. IFD 0 uses
+/// `compression` over `strip0`; IFD 1 is uncompressed, with Orientation
+/// `orientation` (9 is a directory fault) and next-IFD offset `next1`.
+fn twoIfdFile(allocator: std.mem.Allocator, compression: u16, strip0: []const u8, orientation: u16, next1: u32) ![]u8 {
+    const ifd0: u32 = 8;
+    const ifd1: u32 = ifd0 + 2 + 9 * 12 + 4;
+    const strip0_off: u32 = ifd1 + 2 + 10 * 12 + 4;
+    const strip1_off: u32 = strip0_off + @as(u32, @intCast(strip0.len));
+    const buf = try allocator.alloc(u8, strip1_off + 2);
+    @memset(buf, 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    putU16(buf, 2, 42);
+    putU32(buf, 4, ifd0);
+    const Built = struct { tag: u16, typ: u16, val: u32 };
+    const first = [_]Built{
+        .{ .tag = 256, .typ = 4, .val = 2 },              .{ .tag = 257, .typ = 4, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 },              .{ .tag = 259, .typ = 3, .val = compression },
+        .{ .tag = 262, .typ = 3, .val = 1 },              .{ .tag = 273, .typ = 4, .val = strip0_off },
+        .{ .tag = 277, .typ = 3, .val = 1 },              .{ .tag = 278, .typ = 4, .val = 1 },
+        .{ .tag = 279, .typ = 4, .val = @intCast(strip0.len) },
+    };
+    const second = [_]Built{
+        .{ .tag = 256, .typ = 4, .val = 2 }, .{ .tag = 257, .typ = 4, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 }, .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 262, .typ = 3, .val = 1 }, .{ .tag = 273, .typ = 4, .val = strip1_off },
+        .{ .tag = 274, .typ = 3, .val = orientation }, .{ .tag = 277, .typ = 3, .val = 1 },
+        .{ .tag = 278, .typ = 4, .val = 1 }, .{ .tag = 279, .typ = 4, .val = 2 },
+    };
+    inline for (.{ .{ ifd0, &first, ifd1 }, .{ ifd1, &second, next1 } }) |d| {
+        putU16(buf, d[0], @intCast(d[1].len));
+        for (d[1], 0..) |e, i| {
+            const at = d[0] + 2 + i * 12;
+            putU16(buf, at, e.tag);
+            putU16(buf, at + 2, e.typ);
+            putU32(buf, at + 4, 1);
+            putU32(buf, at + 8, e.val);
+        }
+        putU32(buf, d[0] + 2 + d[1].len * 12, d[2]);
+    }
+    @memcpy(buf[strip0_off..strip1_off], strip0);
+    buf[strip1_off] = 0x10;
+    buf[strip1_off + 1] = 0xf0;
+    return buf;
+}
+
+/// The finding-18 records on `tag` in IFD `ifd`.
+fn conformanceHits(recorder: *const FindingRecorder, ifd: u32, tag: u16) usize {
+    var hits: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+        if (std.mem.readInt(u32, f.payload_bytes[0..4], .little) == ifd and std.mem.readInt(u16, f.payload_bytes[16..18], .little) == tag) hits += 1;
+    }
+    return hits;
+}
+
+fn validateWithLimits(allocator: std.mem.Allocator, bytes: []const u8, recorder: *FindingRecorder, limits: tiffz.Limits) !void {
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.openWithLimits(allocator, src, limits);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(recorder));
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try dec.validateAllStripsAndTiles(&ws);
+}
+
+// validate, 2026-11-04 (docs/plan_context/reach-gap.md): after a decode or
+// graph stop, the directory rules of every parsed IFD still run. The stopping
+// error is unchanged and still the one returned; after a limit, OutOfMemory or
+// Bug nothing more runs. Each test pairs the faulted file with a control whose
+// IFD 1 is clean, so the stopping error is shown to be the same.
+test "IFD-entry rules: a directory fault after a decode stop is still reported, and the stop is unchanged" {
+    const allocator = std.testing.allocator;
+    const not_zlib = [_]u8{ 0xff, 0xff, 0xff, 0xff };
+    var stops: [2]anyerror = undefined;
+    for ([_]u16{ 1, 9 }, 0..) |orientation, k| {
+        const bytes = try twoIfdFile(allocator, 8, &not_zlib, orientation, 0);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        if (validateRecording(allocator, bytes, &recorder)) |_| return error.TestUnexpectedResult else |err| stops[k] = err;
+        try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
+    }
+    try std.testing.expectEqual(stops[0], stops[1]);
+}
+
+test "IFD-entry rules: after a graph error, the IFDs parsed before it are checked in walk order" {
+    const allocator = std.testing.allocator;
+    var stops: [2]anyerror = undefined;
+    for ([_]u16{ 1, 9 }, 0..) |orientation, k| {
+        // IFD 1's next-IFD offset points past the end of the file.
+        const bytes = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, orientation, 0x7fff_fff0);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        if (validateRecording(allocator, bytes, &recorder)) |_| return error.TestUnexpectedResult else |err| stops[k] = err;
+        try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
+    }
+    try std.testing.expectEqual(stops[0], stops[1]);
+}
+
+test "IFD-entry rules: after a limit stop, no directory rule runs for the IFDs not reached" {
+    const allocator = std.testing.allocator;
+    const bytes = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, 9, 0);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.LimitExceededStripCount, validateWithLimits(allocator, bytes, &recorder, .{ .max_strips_or_tiles = 0 }));
+    try std.testing.expectEqual(@as(usize, 0), conformanceHits(&recorder, 1, 274));
+}
+
 test "IFD-entry rules: a LONG SampleFormat or TransferFunction value above 65535 is corrupt" {
     const allocator = std.testing.allocator;
     var long_table: [256]u32 = undefined;

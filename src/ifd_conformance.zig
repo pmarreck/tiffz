@@ -1191,11 +1191,13 @@ fn isDateTime(bytes: []const u8) bool {
     return true;
 }
 
-/// An ISO 8601 complete date-time, before the NUL (DNG PreviewDateTime;
-/// validate, 2026-11-04: strict but complete). Extended
-/// "YYYY-MM-DDThh:mm:ss" or basic "YYYYMMDDThhmmss", one form throughout;
-/// an optional fraction after "." or ","; then nothing (local time), "Z",
-/// or an offset "+hh:mm" (basic "+hhmm") or with "-". Fields are range
+/// An ISO 8601 date-time, before the NUL (DNG PreviewDateTime "is encoded
+/// using ISO 8601 format"; validate, 2026-11-04: fault only what is not ISO
+/// 8601 at all). Extended "YYYY-MM-DDThh:mm[:ss]" or basic
+/// "YYYYMMDDThhmm[ss]", one form throughout, down to the minute; an optional
+/// fraction of the last component after "." or ","; then nothing (local
+/// time), "Z", or an offset "+hh", "+hh:mm" (basic "+hhmm") or with "-". A
+/// date alone or a coarser time is not a date and time. Fields are range
 /// checked against the calendar; 24:00:00 is allowed with a zero fraction,
 /// and second 60 for a leap second.
 fn isIso8601(bytes: []const u8) bool {
@@ -1229,8 +1231,13 @@ fn isIso8601(bytes: []const u8) bool {
     const hour = Reader.digits(s, &at, 2) orelse return false;
     if (extended and !Reader.char(s, &at, ':')) return false;
     const minute = Reader.digits(s, &at, 2) orelse return false;
-    if (extended and !Reader.char(s, &at, ':')) return false;
-    const second = Reader.digits(s, &at, 2) orelse return false;
+    // Seconds are optional: reduced precision down to the minute.
+    var second: u32 = 0;
+    if (extended) {
+        if (Reader.char(s, &at, ':')) second = Reader.digits(s, &at, 2) orelse return false;
+    } else if (at + 1 < s.len and std.ascii.isDigit(s[at]) and std.ascii.isDigit(s[at + 1])) {
+        second = Reader.digits(s, &at, 2) orelse return false;
+    }
     var zero_fraction = true;
     if (at < s.len and (s[at] == '.' or s[at] == ',')) {
         at += 1;
@@ -1246,8 +1253,13 @@ fn isIso8601(bytes: []const u8) bool {
         } else if (s[at] == '+' or s[at] == '-') {
             at += 1;
             const offset_hour = Reader.digits(s, &at, 2) orelse return false;
-            if (extended and !Reader.char(s, &at, ':')) return false;
-            const offset_minute = Reader.digits(s, &at, 2) orelse return false;
+            // The minutes of an offset are optional (+hh).
+            var offset_minute: u32 = 0;
+            if (extended) {
+                if (Reader.char(s, &at, ':')) offset_minute = Reader.digits(s, &at, 2) orelse return false;
+            } else if (at < s.len and std.ascii.isDigit(s[at])) {
+                offset_minute = Reader.digits(s, &at, 2) orelse return false;
+            }
             if (offset_hour > 23 or offset_minute > 59) return false;
         } else return false;
     }
@@ -2443,6 +2455,10 @@ test "ISO 8601 complete date-time for PreviewDateTime" {
         "2017-01-31T19:30:23\x00",
         "2017-01-31T24:00:00Z\x00",
         "2000-02-29T00:00:00Z\x00",
+        "2017-01-31T19:30Z\x00", // reduced precision, down to the minute
+        "20170131T1930+01\x00",
+        "2017-01-31T19:30:23+01\x00", // hour-only offset
+        "2017-01-31T19:30,5\x00", // a fraction of the minute
     }) |text| {
         if (!isIso8601(text)) {
             std.debug.print("rejected {s}\n", .{text});
@@ -2453,13 +2469,13 @@ test "ISO 8601 complete date-time for PreviewDateTime" {
         "2017:01:31 19:30:23\x00", // TIFF DateTime
         "2017-01-31 19:30:23Z\x00",
         "2017-01-31T193023Z\x00", // mixed forms
-        "2017-01-31T19:30Z\x00", // reduced precision
+        "2017-01-31T19Z\x00", // coarser than a minute
+        "2017-01-31\x00", // a date alone
         "2017-02-29T00:00:00Z\x00",
         "1900-02-29T00:00:00Z\x00",
         "2017-13-01T00:00:00Z\x00",
         "2017-01-31T24:00:01Z\x00",
         "2017-01-31T24:00:00.5Z\x00",
-        "2017-01-31T19:30:23+01\x00",
         "2017-01-31T19:30:23+0100\x00", // basic offset in the extended form
         "2017-01-31T19:30:23.Z\x00",
         "2017-01-31T19:30:23Zx\x00",

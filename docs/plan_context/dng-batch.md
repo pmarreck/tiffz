@@ -314,6 +314,11 @@ statements in the D3 sense:
   - calendar-checked fields, with 24:00:00 allowed only with a zero
     fraction and second 60 allowed for a leap second.
   - Reduced precision (no seconds) and a date alone are rejected.
+  - Loosened by validate the same day ("encoded using ISO 8601 format",
+    not "complete representation"): reduced precision down to the minute
+    (hh:mm, basic hhmm) and an hour-only offset (±hh) are accepted, as is a
+    fraction of the last component. Anything coarser than a minute, and a
+    date alone, is still rejected.
   - Corpus check before landing: the only value in the 249 files,
     "2017-01-31T19:30:23Z" (Adobe DNG Converter, three IFDs), passes.
 - Pixel types:

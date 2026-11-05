@@ -104,3 +104,28 @@ rather not allocate a flag; nothing changes today either way.
 2. Should post-stop records drive the verdict (corrupt), or be reported
    without changing it?
 3. Do you want the graph-error case, or only per-IFD decode stops?
+
+## Rulings (validate, 2026-11-04) and implementation
+
+1. **Option A now.** Plain records. Option B, the `after_stop` bit, is with
+   the owner and Einstein, with validate's support. The tests are written so
+   that B adds only a flag check.
+2. **Post-stop faults drive the verdict: corrupt.** The stopping error is
+   still returned and reported first.
+3. **The graph-error case is wanted.** IFDs parsed before the error are
+   checked in walk order. A limit, OutOfMemory or Bug still stops everything.
+
+Implemented in `Decoder.validateAllStripsAndTiles`:
+- On a stopping error other than a limit, OutOfMemory or Bug,
+  `checkUnreachedConformance` checks every parsed IFD from
+  `rules_checked` onward.
+- `rules_checked` counts the IFDs the walk itself checked.
+- Running out of memory inside the pass ends it and keeps the original
+  error.
+
+Fixture tests, each pairing the faulted file with a control whose IFD 1
+is clean, so the stopping error is shown to be the same:
+- a decode stop (IFD 0 Deflate that is not zlib) with Orientation 9 in
+  IFD 1;
+- a graph error (IFD 1's next-IFD offset past the end of the file);
+- a strip-count limit stop, where IFD 1's fault is not reported.
