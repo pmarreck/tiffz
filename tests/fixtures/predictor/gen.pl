@@ -18,6 +18,10 @@
 #   predictor2_deflate_mixed.tif    8x8 RGB at 8,8,16 with Predictor 2.
 #                                   Clean; tiffz refuses the mixed widths as
 #                                   reach (unsupported, exit 4).
+#   predictor3_deflate_8bit_float.tif  8x8, 8-bit, SampleFormat 3, Predictor 3.
+#                                   Clean (TN3: any multiple of 8).
+#   predictor3_deflate_8bit_uint.tif   The same bytes with SampleFormat 1:
+#                                   the TN3 should-row, no fault.
 use strict; use warnings;
 use Compress::Zlib qw(compress);
 my $dir = shift or die "usage: gen.pl DIR\n";
@@ -110,3 +114,23 @@ put('predictor2_deflate_mixed.tif', tiff({
     262 => [3, [2]], 277 => [3, [3]], 278 => [3, [$length]], 284 => [3, [1]],
     317 => [3, [2]],
 }, compress(pack('C*', map { $_ & 0xFF } 0 .. 4 * $width * $length - 1), 9)));
+
+# 8-bit Predictor 3 (validate, 2026-11-05): TN3 allows any multiple of 8,
+# and with one-byte samples the byte shuffle is the identity. Pixel k holds
+# the byte 3k mod 256. The float file is clean; the integer one is the
+# SampleFormat should-row (an INFO record once that row lands). libtiff
+# refuses both, so the decoded bytes are checked against k directly.
+my $raw8 = '';
+for my $row (0 .. $length - 1) {
+    $raw8 .= fp_predict_row(1, map { pack('C', (3 * ($row * $width + $_)) & 0xFF) } 0 .. $width - 1);
+}
+for my $variant (['predictor3_deflate_8bit_float.tif', 3], ['predictor3_deflate_8bit_uint.tif', undef]) {
+    my ($file, $format) = @$variant;
+    my %f = (
+        256 => [3, [$width]], 257 => [3, [$length]], 258 => [3, [8]], 259 => [3, [8]],
+        262 => [3, [1]], 277 => [3, [1]], 278 => [3, [$length]], 284 => [3, [1]],
+        317 => [3, [3]],
+    );
+    $f{339} = [3, [$format]] if defined $format;
+    put($file, tiff(\%f, compress($raw8, 9)));
+}

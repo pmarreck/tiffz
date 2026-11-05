@@ -3785,3 +3785,23 @@ test "Predictor 2 at 8,8,16 is refused before decoding, as reach, with no corrup
     for (recorder.findings.items) |f| try std.testing.expect(f.verdict != .corrupt);
     try std.testing.expectError(error.UnsupportedBitDepth, decodeAllStripsBytes(allocator, path));
 }
+
+// 8-bit Predictor 3 conforms: TN3 allows any width that is a multiple of 8,
+// and with one-byte samples its byte shuffle is the identity (validate,
+// 2026-11-05). Pixel k holds 3k mod 256, as tests/fixtures/predictor/gen.pl
+// wrote it before TN3's forward transform. libtiff refuses both files, so the
+// decode is checked against those values directly. The integer file is the
+// SampleFormat should-row: clean today, an INFO record once that row lands.
+test "Predictor 3 at 8 bits decodes, as float and as integer data" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{
+        "tests/fixtures/predictor/predictor3_deflate_8bit_float.tif",
+        "tests/fixtures/predictor/predictor3_deflate_8bit_uint.tif",
+    }) |path| {
+        try expectFixtureValidates(path);
+        const got = try decodeAllStripsBytes(allocator, path);
+        defer allocator.free(got);
+        try std.testing.expectEqual(@as(usize, 64), got.len);
+        for (got, 0..) |b, k| try std.testing.expectEqual(@as(u8, @truncate(3 * k)), b);
+    }
+}

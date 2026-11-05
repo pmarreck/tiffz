@@ -160,9 +160,10 @@ fn applyFloatingPoint(
     endian: Endian,
     allocator: std.mem.Allocator,
 ) errors.Error!void {
-    // FP predictor needs at least 16 bits per sample (FP16). 8-bit
-    // doesn't make sense as a "floating point" sample width.
-    if (bits_per_sample == 0 or bits_per_sample % 8 != 0 or bits_per_sample < 16) {
+    // TN3 allows any width that is a multiple of 8 ("BitsPerSample equal
+    // to a multiple of 8", p. 2). With one-byte samples the byte shuffle is
+    // the identity and only the differencing remains (validate, 2026-11-05).
+    if (bits_per_sample == 0 or bits_per_sample % 8 != 0) {
         return error.UnsupportedBitDepth;
     }
     const bps_bytes: usize = bits_per_sample / 8;
@@ -289,9 +290,23 @@ test "predictors.applyInverse rejects 32-bit horizontal (FP-only at >8bit)" {
     try std.testing.expectError(error.UnsupportedBitDepth, applyInverse(&bytes, .horizontal, 1, 1, 1, 32, .chunky, .little, std.testing.allocator));
 }
 
-test "predictors.applyInverse rejects floating-point at 8-bit (FP needs bps >= 16)" {
-    var bytes = [_]u8{ 0, 0, 0, 0 };
-    try std.testing.expectError(error.UnsupportedBitDepth, applyInverse(&bytes, .floating_point, 4, 1, 1, 8, .chunky, .little, std.testing.allocator));
+test "predictors.applyInverse floating-point at 8 bits is TN3's differencing alone" {
+    // One-byte samples: the plane shuffle is the identity, so decoding is
+    // the running sum with stride samples_per_pixel. Encoded 10, 5, 5, 5
+    // (one sample per pixel) decodes to 10, 15, 20, 25 in either byte order.
+    for ([_]Endian{ .little, .big }) |endian| {
+        var bytes = [_]u8{ 10, 5, 5, 5 };
+        try applyInverse(&bytes, .floating_point, 4, 1, 1, 8, .chunky, endian, std.testing.allocator);
+        try std.testing.expectEqualSlices(u8, &.{ 10, 15, 20, 25 }, &bytes);
+    }
+    // Two samples per pixel difference against the same sample of the
+    // previous pixel.
+    var two = [_]u8{ 1, 100, 1, 1, 1, 1 };
+    try applyInverse(&two, .floating_point, 3, 1, 2, 8, .chunky, .little, std.testing.allocator);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 100, 2, 101, 3, 102 }, &two);
+    // A width that is not whole bytes is still refused.
+    var odd = [_]u8{ 0, 0, 0, 0 };
+    try std.testing.expectError(error.UnsupportedBitDepth, applyInverse(&odd, .floating_point, 4, 1, 1, 12, .chunky, .little, std.testing.allocator));
 }
 
 test "predictors.applyInverse floating-point FP32 spp=1 two rows, big-endian" {
