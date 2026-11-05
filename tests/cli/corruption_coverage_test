@@ -127,7 +127,15 @@ cat >"$bindir/corruption-reader" <<'EOF'
 #!/usr/bin/env bash
 set -u
 if [ "${1:-}" = "--about" ]; then
-	printf 'corruption-reader 0.0.0-fake (test)\n'
+	printf '%s (test/fake)\n' "${FAKE_ABOUT:-corruption-reader 0.0.0-fake: test}"
+	exit 0
+fi
+if [ "${1:-}" = "profile" ] && [ "${2:-}" = "show" ]; then
+	printf '{"name":"%s"%s}\n' "${3:-}" "${FAKE_PROFILE_SALT:+,\"salt\":$FAKE_PROFILE_SALT}"
+	exit 0
+fi
+if [ "${1:-}" = "draw" ]; then
+	printf '{"record":2,"rng":"%s","case_derivation":"fake case seed v1","round":0}\n' "${FAKE_RNG:-fake drbg v1}"
 	exit 0
 fi
 log="${FAKE_READER_LOG:?}"
@@ -233,6 +241,12 @@ if [ "${FAKE_MODE:-all-detect}" = "all-detect" ]; then
 		*"/cr-"*) code=1 ;;
 	esac
 fi
+# FAKE_UNDETECT lists cases (e.g. "sniper-r3") that are accepted.
+for miss in ${FAKE_UNDETECT:-}; do
+	case "$path" in
+		*"/cr-$miss-fake.tiff") code=0; findings='[]' ;;
+	esac
+done
 printf '{"status":"fake","path":"%s","error":%d,"ifds":0,"findings":%s}\n' "$path" "$code" "$findings"
 exit "$code"
 EOF
@@ -492,100 +506,176 @@ FAKE_LAYOUT=broken run_subject "${cov_args[@]}"
 assert_equal "a seed tiffdump cannot read stops the measurement" 2 "$subject_status"
 assert_contains "the unreadable seed is named" "$subject_err" "seed-a.tiff"
 
-# --- floors: a regression gate over a pinned, deterministic campaign ------
+# --- floors: the exact set of detected cases, over a pinned draw plan ----
+# One seed and --trials 8, so each profile's plan is one batch of rounds
+# 0..7. FAKE_UNDETECT names cases the fake tiffz accepts.
 
-floors="$sandbox/floors"
-cat >"$floors" <<'EOF'
-# comment lines and blank lines are ignored
+cases="$sandbox/cases"
+floor_tools=(--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" --seeds-file "$seedfile")
+seed_a="$sandbox/seed-a.tiff"
+tab="$(printf '\t')"
 
-master=42 trials=8
-sniper uncompressed 8
-sniper unchecked 0
-sniper checksummed 0
-bolter uncompressed 0
-bolter unchecked 0
-bolter checksummed 0
-shotgun uncompressed 0
-shotgun unchecked 0
-shotgun checksummed 0
-nuke uncompressed 0
-nuke unchecked 0
-nuke checksummed 0
-EOF
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --master 42 --trials 8 --floors "$cases" --write-floors
+assert_equal "--write-floors starts a new case set" 0 "$subject_status"
+assert_contains "the write names the file and case count" "$subject_out" "wrote $cases: 31 cases"
+assert_contains "the write prints each cell" "$subject_out" "cell sniper uncompressed old=0 new=7"
+case_file="$(cat "$cases" 2>/dev/null)"
+assert_contains "the file says it is tool-written" "$case_file" "Never edit by hand"
+assert_contains "the file pins the master" "$case_file" "master${tab}42"
+assert_contains "the file pins the trial count" "$case_file" "trials${tab}8"
+assert_contains "the file pins the generator version and revision" "$case_file" \
+	"generator${tab}corruption-reader 0.0.0-fake: test${tab}unpinned"
+assert_contains "the file pins the generator's RNG" "$case_file" "rng${tab}fake drbg v1"
+assert_contains "the file pins the case derivation" "$case_file" "case_derivation${tab}fake case seed v1"
+assert_contains "the file pins each resolved profile" "$case_file" \
+	"profile${tab}shotgun${tab}$(printf '{"name":"shotgun_variable"}\n' | sha256sum | awk '{ print $1 }')"
+assert_contains "the file pins each seed's hash" "$case_file" \
+	"seed${tab}$seed_a${tab}$(sha256sum -- "$seed_a" | awk '{ print $1 }')"
+assert_contains "the file pins each profile's plan" "$case_file" "plan${tab}nuke${tab}per=8${tab}batches=1"
+assert_contains "a detected case is pinned" "$case_file" "detect${tab}sniper${tab}$seed_a${tab}3"
+assert_not_contains "an accepted case is not pinned" "$case_file" "detect${tab}sniper${tab}$seed_a${tab}5"
+cp -- "$cases" "$cases.first"
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases" --write-floors
+assert_equal "rewriting the same run succeeds" 0 "$subject_status"
+assert_equal "the same run writes the same file" "$(cat "$cases.first")" "$(cat "$cases")"
 
-FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail run_subject \
-	--tiffz "$bindir/tiffz" \
-	--corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile" \
-	--floors "$floors"
-assert_equal "floors met exits 0" 0 "$subject_status"
-assert_contains "floors take master from the file" "$subject_out" "master=42"
-assert_contains "floors take trials from the file" "$subject_out" "trials=8"
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases"
+assert_equal "the pinned case set passes" 0 "$subject_status"
+assert_contains "the gate takes master from the file" "$subject_out" "master=42"
+assert_contains "the gate takes trials from the file" "$subject_out" "trials=8"
 assert_contains "sniper trial line" "$subject_out" "floor sniper decisive=8 trials=8 ok"
-assert_contains "sniper class floor line" "$subject_out" \
-	"floor sniper uncompressed detect=8 min=8 false_alarm=0 ok"
-assert_contains "nuke checksummed floor line" "$subject_out" \
-	"floor nuke checksummed detect=0 min=0 false_alarm=0 ok"
+assert_contains "sniper class line" "$subject_out" \
+	"floor sniper uncompressed detect=7 pinned=7 false_alarm=0 ok"
+assert_not_contains "no case differs" "$subject_out" "case "
 
-FAKE_MODE=finding FAKE_LAYOUT=uncompressed-tail run_subject \
-	--tiffz "$bindir/tiffz" \
-	--corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile" \
-	--floors "$floors"
+# Controlled red 1: a lost case offset by a gain. The counts still match,
+# so only the case lines catch it.
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r3" run_subject \
+	"${floor_tools[@]}" --floors "$cases"
+assert_equal "a loss offset by a gain fails" 1 "$subject_status"
+assert_contains "the offset loss leaves the count equal" "$subject_out" \
+	"floor sniper uncompressed detect=7 pinned=7 false_alarm=0 ok"
+assert_contains "the lost case is named" "$subject_out" "case lost sniper $seed_a round 3"
+assert_contains "the gained case is named" "$subject_out" "case new sniper $seed_a round 5"
+assert_contains "a gain says how to pin it" "$subject_out" "regenerate with --write-floors"
+
+# Controlled red 2: a lost case alone.
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r3 sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases"
+assert_equal "a lost case fails" 1 "$subject_status"
+assert_contains "the lost case's cell is below" "$subject_out" \
+	"floor sniper uncompressed detect=6 pinned=7 false_alarm=0 below"
+assert_contains "the lost case alone is named" "$subject_out" "case lost sniper $seed_a round 3"
+assert_not_contains "nothing is new" "$subject_out" "case new"
+
+# A gain alone fails until it is pinned.
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail run_subject \
+	"${floor_tools[@]}" --floors "$cases"
+assert_equal "an unpinned detection fails" 1 "$subject_status"
+assert_contains "the new case is named" "$subject_out" "case new sniper $seed_a round 5"
+assert_contains "the new case's cell is above" "$subject_out" \
+	"floor sniper uncompressed detect=8 pinned=7 false_alarm=0 above"
+
+# Controlled red 3: a changed generator with the list unchanged is stale,
+# not a list of losses, and nothing is drawn.
+: >"$FAKE_READER_LOG"
+FAKE_ABOUT="corruption-reader 0.0.1-fake: test" FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail \
+	FAKE_UNDETECT="sniper-r5" run_subject "${floor_tools[@]}" --floors "$cases"
+assert_equal "a changed generator version fails" 1 "$subject_status"
+assert_contains "a changed generator is stale" "$subject_out" "case set stale: regenerate with --write-floors"
+assert_contains "the stale line is named" "$subject_out" "stale > generator${tab}corruption-reader 0.0.1-fake: test"
+assert_not_contains "a stale set reports no losses" "$subject_out" "case lost"
+assert_not_contains "a stale set draws nothing" "$(cat "$FAKE_READER_LOG")" "corrupt "
+
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases" --generator-rev deadbeef
+assert_equal "a different generator revision is stale" 1 "$subject_status"
+assert_contains "the revision is named" "$subject_out" "stale > generator${tab}corruption-reader 0.0.0-fake: test${tab}deadbeef"
+
+FAKE_PROFILE_SALT=1 FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases"
+assert_equal "a changed profile definition is stale" 1 "$subject_status"
+assert_contains "the changed profile is named" "$subject_out" "stale > profile${tab}sniper"
+
+FAKE_RNG="fake drbg v2" FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases"
+assert_equal "a changed RNG is stale" 1 "$subject_status"
+
+cp -- "$seed_a" "$seed_a.kept"
+printf 'ok, changed\n' >"$seed_a"
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases"
+assert_equal "a changed seed is stale" 1 "$subject_status"
+assert_contains "the changed seed is named" "$subject_out" "stale > seed${tab}$seed_a"
+cp -- "$seed_a.kept" "$seed_a"
+
+sed "s/^plan${tab}sniper${tab}per=8/plan${tab}sniper${tab}per=7/" "$cases" >"$cases.per"
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases.per"
+assert_equal "a plan that disagrees with the trial count is stale" 1 "$subject_status"
+assert_contains "the plan is named" "$subject_out" "stale plan: per must be 8"
+
+# Rewriting after a change names what moved and the old and new counts.
+cp -- "$cases" "$cases.before"
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-tail FAKE_UNDETECT="sniper-r3" run_subject \
+	"${floor_tools[@]}" --floors "$cases" --write-floors
+assert_equal "a rewrite succeeds" 0 "$subject_status"
+assert_contains "the rewrite names the added case" "$subject_out" "case added sniper $seed_a round 5"
+assert_contains "the rewrite names the removed case" "$subject_out" "case removed sniper $seed_a round 3"
+assert_contains "the rewrite prints old and new counts" "$subject_out" "cell sniper uncompressed old=7 new=7"
+cp -- "$cases.before" "$cases"
+
+# The other failures: short, false alarm, and a refused write.
+FAKE_MODE=finding FAKE_LAYOUT=uncompressed-tail run_subject "${floor_tools[@]}" --floors "$cases"
 assert_equal "a short profile fails the floors" 1 "$subject_status"
 assert_contains "bolter all reach is short of its trials" "$subject_out" \
 	"floor bolter decisive=0 trials=8 short"
 
-sed 's/^shotgun uncompressed 0$/shotgun uncompressed 1/' "$floors" >"$floors.high"
-FAKE_MODE=mixed FAKE_LAYOUT=uncompressed-tail run_subject \
-	--tiffz "$bindir/tiffz" \
-	--corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile" \
-	--floors "$floors.high"
-assert_equal "detections below a floor fail" 1 "$subject_status"
-assert_contains "shotgun below its floor" "$subject_out" \
-	"floor shotgun uncompressed detect=0 min=1 false_alarm=0 below"
-assert_contains "sniper still meets its floor" "$subject_out" \
-	"floor sniper uncompressed detect=8 min=8 false_alarm=0 ok"
+FAKE_MODE=finding FAKE_LAYOUT=uncompressed-tail run_subject "${floor_tools[@]}" --floors "$cases" --write-floors
+assert_equal "a short profile is not written" 1 "$subject_status"
+assert_contains "the refusal is named" "$subject_out" "floors not written: $cases"
+assert_equal "a refused write leaves the file" "$(cat "$cases.before")" "$(cat "$cases")"
 
-FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-all run_subject \
-	--tiffz "$bindir/tiffz" \
-	--corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile" \
-	--floors "$floors"
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-all FAKE_UNDETECT="sniper-r5" run_subject \
+	"${floor_tools[@]}" --floors "$cases"
 assert_equal "a false alarm fails the floors" 1 "$subject_status"
 assert_contains "the false alarm is named" "$subject_out" \
-	"floor sniper uncompressed detect=8 min=8 false_alarm=8 false_alarm"
+	"floor sniper uncompressed detect=7 pinned=7 false_alarm=7 false_alarm"
 
-run_subject --floors "$floors" --trials 9 \
-	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile"
+FAKE_MODE=all-detect FAKE_LAYOUT=uncompressed-all run_subject "${floor_tools[@]}" --floors "$cases" --write-floors
+assert_equal "a false alarm is not written" 1 "$subject_status"
+assert_equal "a false alarm leaves the file" "$(cat "$cases.before")" "$(cat "$cases")"
+
+# Usage errors.
+run_subject "${floor_tools[@]}" --floors "$cases" --trials 9
 assert_equal "trials that disagree with the floors file are a usage error" 2 "$subject_status"
 assert_contains "the disagreement is named" "$subject_err" "trials"
 
-run_subject --floors "$floors" --master 7 \
-	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile"
+run_subject "${floor_tools[@]}" --floors "$cases" --master 7
 assert_equal "a master that disagrees with the floors file is a usage error" 2 "$subject_status"
 
-grep -v '^nuke checksummed' "$floors" >"$floors.partial"
-run_subject --floors "$floors.partial" \
-	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile"
-assert_equal "a floors file missing a profile and class is a usage error" 2 "$subject_status"
-assert_contains "the missing pair is named" "$subject_err" "nuke checksummed"
+grep -v "^plan${tab}nuke" "$cases" >"$cases.partial"
+run_subject "${floor_tools[@]}" --floors "$cases.partial"
+assert_equal "a floors file missing a plan is a usage error" 2 "$subject_status"
+assert_contains "the missing plan is named" "$subject_err" "no plan for nuke"
 
-sed 's/^sniper uncompressed 8$/sniper uncompressed eight/' "$floors" >"$floors.bad"
-run_subject --floors "$floors.bad" \
-	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile"
-assert_equal "a non-numeric floor is a usage error" 2 "$subject_status"
+{ cat "$cases"; printf 'detect%ssniper%s%s%sthree\n' "$tab" "$tab" "$seed_a" "$tab"; } >"$cases.bad"
+run_subject "${floor_tools[@]}" --floors "$cases.bad"
+assert_equal "a non-numeric round is a usage error" 2 "$subject_status"
 
-sed 's/^sniper unchecked 0$/sniper compressed 0/' "$floors" >"$floors.class"
-run_subject --floors "$floors.class" \
-	--tiffz "$bindir/tiffz" --corruption-reader "$bindir/corruption-reader" \
-	--seeds-file "$seedfile"
-assert_equal "an unknown class is a usage error" 2 "$subject_status"
+{ cat "$cases"; printf 'detect%ssniperx%s%s%s3\n' "$tab" "$tab" "$seed_a" "$tab"; } >"$cases.profile"
+run_subject "${floor_tools[@]}" --floors "$cases.profile"
+assert_equal "an unknown profile is a usage error" 2 "$subject_status"
+
+{ cat "$cases"; printf 'sniper uncompressed 8\n'; } >"$cases.old"
+run_subject "${floor_tools[@]}" --floors "$cases.old"
+assert_equal "an old count-floor line is a usage error" 2 "$subject_status"
+
+run_subject "${floor_tools[@]}" --write-floors
+assert_equal "--write-floors without --floors is a usage error" 2 "$subject_status"
 
 # --- default tiffz lookup: bin/<PF>/tiffz, never the retired zig-out/bin --
 

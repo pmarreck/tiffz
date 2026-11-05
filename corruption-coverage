@@ -55,7 +55,15 @@ seeds_file=""
 floors_file=""
 master_set=0
 trials_set=0
-declare -A floor_min=()
+write_floors=0
+generator_rev=""
+floors_exists=0
+floors_identity=""
+floors_pinned=""
+declare -A plan_per=()
+declare -A plan_batches=()
+declare -A drawn_batches=()
+declare -A seed_sha=()
 
 usage() {
 	cat <<'EOF'
@@ -104,13 +112,21 @@ is near 0 or 1.
 Exit 0 means every profile is precise and no seed was rejected, no draw
 failed, and tiffz did not crash. The rate itself is not a pass/fail gate.
 
-With --floors, the rate is the gate. The file pins the campaign as
-"master=SEED trials=N" and gives each profile and seed class a minimum
-detection count ("PROFILE CLASS MIN" per line, # starts a comment). Each
-profile must reach N decisive trials, each class at least MIN detections
-and no false alarm. Precision is not checked.
-Draws are deterministic, so any lost detection fails the gate, and
-lowering a floor is a deliberate edit to that file.
+With --floors, the exact set of detected cases is the gate. The file is
+written by --write-floors, never by hand. It records the campaign's
+identity (master, trials, the corruption-reader version and
+--generator-rev, its RNG and case derivation, a sha256 of each resolved
+profile, and each seed's path and sha256), each profile's draw plan, and
+every detected case as profile, seed and round. Batch k of a profile
+draws PER cases from seed k mod SEEDS at round k * PER, so whether one
+case is detected never moves another. The gate fails when the identity
+differs ("case set stale"), when a pinned case is no longer detected
+("case lost") or an unpinned one is ("case new"), and on a false alarm, a
+crash, or a profile short of N decisive trials. Precision is not checked.
+--write-floors draws batches until each profile has N decisive trials,
+prints the cases added and removed and the old and new count per profile
+and class, and rewrites the file. It refuses on a false alarm, a crash or
+a short profile.
 
 options:
   -h, --help                 show this text
@@ -120,7 +136,10 @@ options:
   --master SEED              corruption-reader master seed (default 42)
   --margin P                 Wilson half-width target in (0, 1] (default 0.05)
   --trials N                 decisive trials to collect per profile
-  --floors PATH              gate on minimum detections (see above)
+  --floors PATH              gate on the pinned detected cases (see above)
+  --write-floors             rewrite the --floors file from this run
+  --generator-rev REV        corruption-reader source revision, recorded
+                             in the --floors identity
   --tiffz PATH               tiffz executable
   --corruption-reader PATH   corruption-reader executable
   --tiffdump PATH            libtiff tiffdump executable (seed layout oracle)
@@ -241,7 +260,7 @@ summarize() {
 	dir="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-coverage-sum.XXXXXX")"
 	touch "$dir/order"
 	local class bound
-	while IFS="$(printf '\t')" read -r profile outcome class bound; do
+	while IFS="$(printf '\t')" read -r profile outcome class bound _case; do
 		[ -n "${profile:-}" ] || continue
 		printf '%s\t%s\t%s\t%s\n' "$profile" "$outcome" "${class:-}" "${bound:-}" >>"$dir/ledger"
 		case "$outcome" in
@@ -380,9 +399,11 @@ report_kinds() {
 			status = field("status")
 			noop = field("noop")
 			emitted = field("emitted")
-			if (status == "noop" || (noop != "" && noop != "null")) print "noop"
-			else if (emitted != "true") print "harness"
-			else print "emit"
+			round = field("round")
+			if (round == "" || round == "null") round = "-"
+			if (status == "noop" || (noop != "" && noop != "null")) print "noop\t" round
+			else if (emitted != "true") print "harness\t" round
+			else print "emit\t" round
 		}
 	' "$1"
 }
@@ -607,7 +628,8 @@ score_batch() {
 		paths+=("$path")
 	done <"$pathfile"
 	local cursor=0
-	while IFS= read -r kind <&3; do
+	local round
+	while IFS="$(printf '\t')" read -r kind round <&3; do
 		if [ "$kind" = noop ]; then
 			printf '%s\tnoop\n' "$profile" >>"$out"
 			continue
@@ -623,11 +645,102 @@ score_batch() {
 		validate_limited "$path" "$json" || tiffz_status=$?
 		case_bound "$seed" "$path"
 		classify_tiffz "$tiffz_status" "$json" "$seed"
-		printf '%s\t%s\t%s\t%s\n' "$profile" "$outcome" "$class" "$bound" >>"$out"
+		# Seed and round identify the case for the --floors case set.
+		printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$profile" "$outcome" "$class" "$bound" "$seed" "$round" >>"$out"
 		case "$outcome" in
 			detect|accept) batch_decisive=$((batch_decisive + 1)) ;;
 		esac
 	done 3< <(report_kinds "$report")
+}
+
+# Draw and score one batch: $4 cases of profile $1 from seed $2, starting
+# at round $3, appended to ledger $5. Sets batch_decisive.
+draw_batch() {
+	local profile="$1" seed="$2" round="$3" count="$4" ledger="$5"
+	local batch="$work/batch" reader_status=0 draw_profile
+	mkdir -p "$batch"
+	local report="$batch/report.jsonl" paths="$batch/paths"
+	draw_profile="$(reader_profile "$profile")"
+	"$cr_bin" corrupt "$draw_profile" \
+		--master "$master" \
+		--round "$round" \
+		--count "$count" \
+		--emit tmp \
+		--tmp-dir "$batch" \
+		--report "$report" \
+		-- "$seed" >"$paths" 2>"$batch/reader.err" || reader_status=$?
+	batch_decisive=0
+	score_batch "$profile" "$report" "$paths" "$reader_status" "$ledger" "$seed"
+	rm -rf -- "$batch"
+}
+
+# The --floors draw plan for profile $1: batch k draws $2 cases from seed
+# k mod (corpus size) at round k * $2, so no outcome moves another case.
+# With $3 > 0, draw exactly $3 batches (the pinned plan); with 0, draw
+# until $target decisive trials or 4 * $target cases (--write-floors).
+# Reads $seeds and $target from campaign. Sets drawn_batches[$1].
+planned_draw() {
+	local profile="$1" per="$2" want="$3" ledger="$4"
+	local -a corpus=()
+	local seed k=0 decisive=0 max
+	while IFS= read -r seed; do
+		[ -n "$seed" ] && corpus+=("$seed")
+	done <<EOF
+$seeds
+EOF
+	max=$(((target * 4 + per - 1) / per))
+	while :; do
+		if [ "$want" -gt 0 ]; then
+			[ "$k" -lt "$want" ] || break
+		else
+			{ [ "$decisive" -lt "$target" ] && [ "$k" -lt "$max" ]; } || break
+		fi
+		seed="${corpus[$((k % ${#corpus[@]}))]}"
+		draw_batch "$profile" "$seed" "$((k * per))" "$per" "$ledger"
+		decisive=$((decisive + batch_decisive))
+		k=$((k + 1))
+		if [ $((k % ${#corpus[@]})) -eq 0 ]; then
+			printf 'progress %s decisive=%s batches=%s\n' "$profile" "$decisive" "$k" >&2
+		fi
+	done
+	drawn_batches["$profile"]="$k"
+}
+
+# Print the --floors identity of this run, one tab-separated line each.
+# Any difference from the file's identity makes its case set stale.
+current_identity() {
+	local about first rec profile hash seed
+	about="$("$cr_bin" --about 2>/dev/null)" || die "corruption-reader --about failed"
+	# Drop the platform suffix, e.g. " (linux/x86_64)": draws are the same
+	# on every platform.
+	about="${about% (*)}"
+	first="$(printf '%s\n' "$seeds" | awk 'NF { print; exit }')"
+	rec="$("$cr_bin" draw sniper --master "$master" --round 0 -- "$first" 2>/dev/null)" ||
+		die "corruption-reader draw failed on $first"
+	printf 'master\t%s\n' "$master"
+	printf 'trials\t%s\n' "$target"
+	printf 'generator\t%s\t%s\n' "$about" "${generator_rev:-unpinned}"
+	printf '%s\n' "$rec" | awk '
+		function field(key,    pat, i, rest, q) {
+			pat = "\"" key "\":\""
+			i = index($0, pat)
+			if (i == 0) return "missing"
+			rest = substr($0, i + length(pat))
+			q = index(rest, "\"")
+			return substr(rest, 1, q - 1)
+		}
+		NR == 1 { printf "rng\t%s\ncase_derivation\t%s\n", field("rng"), field("case_derivation") }
+	'
+	for profile in "${profiles[@]}"; do
+		hash="$("$cr_bin" profile show "$(reader_profile "$profile")" 2>/dev/null | sha256sum | awk '{ print $1 }')"
+		printf 'profile\t%s\t%s\n' "$profile" "$hash"
+	done
+	while IFS= read -r seed; do
+		[ -n "$seed" ] || continue
+		printf 'seed\t%s\t%s\n' "$seed" "${seed_sha[$seed]}"
+	done <<EOF
+$seeds
+EOF
 }
 
 campaign() {
@@ -673,6 +786,7 @@ campaign() {
 			hash="$(sha256sum -- "$seed" | awk '{ print $1 }')"
 			bytes="$(wc -c <"$seed" | tr -d '[:space:]')"
 			printf 'specificity sha256=%s bytes=%s\n' "$hash" "$bytes"
+			seed_sha["$seed"]="$hash"
 			local key
 			key="$(finding_key "$spec_json")"
 			seed_non16["$seed"]="${key%|*}"
@@ -701,10 +815,34 @@ EOF
 		return 1
 	fi
 
+	local fixed_per=$(((target + nseeds - 1) / nseeds))
+	if [ -n "$floors_file" ]; then
+		local identity
+		identity="$(current_identity)" || exit 2
+		if [ "$write_floors" -eq 0 ]; then
+			local plan_ok=1
+			for profile in "${profiles[@]}"; do
+				[ "${plan_per[$profile]:-}" = "$fixed_per" ] || plan_ok=0
+			done
+			if [ "$identity" != "$floors_identity" ] || [ "$plan_ok" -eq 0 ]; then
+				printf 'case set stale: regenerate with --write-floors\n'
+				diff <(printf '%s\n' "$floors_identity") <(printf '%s\n' "$identity") | sed 's/^/stale /'
+				[ "$plan_ok" -eq 1 ] || printf 'stale plan: per must be %s for every profile\n' "$fixed_per"
+				return 1
+			fi
+		fi
+	fi
+
 	local ledger="$work/ledger"
 	: >"$ledger"
 	local overall=0
 	for profile in "${profiles[@]}"; do
+		if [ -n "$floors_file" ]; then
+			local want=0
+			[ "$write_floors" -eq 1 ] || want="${plan_batches[$profile]}"
+			planned_draw "$profile" "$fixed_per" "$want" "$ledger"
+			continue
+		fi
 		local decisive=0 attempts=0 round_base=0
 		local per
 		if [ -n "$trials" ]; then
@@ -735,27 +873,10 @@ EOF
 				if [ "$draw" -lt 1 ]; then
 					break
 				fi
-				local batch="$work/batch"
-				mkdir -p "$batch"
-				local report="$batch/report.jsonl"
-				local paths="$batch/paths"
-				local reader_status=0
-				local draw_profile
-				draw_profile="$(reader_profile "$profile")"
-				"$cr_bin" corrupt "$draw_profile" \
-					--master "$master" \
-					--round "$round_base" \
-					--count "$draw" \
-					--emit tmp \
-					--tmp-dir "$batch" \
-					--report "$report" \
-					-- "$seed" >"$paths" 2>"$batch/reader.err" || reader_status=$?
-				batch_decisive=0
-				score_batch "$profile" "$report" "$paths" "$reader_status" "$ledger" "$seed"
+				draw_batch "$profile" "$seed" "$round_base" "$draw" "$ledger"
 				round_base=$((round_base + draw))
 				attempts=$((attempts + draw))
 				decisive=$((decisive + batch_decisive))
-				rm -rf -- "$batch"
 			done <<EOF
 $seeds
 EOF
@@ -796,90 +917,218 @@ EOF
 	local summary_status=0
 	summarize <"$ledger" || summary_status=$?
 	if [ -n "$floors_file" ]; then
-		check_floors "$ledger"
+		if [ "$write_floors" -eq 1 ]; then
+			write_floors_file "$ledger" "$identity" "$fixed_per"
+		else
+			check_floors "$ledger"
+		fi
 		return $?
 	fi
 	return "$summary_status"
 }
 
-# Read --floors: one "master=SEED trials=N" line and "PROFILE MIN" per profile.
-# A master or trial count given on the command line must agree with it.
+# Read --floors, the case-set file --write-floors writes (see usage).
+# Identity lines are kept verbatim for the stale check. A master or trial
+# count given on the command line must agree with the file's, except with
+# --write-floors, where it replaces it. --write-floors may start a new file.
 load_floors() {
-	local line f_master="" f_trials="" profile
+	if [ "$write_floors" -eq 1 ] && [ ! -e "$floors_file" ]; then
+		return 0
+	fi
 	[ -r "$floors_file" ] || die "cannot read floors file: $floors_file"
+	floors_exists=1
+	local tab line kind a b c f_master="" f_trials="" profile
+	tab="$(printf '\t')"
+	local -a ident=() pins=()
 	while IFS= read -r line || [ -n "$line" ]; do
-		line="${line%%#*}"
-		line="${line#"${line%%[![:space:]]*}"}"
-		line="${line%"${line##*[![:space:]]}"}"
-		[ -n "$line" ] || continue
-		if [[ "$line" =~ ^master=([^[:space:]]+)[[:space:]]+trials=([0-9]+)$ ]]; then
-			f_master="${BASH_REMATCH[1]}"
-			f_trials="${BASH_REMATCH[2]}"
-		elif [[ "$line" =~ ^([a-z]+)[[:space:]]+([a-z]+)[[:space:]]+([0-9]+)$ ]]; then
-			floor_min["${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"]="${BASH_REMATCH[3]}"
-		else
-			die "floors: cannot parse line: $line"
-		fi
+		case "$line" in
+			''|'#'*) continue ;;
+		esac
+		IFS="$tab" read -r kind a b c <<<"$line"
+		case "$kind" in
+			master)
+				f_master="$a"
+				ident+=("$line")
+				;;
+			trials)
+				[[ "$a" =~ ^[0-9]+$ ]] || die "floors: cannot parse line: $line"
+				f_trials="$a"
+				ident+=("$line")
+				;;
+			generator|rng|case_derivation|profile|seed)
+				ident+=("$line")
+				;;
+			plan)
+				case " ${profiles[*]} " in
+					*" $a "*) ;;
+					*) die "floors: unknown profile $a" ;;
+				esac
+				[[ "$b" =~ ^per=([0-9]+)$ ]] || die "floors: cannot parse line: $line"
+				plan_per["$a"]="${BASH_REMATCH[1]}"
+				[[ "$c" =~ ^batches=([0-9]+)$ ]] || die "floors: cannot parse line: $line"
+				plan_batches["$a"]="${BASH_REMATCH[1]}"
+				;;
+			detect)
+				case " ${profiles[*]} " in
+					*" $a "*) ;;
+					*) die "floors: unknown profile $a" ;;
+				esac
+				{ [ -n "$b" ] && [[ "$c" =~ ^[0-9]+$ ]]; } || die "floors: cannot parse line: $line"
+				pins+=("$a$tab$b$tab$c")
+				;;
+			*)
+				die "floors: cannot parse line: $line"
+				;;
+		esac
 	done <"$floors_file"
-	[ -n "$f_master" ] || die "floors: missing master=SEED trials=N line"
-	if [ "$master_set" -eq 1 ] && [ "$master" != "$f_master" ]; then
-		die "floors: --master $master disagrees with master=$f_master"
-	fi
-	if [ "$trials_set" -eq 1 ] && [ "$trials" != "$f_trials" ]; then
-		die "floors: --trials $trials disagrees with trials=$f_trials"
-	fi
-	master="$f_master"
-	trials="$f_trials"
-	local class key
-	for profile in "${profiles[@]}"; do
-		for class in "${classes[@]}"; do
-			[ -n "${floor_min[$profile $class]:-}" ] || die "floors: no floor for $profile $class"
+	{ [ -n "$f_master" ] && [ -n "$f_trials" ]; } || die "floors: missing master or trials line"
+	if [ "$write_floors" -eq 0 ]; then
+		if [ "$master_set" -eq 1 ] && [ "$master" != "$f_master" ]; then
+			die "floors: --master $master disagrees with master $f_master"
+		fi
+		if [ "$trials_set" -eq 1 ] && [ "$trials" != "$f_trials" ]; then
+			die "floors: --trials $trials disagrees with trials $f_trials"
+		fi
+		for profile in "${profiles[@]}"; do
+			[ -n "${plan_batches[$profile]:-}" ] || die "floors: no plan for $profile"
 		done
-	done
-	for key in "${!floor_min[@]}"; do
-		case " ${profiles[*]} " in
-			*" ${key% *} "*) ;;
-			*) die "floors: unknown profile ${key% *}" ;;
-		esac
-		case " ${classes[*]} " in
-			*" ${key#* } "*) ;;
-			*) die "floors: unknown class ${key#* }" ;;
-		esac
-	done
+	fi
+	[ "$master_set" -eq 1 ] && [ "$write_floors" -eq 1 ] || master="$f_master"
+	[ "$trials_set" -eq 1 ] && [ "$write_floors" -eq 1 ] || trials="$f_trials"
+	floors_identity="$(printf '%s\n' "${ident[@]}")"
+	if [ "${#pins[@]}" -gt 0 ]; then
+		floors_pinned="$(printf '%s\n' "${pins[@]}" | LC_ALL=C sort -u)"
+	fi
 }
 
-# Print a "floor" line per profile (trials reached) and per profile and
-# class (detections against the floor, false alarms). Exit 1 on any miss.
+# The detected cases of a ledger as "profile<TAB>seed<TAB>round", sorted.
+detected_cases() {
+	awk -F '\t' '$2 == "detect" && NF >= 6 { print $1 "\t" $5 "\t" $6 }' "$1" | LC_ALL=C sort -u
+}
+
+# Count the cases in list $1 for profile $2 whose seed is in class $3.
+cell_count() {
+	local p sd r n=0
+	while IFS="$(printf '\t')" read -r p sd r; do
+		[ "$p" = "$2" ] && [ "${seed_class[$sd]:-}" = "$3" ] && n=$((n + 1))
+	done <<EOF
+$1
+EOF
+	printf '%s' "$n"
+}
+
+# Print a "floor" line per profile: decisive trials against the trial
+# count, and "crash" for a crash or harness failure.
+profile_floor() {
+	awk -v profile="$1" -v want="$trials" -F '\t' '
+		$1 == profile && ($2 == "detect" || $2 == "accept") { n++ }
+		$1 == profile && ($2 == "crash" || $2 == "harness") { bad++ }
+		END {
+			verdict = "ok"
+			if (bad > 0) verdict = "crash"
+			else if (n < want) verdict = "short"
+			printf "floor %s decisive=%d trials=%d %s\n", profile, n, want, verdict
+		}
+	' "$2"
+}
+
+# Print each case of list $2 as "case $1 PROFILE SEED round ROUND".
+print_cases() {
+	local p sd r
+	while IFS="$(printf '\t')" read -r p sd r; do
+		[ -n "$p" ] || continue
+		printf 'case %s %s %s round %s\n' "$1" "$p" "$sd" "$r"
+	done <<EOF
+$2
+EOF
+}
+
+# The gate: each profile reaches the trial count without a crash, every
+# pinned case is still detected ("case lost" otherwise), no unpinned case
+# is ("case new"), and no free case is detected. A "floor" line per
+# profile and class compares detections with the pinned count; equal
+# counts can still hide a loss offset by a gain, which the case lines
+# name. Exit 1 on any failure.
 check_floors() {
-	local ledger="$1" profile class status=0 line
+	local ledger="$1" profile class status=0 line got lost new
+	got="$(detected_cases "$ledger")"
+	lost="$(LC_ALL=C comm -23 <(printf '%s\n' "$floors_pinned" | awk 'NF') <(printf '%s\n' "$got" | awk 'NF'))"
+	new="$(LC_ALL=C comm -13 <(printf '%s\n' "$floors_pinned" | awk 'NF') <(printf '%s\n' "$got" | awk 'NF'))"
 	for profile in "${profiles[@]}"; do
-		line="$(awk -v profile="$profile" -v want="$trials" -F '\t' '
-			$1 == profile && ($2 == "detect" || $2 == "accept") { n++ }
-			$1 == profile && ($2 == "crash" || $2 == "harness") { bad++ }
-			END {
-				verdict = "ok"
-				if (bad > 0) verdict = "crash"
-				else if (n < want) verdict = "short"
-				printf "floor %s decisive=%d trials=%d %s\n", profile, n, want, verdict
-			}
-		' "$ledger")"
+		line="$(profile_floor "$profile" "$ledger")"
 		printf '%s\n' "$line"
 		case "$line" in *" ok") ;; *) status=1 ;; esac
 		for class in "${classes[@]}"; do
-			line="$(awk -v profile="$profile" -v class="$class" -v min="${floor_min[$profile $class]}" -F '\t' '
+			line="$(awk -v profile="$profile" -v class="$class" -v pinned="$(cell_count "$floors_pinned" "$profile" "$class")" -F '\t' '
 				$1 == profile && $3 == class && $2 == "detect" { k++; if ($4 == "free") fa++ }
 				END {
 					verdict = "ok"
 					if (fa > 0) verdict = "false_alarm"
-					else if (k < min) verdict = "below"
-					printf "floor %s %s detect=%d min=%d false_alarm=%d %s\n", profile, class, k, min, fa, verdict
+					else if (k < pinned) verdict = "below"
+					else if (k > pinned) verdict = "above"
+					printf "floor %s %s detect=%d pinned=%d false_alarm=%d %s\n", profile, class, k, pinned, fa, verdict
 				}
 			' "$ledger")"
 			printf '%s\n' "$line"
 			case "$line" in *" ok") ;; *) status=1 ;; esac
 		done
 	done
+	if [ -n "$lost" ]; then
+		print_cases lost "$lost"
+		status=1
+	fi
+	if [ -n "$new" ]; then
+		print_cases new "$new"
+		printf 'new detections are not pinned: regenerate with --write-floors\n'
+		status=1
+	fi
 	return "$status"
+}
+
+# --write-floors: refuse on a crash, a false alarm or a short profile.
+# Otherwise print the cases added and removed against the old file and the
+# old and new count per profile and class, then replace the file.
+write_floors_file() {
+	local ledger="$1" identity="$2" per="$3" profile class status=0 line got fa tab
+	tab="$(printf '\t')"
+	for profile in "${profiles[@]}"; do
+		line="$(profile_floor "$profile" "$ledger")"
+		printf '%s\n' "$line"
+		case "$line" in *" ok") ;; *) status=1 ;; esac
+	done
+	fa="$(awk -F '\t' '$2 == "detect" && $4 == "free" { n++ } END { print n + 0 }' "$ledger")"
+	if [ "$fa" -gt 0 ]; then
+		printf 'floor false_alarm=%s\n' "$fa"
+		status=1
+	fi
+	if [ "$status" -ne 0 ]; then
+		printf 'floors not written: %s\n' "$floors_file"
+		return 1
+	fi
+	got="$(detected_cases "$ledger")"
+	if [ "$floors_exists" -eq 1 ]; then
+		print_cases added "$(LC_ALL=C comm -13 <(printf '%s\n' "$floors_pinned" | awk 'NF') <(printf '%s\n' "$got" | awk 'NF'))"
+		print_cases removed "$(LC_ALL=C comm -23 <(printf '%s\n' "$floors_pinned" | awk 'NF') <(printf '%s\n' "$got" | awk 'NF'))"
+	fi
+	for profile in "${profiles[@]}"; do
+		for class in "${classes[@]}"; do
+			printf 'cell %s %s old=%s new=%s\n' "$profile" "$class" \
+				"$(cell_count "$floors_pinned" "$profile" "$class")" "$(cell_count "$got" "$profile" "$class")"
+		done
+	done
+	local tmp="$floors_file.tmp.$$"
+	{
+		printf '# Corruption detection floors: the exact set of detected cases.\n'
+		printf '# Written by ./corruption-coverage --write-floors (nix run .#corruption-floors).\n'
+		printf '# Never edit by hand; see docs/corruption_coverage.md.\n'
+		printf '%s\n' "$identity"
+		for profile in "${profiles[@]}"; do
+			printf 'plan\t%s\tper=%s\tbatches=%s\n' "$profile" "$per" "${drawn_batches[$profile]}"
+		done
+		printf '%s\n' "$got" | awk 'NF' | LC_ALL=C sort -t "$tab" -k1,1 -k2,2 -k3,3n | sed "s/^/detect$tab/"
+	} >"$tmp" || { rm -f -- "$tmp"; die "cannot write $tmp"; }
+	mv -f -- "$tmp" "$floors_file" || die "cannot replace $floors_file"
+	printf 'wrote %s: %s cases\n' "$floors_file" "$(printf '%s\n' "$got" | awk 'NF { n++ } END { print n + 0 }')"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -928,6 +1177,15 @@ while [ "$#" -gt 0 ]; do
 			floors_file="$2"
 			shift 2
 			;;
+		--write-floors)
+			write_floors=1
+			shift
+			;;
+		--generator-rev)
+			[ "$#" -ge 2 ] || die "--generator-rev needs a value"
+			generator_rev="$2"
+			shift 2
+			;;
 		--tiffdump)
 			[ "$#" -ge 2 ] || die "--tiffdump needs a path"
 			tiffdump_bin="$2"
@@ -958,6 +1216,9 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+if [ "$write_floors" -eq 1 ] && [ -z "$floors_file" ]; then
+	die "--write-floors needs --floors PATH"
+fi
 if [ -n "$floors_file" ]; then
 	load_floors
 fi

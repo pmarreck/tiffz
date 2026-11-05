@@ -22,7 +22,8 @@
       flake = false;
     };
     # Deterministic corruption generator for checks.corruption-coverage.
-    # Pinned so the measured detection floors stay reproducible.
+    # Pinned so the detected-case set in tests/corruption_coverage_floors
+    # stays valid; that file records this revision and goes stale without it.
     corruption-reader = {
       url = "git+ssh://git@github.com/pmarreck/corruption_reader?ref=yolo&rev=a7ea9957d6acae34aded4ef7bc7e25e5f121dc7a";
     };
@@ -468,7 +469,9 @@
 
         # Corruption detection gate: a deterministic corruption-reader
         # campaign over the known-good seed corpus, scored by the packaged
-        # CLI against tests/corruption_coverage_floors. libtiff tiffdump maps
+        # CLI against the exact detected-case set in
+        # tests/corruption_coverage_floors, which apps.corruption-floors
+        # writes with the same pinned tools. libtiff tiffdump maps
         # each seed, and libtiff tiffinfo plus pigz (zlib Adler-32) bound each
         # case, independently of tiffz; see docs/corruption_coverage.md.
         checks.corruption-coverage = pkgs.runCommand "tiffz-corruption-coverage" {
@@ -482,6 +485,7 @@
             --tiffinfo ${pkgs.libtiff.bin}/bin/tiffinfo \
             --pigz ${pkgs.pigz}/bin/pigz \
             --corruption-reader ${corruption-reader.packages.${system}.default}/bin/corruption-reader \
+            --generator-rev ${corruption-reader.rev} \
             >"$TMPDIR/report" 2>"$TMPDIR/err" && status=0 || status=$?
           cat "$TMPDIR/report"
           if [ "$status" -ne 0 ]; then
@@ -491,6 +495,33 @@
           mkdir -p $out
           cp "$TMPDIR/report" $out/report
         '';
+
+        # Rewrite tests/corruption_coverage_floors from a fresh campaign with
+        # the tools checks.corruption-coverage uses. It prints the cases added
+        # and removed and the old and new count per profile and class; the
+        # diff is the review. Run from the repository root:
+        #   nix run .#corruption-floors
+        apps.corruption-floors = {
+          type = "app";
+          program = "${pkgs.writeShellScript "tiffz-corruption-floors" ''
+            set -eu
+            export PATH=${pkgs.lib.makeBinPath [ pkgs.coreutils pkgs.gawk pkgs.diffutils pkgs.gnused ]}:$PATH
+            if [ ! -f ./corruption-coverage ] || [ ! -f tests/fuzz/fuzz.zig ]; then
+              echo "corruption-floors: run from the tiffz repository root" >&2
+              exit 2
+            fi
+            exec ${pkgs.bash}/bin/bash ./corruption-coverage \
+              --floors tests/corruption_coverage_floors \
+              --write-floors \
+              --tiffz ${tiffzPkg}/bin/tiffz \
+              --tiffdump ${pkgs.libtiff.bin}/bin/tiffdump \
+              --tiffinfo ${pkgs.libtiff.bin}/bin/tiffinfo \
+              --pigz ${pkgs.pigz}/bin/pigz \
+              --corruption-reader ${corruption-reader.packages.${system}.default}/bin/corruption-reader \
+              --generator-rev ${corruption-reader.rev} \
+              "$@"
+          ''}";
+        };
 
         # devShell — provides Zig + the full TIFF fixture-generation toolchain
         # per SPEC.md Appendix A.
