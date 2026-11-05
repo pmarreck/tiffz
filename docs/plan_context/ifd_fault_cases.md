@@ -416,3 +416,14 @@ Controlled reds: letting RATIONAL pass as DOUBLE failed the GeoTIFF unit
 test and both IFD-entry fixture tests; dropping the multiple-of-6 test
 failed the unit test only, until the ModelTiepoint corrupt case used 7
 values instead of 4; it now fails the unit test and both fixture tests.
+
+validate's reply (2026-11-04): GeoKeyDirectory stays on the shared
+unsigned-short kind, since one widening ruling governs every SHORT array.
+The GDAL rows are accepted as pinned (repository-level MIT, commit-pinned
+URL, sha256 and size); a file that later gains its own notice gets that
+notice in its row. Complex SampleFormat 5 and 6 stay reason-3 value faults
+(TIFF 6.0 defines 1 to 4; tiff.h is an implementation header). The pattern
+is a KNOWN_DEFECT candidate with two caveats: the five files are one
+producer, and complex data has no conforming repair. Whether a de facto
+libtiff extension counts as a claimed specification is now an owner
+question.
