@@ -158,6 +158,26 @@ name per file), so later reports run against the same baseline and list any
 added files explicitly. Rule rows are batched by specification section,
 with one corpus report per batch (validate, 2026-11-04).
 
+Each row also carries a `class`, an `origin`, an `expected` verdict and its
+`evidence` (validate, 2026-11-05):
+- `real_world` files come from producers in the wild. Only this class counts
+  toward occurrence counts, KNOWN_DEFECT producer evidence and the "ok
+  today" baseline.
+- `test_suite` files are fixtures another project's tests wrote to exercise
+  features.
+- `damaged` files are deliberately broken, the owner's "examples of bad data
+  to detect corruption in". `expected` gives the intended damage. A damaged
+  file that validates ok is a detection gap, to investigate, not a pass.
+
+Batch reports give one section per class. A copy takes the class of its
+content, by sha256.
+
+GDAL autotest files are referenced by URL, never committed. They stay only
+when their `origin` is `gdal_generated`, with the license "presumed MIT
+(GDAL/OGR General; data not explicitly covered)". A file of external origin,
+or with no origin evidence, moves to `real_corpus_excluded.tsv` with the
+reason, until its own license is established.
+
 ## TIFF 6.0 batch rulings (validate, 2026-11-04)
 
 1. ASCII (p. 15): a byte of 0x80 or above, or a final byte other than NUL,
