@@ -15,9 +15,18 @@
 #                                   undefined.
 #   predictor3_deflate_mixed.tif    8x8 RGB float at 32,32,16 with Predictor 3.
 #                                   Corrupt: TN3 defines one width per row.
-#   predictor2_deflate_mixed.tif    8x8 RGB at 8,8,16 with Predictor 2.
-#                                   Clean; tiffz refuses the mixed widths as
-#                                   reach (unsupported, exit 4).
+#   predictor2_deflate_mixed.tif    8x8 RGB at 8,8,16 with Predictor 2, chunky.
+#                                   Corrupt: TIFF 6.0 p. 65 requires one
+#                                   BitsPerSample for chunky differencing.
+#   predictor2_deflate_planar_mixed.tif  The same widths, planar-separate.
+#                                   Clean: each plane is differenced like
+#                                   grayscale, at its own width.
+#   predictor3_deflate_planar_mixed.tif  RGB float 32,32,16, planar-separate.
+#                                   Clean for the same reason.
+#   predictor2_deflate_bps32.tif    8x8 gray, 32-bit, Predictor 2. Clean;
+#                                   tiffz's horizontal predictor handles 8
+#                                   and 16 bits only, so it is reach
+#                                   (unsupported, exit 4).
 #   predictor3_deflate_8bit_float.tif  8x8, 8-bit, SampleFormat 3, Predictor 3.
 #                                   Clean (TN3: any multiple of 8).
 #   predictor3_deflate_8bit_uint.tif   The same bytes with SampleFormat 1:
@@ -26,14 +35,21 @@ use strict; use warnings;
 use Compress::Zlib qw(compress);
 my $dir = shift or die "usage: gen.pl DIR\n";
 
-# Classic little-endian TIFF: header, one strip, then the IFD and values.
+# Classic little-endian TIFF: header, the strips (one string, or an array
+# of them in order), then the IFD and values.
 sub tiff {
-    my ($fields, $strip) = @_;
-    my $buf = "II" . pack("v", 42) . pack("V", 0) . $strip;
+    my ($fields, $strips) = @_;
+    my $buf = "II" . pack("v", 42) . pack("V", 0);
+    my (@offsets, @lengths);
+    for my $s (ref $strips ? @$strips : ($strips)) {
+        push @offsets, length $buf;
+        push @lengths, length $s;
+        $buf .= $s;
+    }
     $buf .= "\0" if length($buf) % 2;
     my %f = %$fields;
-    $f{273} = [4, [8]];
-    $f{279} = [4, [length $strip]];
+    $f{273} = [4, [@offsets]];
+    $f{279} = [4, [@lengths]];
     my @tags = sort { $a <=> $b } keys %f;
     my $ifd_off = length $buf;
     my $vals_off = $ifd_off + 2 + 12 * @tags + 4;
@@ -102,8 +118,9 @@ put('predictor3_deflate_bps12.tif', tiff({
 # Mixed sample widths (validate, 2026-11-05). TN3's DecodeFPDelta takes a
 # single bytesPerSample for every sample of a row, so a Predictor 3 image
 # with mixed widths has no specified decode: a fault on Predictor. TIFF 6.0
-# defines Predictor 2 per sample; tiffz refuses mixed widths there as reach
-# until it implements them. The strip bytes are a plain gradient.
+# p. 65 likewise requires one BitsPerSample for chunky Predictor 2 ("We
+# require that BitsPerSample be the same for all 3 components"). The strip
+# bytes are a plain gradient.
 put('predictor3_deflate_mixed.tif', tiff({
     256 => [3, [$width]], 257 => [3, [$length]], 258 => [3, [32, 32, 16]], 259 => [3, [8]],
     262 => [3, [2]], 277 => [3, [3]], 278 => [3, [$length]], 284 => [3, [1]],
@@ -134,3 +151,56 @@ for my $variant (['predictor3_deflate_8bit_float.tif', 3], ['predictor3_deflate_
     $f{339} = [3, [$format]] if defined $format;
     put($file, tiff(\%f, compress($raw8, 9)));
 }
+
+# Planar-separate mixed widths. TIFF 6.0 p. 65: with PlanarConfiguration 2
+# "Differencing works the same as it does for grayscale data", so each
+# plane is differenced at its own width, one strip per plane. Predictor 2:
+# planes 0 and 1 are 8-bit, pixel k holding 5k and 7k + 40 mod 256; plane 2
+# is 16-bit, pixel k holding 1000k + 7. Differences are modulo 2^bits, stored
+# little-endian.
+sub diff_row {
+    my ($mod, @v) = @_;
+    return map { $_ == 0 ? $v[0] : ($v[$_] - $v[$_ - 1]) % $mod } 0 .. $#v;
+}
+my @planes2;
+for my $plane ([8, sub { (5 * $_[0]) & 0xFF }], [8, sub { (7 * $_[0] + 40) & 0xFF }], [16, sub { 1000 * $_[0] + 7 }]) {
+    my ($bits, $value) = @$plane;
+    my $raw = '';
+    for my $row (0 .. $length - 1) {
+        my @d = diff_row(1 << $bits, map { $value->($row * $width + $_) } 0 .. $width - 1);
+        $raw .= pack($bits == 8 ? 'C*' : 'v*', @d);
+    }
+    push @planes2, compress($raw, 9);
+}
+put('predictor2_deflate_planar_mixed.tif', tiff({
+    256 => [3, [$width]], 257 => [3, [$length]], 258 => [3, [8, 8, 16]], 259 => [3, [8]],
+    262 => [3, [2]], 277 => [3, [3]], 278 => [3, [$length]], 284 => [3, [2]],
+    317 => [3, [2]],
+}, \@planes2));
+
+# Predictor 3, planar-separate float at 32,32,16: pixel k holds k/64,
+# 1 + k/32 and the half float k/64, all exact. TN3's encoder runs on each
+# plane's rows at that plane's width.
+my @planes3;
+for my $plane ([4, sub { pack('f>', $_[0] / 64) }], [4, sub { pack('f>', 1 + $_[0] / 32) }], [2, sub { pack('n', half_bits($_[0])) }]) {
+    my ($bytes, $value) = @$plane;
+    my $raw = '';
+    for my $row (0 .. $length - 1) {
+        $raw .= fp_predict_row($bytes, map { $value->($row * $width + $_) } 0 .. $width - 1);
+    }
+    push @planes3, compress($raw, 9);
+}
+put('predictor3_deflate_planar_mixed.tif', tiff({
+    256 => [3, [$width]], 257 => [3, [$length]], 258 => [3, [32, 32, 16]], 259 => [3, [8]],
+    262 => [3, [2]], 277 => [3, [3]], 278 => [3, [$length]], 284 => [3, [2]],
+    317 => [3, [3]], 339 => [3, [3, 3, 3]],
+}, \@planes3));
+
+# Predictor 2 at 32 bits: TIFF 6.0 defines it (p. 65 widens components as
+# needed) and tiffz does not implement it, so the file is reach. The strip
+# bytes are a plain gradient.
+put('predictor2_deflate_bps32.tif', tiff({
+    256 => [3, [$width]], 257 => [3, [$length]], 258 => [3, [32]], 259 => [3, [8]],
+    262 => [3, [1]], 277 => [3, [1]], 278 => [3, [$length]], 284 => [3, [1]],
+    317 => [3, [2]],
+}, compress(pack('C*', map { $_ & 0xFF } 0 .. 4 * $width * $length - 1), 9)));

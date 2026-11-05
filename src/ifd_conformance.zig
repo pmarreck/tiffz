@@ -237,17 +237,24 @@ const Extra = enum {
     /// BitsPerSample of a transparency mask (PhotometricInterpretation 4):
     /// "SamplesPerPixel and BitsPerSample must be 1" (TIFF 6.0 p. 37).
     one_bit_for_transparency_mask,
-    /// Predictor 3: "This predictor should only be applied to floating point
-    /// data that has BitsPerSample equal to a multiple of 8" (Adobe Photoshop
-    /// TIFF Technical Note 3, 2005, p. 2). The transform splits each sample
-    /// into bytes, so a sample that is not whole bytes has no defined decode:
-    /// a value fault on Predictor (validate, 2026-11-05). Every BitsPerSample
-    /// value counts, and an absent BitsPerSample is 1. The widths must also
-    /// match: TN3's DecodeFPDelta reorders every sample of a row with one
-    /// "int32 bytesPerSample" (p. 4), so mixed widths have no specified
-    /// decode either. The SampleFormat half of the sentence is a should-row,
-    /// not checked here.
-    floating_point_predictor_whole_bytes,
+    /// The sample widths a predictor can difference. Both are value faults on
+    /// Predictor, since no decode is defined (validate, 2026-11-05):
+    /// - Predictor 3: "This predictor should only be applied to floating
+    ///   point data that has BitsPerSample equal to a multiple of 8" (Adobe
+    ///   Photoshop TIFF Technical Note 3, 2005, p. 2). The transform splits
+    ///   each sample into bytes, so a sample that is not whole bytes has no
+    ///   defined decode. Every BitsPerSample value counts, and an absent
+    ///   BitsPerSample is 1. The SampleFormat half of the sentence is a
+    ///   should-row, not checked here.
+    /// - Chunky data (PlanarConfiguration 1) under Predictor 2 or 3 needs one
+    ///   width for every sample. TIFF 6.0 p. 65 differences chunky rows "with
+    ///   an offset of SamplesPerPixel" and says "We require that BitsPerSample
+    ///   be the same for all 3 components"; TN3's DecodeFPDelta reorders
+    ///   every sample of a row with one "int32 bytesPerSample" (p. 4). A
+    ///   planar-separate image is differenced plane by plane, which "works
+    ///   the same as it does for grayscale data" (TIFF 6.0 p. 65), so its
+    ///   planes may differ.
+    predictor_sample_widths,
     /// DNG DefaultUserCrop: "0 <= Top < Bottom <= 1.0, 0 <= Left < Right <= 1.0".
     user_crop,
     /// DNG NoiseProfile: "each S term must be positive", "each O term must be
@@ -329,7 +336,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.date_time, .kind = .ascii, .count = .twenty, .extras = &.{.date_time}, .citation = "TIFF 6.0 pp. 15-16, 31" },
     .{ .tag = tags.artist, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 28" },
     .{ .tag = tags.host_computer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 34" },
-    .{ .tag = tags.predictor, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .extras = &.{.floating_point_predictor_whole_bytes}, .citation = "TIFF 6.0 p. 64; Adobe Photoshop TIFF Technical Note 3 (2005), p. 2 (3 needs whole-byte samples)" },
+    .{ .tag = tags.predictor, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .extras = &.{.predictor_sample_widths}, .citation = "TIFF 6.0 pp. 64-65 (chunky data needs one BitsPerSample); Adobe Photoshop TIFF Technical Note 3 (2005), pp. 2 and 4 (3 needs whole-byte samples, one width per chunky row)" },
     .{ .tag = tags.white_point, .kind = .rational, .count = .two, .citation = "TIFF 6.0 p. 83" },
     .{ .tag = tags.primary_chromaticities, .kind = .rational, .count = .six, .citation = "TIFF 6.0 p. 83" },
     .{ .tag = tags.colormap, .kind = .unsigned_short, .count = .color_map, .citation = "TIFF 6.0 p. 29" },
@@ -875,10 +882,13 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
                 if (bits != 1) return .value;
             }
         },
-        .floating_point_predictor_whole_bytes => {
+        .predictor_sample_widths => {
             const value = element(bytes, entry.field_type, 0, endian) orelse return .count;
-            if (value != 3) continue; // the floating-point predictor
-            if (!uniformWholeByteBits(dir, endian)) return .value;
+            if (value != 2 and value != 3) continue; // no differencing
+            const widths = sampleWidths(dir, endian);
+            if (value == 3 and !widths.whole_bytes) return .value;
+            const planar_separate = (scalar(dir, tags.planar_configuration, endian) orelse 1) == tags.planar_separate;
+            if (!planar_separate and !widths.uniform) return .value;
         },
         .mask_sub_area_bounds => {
             const top = element(bytes, entry.field_type, 0, endian) orelse return .count;
@@ -1190,22 +1200,26 @@ fn allBitsIn(dir: *const Ifd, endian: Endian, allowed: []const u64) bool {
     return true;
 }
 
-/// Whether every BitsPerSample value (default 1) is a multiple of 8 and all
-/// are the same width; true when BitsPerSample is malformed (its own fault).
-fn uniformWholeByteBits(dir: *const Ifd, endian: Endian) bool {
-    const k = indexOf(dir, tags.bits_per_sample) orelse return false;
+/// Whether every BitsPerSample value (default 1) is a multiple of 8, and
+/// whether all are the same width. Both hold when BitsPerSample is malformed
+/// (its own fault).
+const SampleWidths = struct { whole_bytes: bool, uniform: bool };
+
+fn sampleWidths(dir: *const Ifd, endian: Endian) SampleWidths {
+    const k = indexOf(dir, tags.bits_per_sample) orelse return .{ .whole_bytes = false, .uniform = true };
     const entry = dir.entries[k];
     const values = dir.entryValueSlice(k);
+    var out: SampleWidths = .{ .whole_bytes = true, .uniform = true };
     var first: ?u64 = null;
     var i: usize = 0;
     while (i < entry.count) : (i += 1) {
-        const bits = element(values, entry.field_type, i, endian) orelse return true;
-        if (bits % 8 != 0) return false;
+        const bits = element(values, entry.field_type, i, endian) orelse return .{ .whole_bytes = true, .uniform = true };
+        if (bits % 8 != 0) out.whole_bytes = false;
         if (first) |f| {
-            if (bits != f) return false;
+            if (bits != f) out.uniform = false;
         } else first = bits;
     }
-    return true;
+    return out;
 }
 
 fn hasExtra(rule: Rule, extra: Extra) bool {
@@ -1953,7 +1967,7 @@ test "a palette image needs a ColorMap, and a transparency mask one bit per samp
     try expectFaults(&gray8, &.{});
 }
 
-test "Predictor 3 needs whole-byte samples (Adobe Photoshop TIFF Technical Note 3 p. 2)" {
+test "Predictor sample widths: 3 needs whole bytes (TN3 p. 2), chunky data one width (TIFF 6.0 p. 65)" {
     for ([_]struct { bits: u32, predictor: u32, fault: bool }{
         .{ .bits = 32, .predictor = 3, .fault = false },
         .{ .bits = 16, .predictor = 3, .fault = false },
@@ -1993,6 +2007,38 @@ test "Predictor 3 needs whole-byte samples (Adobe Photoshop TIFF Technical Note 
         defer out.deinit(testing.allocator);
         if (case.fault) {
             try testing.expectEqualDeep(@as([]const Fault, &.{.{ .field_invalid = .{ .entry_index = 3, .tag = tags.predictor, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 3 } }}), out.items);
+        } else try testing.expectEqual(@as(usize, 0), out.items.len);
+    }
+    // With PlanarConfiguration stated. Chunky rows need one width under
+    // either predictor (TIFF 6.0 p. 65: "We require that BitsPerSample be the
+    // same for all 3 components"); planar-separate planes are differenced
+    // one at a time, so their widths may differ, though Predictor 3 still
+    // needs whole bytes in every plane. Predictor 1 differences nothing.
+    for ([_]struct { predictor: u16, planar: u16, first: u16, last: u16, fault: bool }{
+        .{ .predictor = 2, .planar = 1, .first = 8, .last = 16, .fault = true },
+        .{ .predictor = 2, .planar = 1, .first = 8, .last = 8, .fault = false },
+        .{ .predictor = 2, .planar = 2, .first = 8, .last = 16, .fault = false },
+        .{ .predictor = 1, .planar = 1, .first = 8, .last = 16, .fault = false },
+        .{ .predictor = 3, .planar = 1, .first = 32, .last = 16, .fault = true },
+        .{ .predictor = 3, .planar = 2, .first = 32, .last = 16, .fault = false },
+        .{ .predictor = 3, .planar = 2, .first = 32, .last = 12, .fault = true },
+    }) |case| {
+        var bits: [6]u8 = undefined;
+        std.mem.writeInt(u16, bits[0..2], case.first, .little);
+        std.mem.writeInt(u16, bits[2..4], case.first, .little);
+        std.mem.writeInt(u16, bits[4..6], case.last, .little);
+        var entries = [_]Entry{
+            inline16(tags.bits_per_sample, .short, 3, 0),
+            inline16(tags.photometric, .short, 1, 2),
+            inline16(tags.samples_per_pixel, .short, 1, 3),
+            inline16(tags.planar_configuration, .short, 1, case.planar),
+            inline16(tags.predictor, .short, 1, case.predictor),
+        };
+        var cached = [_]?[]u8{ &bits, null, null, null, null };
+        var out = try faultsOf(&entries, &cached);
+        defer out.deinit(testing.allocator);
+        if (case.fault) {
+            try testing.expectEqualDeep(@as([]const Fault, &.{.{ .field_invalid = .{ .entry_index = 4, .tag = tags.predictor, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = case.predictor } }}), out.items);
         } else try testing.expectEqual(@as(usize, 0), out.items.len);
     }
 }

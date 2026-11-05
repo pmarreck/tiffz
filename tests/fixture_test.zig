@@ -3745,15 +3745,16 @@ test "corruption replay: predictor3_deflate_fp32.tif bolter master 0x20261105 ro
     }
 }
 
-// Mixed sample widths (validate, 2026-11-05). The predictors difference one
-// width per row, so tiffz refuses mixed BitsPerSample before decoding, as
-// reach, instead of decoding every sample at the first width. For Predictor
-// 3 that is also a fault: TN3's DecodeFPDelta takes a single bytesPerSample.
-// Fixtures from tests/fixtures/predictor/gen.pl; libtiff refuses both
-// ("Cannot handle different values per sample for BitsPerSample").
-test "Predictor 3 at 32,32,16 is a value fault on Predictor and never decodes" {
+// Mixed sample widths in chunky data (validate, 2026-11-05). Both predictors
+// difference a chunky row at one width: TIFF 6.0 p. 65 says for Predictor 2
+// "We require that BitsPerSample be the same for all 3 components", and
+// TN3's DecodeFPDelta takes a single bytesPerSample. So mixed widths are a
+// value fault on Predictor, and the decoder refuses them rather than
+// decoding every sample at the first width. Fixtures from
+// tests/fixtures/predictor/gen.pl; libtiff refuses both ("Cannot handle
+// different values per sample for BitsPerSample").
+fn expectChunkyMixedWidthFault(path: []const u8) !void {
     const allocator = std.testing.allocator;
-    const path = "tests/fixtures/predictor/predictor3_deflate_mixed.tif";
     const bytes = try loadFile(allocator, path);
     defer allocator.free(bytes);
     var recorder = FindingRecorder.init(allocator);
@@ -3774,9 +3775,56 @@ test "Predictor 3 at 32,32,16 is a value fault on Predictor and never decodes" {
     try std.testing.expectError(error.UnsupportedBitDepth, decodeAllStripsBytes(allocator, path));
 }
 
-test "Predictor 2 at 8,8,16 is refused before decoding, as reach, with no corrupt record" {
+test "Predictor 3 at 32,32,16 is a value fault on Predictor and never decodes" {
+    try expectChunkyMixedWidthFault("tests/fixtures/predictor/predictor3_deflate_mixed.tif");
+}
+
+test "Predictor 2 at 8,8,16 chunky is a value fault on Predictor (TIFF 6.0 p. 65) and never decodes" {
+    try expectChunkyMixedWidthFault("tests/fixtures/predictor/predictor2_deflate_mixed.tif");
+}
+
+// Planar-separate data is differenced plane by plane: "If PlanarConfiguration
+// is 2, there is no problem. Differencing works the same as it does for
+// grayscale data" (TIFF 6.0 p. 65). So planes may differ in width, and each
+// is decoded at its own. libtiff refuses mixed widths outright, so the
+// decode is checked against the values tests/fixtures/predictor/gen.pl
+// wrote, one strip per plane.
+test "planar mixed widths decode plane by plane under Predictor 2 and 3" {
     const allocator = std.testing.allocator;
-    const path = "tests/fixtures/predictor/predictor2_deflate_mixed.tif";
+    {
+        const path = "tests/fixtures/predictor/predictor2_deflate_planar_mixed.tif";
+        try expectFixtureValidates(path);
+        const got = try decodeAllStripsBytes(allocator, path);
+        defer allocator.free(got);
+        try std.testing.expectEqual(@as(usize, 64 + 64 + 128), got.len);
+        for (0..64) |k| {
+            try std.testing.expectEqual(@as(u8, @truncate(5 * k)), got[k]);
+            try std.testing.expectEqual(@as(u8, @truncate(7 * k + 40)), got[64 + k]);
+            try std.testing.expectEqual(@as(u16, @intCast(1000 * k + 7)), std.mem.readInt(u16, got[128 + 2 * k ..][0..2], .little));
+        }
+    }
+    {
+        const path = "tests/fixtures/predictor/predictor3_deflate_planar_mixed.tif";
+        try expectFixtureValidates(path);
+        const got = try decodeAllStripsBytes(allocator, path);
+        defer allocator.free(got);
+        try std.testing.expectEqual(@as(usize, 256 + 256 + 128), got.len);
+        for (0..64) |k| {
+            const x: f32 = @floatFromInt(k);
+            try std.testing.expectEqual(@as(u32, @bitCast(x / 64.0)), std.mem.readInt(u32, got[4 * k ..][0..4], .little));
+            try std.testing.expectEqual(@as(u32, @bitCast(1.0 + x / 32.0)), std.mem.readInt(u32, got[256 + 4 * k ..][0..4], .little));
+            const h: u16 = @bitCast(@as(f16, @floatCast(x)) / 64.0);
+            try std.testing.expectEqual(h, std.mem.readInt(u16, got[512 + 2 * k ..][0..2], .little));
+        }
+    }
+}
+
+// Predictor 2 at 32 bits is defined (TIFF 6.0 p. 65 widens components as
+// needed, and libtiff decodes the fixture) but tiffz's horizontal predictor
+// handles 8 and 16 bits only: reach, with no corrupt record.
+test "Predictor 2 at 32 bits is refused before decoding, as reach, with no corrupt record" {
+    const allocator = std.testing.allocator;
+    const path = "tests/fixtures/predictor/predictor2_deflate_bps32.tif";
     const bytes = try loadFile(allocator, path);
     defer allocator.free(bytes);
     var recorder = FindingRecorder.init(allocator);

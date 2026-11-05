@@ -467,9 +467,9 @@ test "tiffz with unknown arg exits non-zero" {
 // outranks the refusal. The fixtures are from tests/fixtures/predictor/gen.pl.
 test "tiffz validate: an unimplemented feature is unsupported (reach), not invalid" {
     const allocator = std.testing.allocator;
-    // RGB 8,8,16 with Predictor 2: TIFF 6.0 defines it, tiffz refuses the
-    // mixed widths.
-    const path = "tests/fixtures/predictor/predictor2_deflate_mixed.tif";
+    // Gray 32-bit with Predictor 2: TIFF 6.0 defines it and libtiff decodes
+    // it; tiffz's horizontal predictor handles 8 and 16 bits only.
+    const path = "tests/fixtures/predictor/predictor2_deflate_bps32.tif";
     const r = try runCli(&.{ "validate", path });
     defer allocator.free(r.stdout);
     defer allocator.free(r.stderr);

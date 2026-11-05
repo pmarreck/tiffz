@@ -627,7 +627,7 @@ pub const Decoder = struct {
         workspace: *Workspace,
     ) errors.Error!usize {
         const written = try self.decodeTileRaw(ifd_index, tile_index, dest, workspace);
-        try self.applyPredictorTile(ifd_index, dest[0..written]);
+        try self.applyPredictorTile(ifd_index, tile_index, dest[0..written]);
         return written;
     }
 
@@ -1074,7 +1074,7 @@ pub const Decoder = struct {
             error.DecodedLengthMismatch, error.DestTooSmall => return error.Malformed,
         };
         const expected = accepted orelse return null;
-        _ = try self.readPredictorMeta(ifd_index);
+        _ = try self.readPredictorMeta(ifd_index, try self.chunkPlane(dir, layout.kind, chunk_index));
         if (!self.lzw_missing_eod_fired) {
             self.lzw_missing_eod_fired = true;
             self.emitDetailed(
@@ -1277,7 +1277,7 @@ pub const Decoder = struct {
         planar: predictors_mod.PlanarConfig,
     };
 
-    fn readPredictorMeta(self: *Decoder, ifd_index: usize) errors.Error!?PredictorMeta {
+    fn readPredictorMeta(self: *Decoder, ifd_index: usize, plane_index: u16) errors.Error!?PredictorMeta {
         const dir = try self.ifd(ifd_index);
         const pred_raw = (try readScalarU16(dir.*, tags.predictor, self.endian)) orelse 1;
         if (pred_raw == 1) return null; // no-op fast path
@@ -1286,11 +1286,14 @@ pub const Decoder = struct {
         const planar_raw = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse 1;
         const planar: predictors_mod.PlanarConfig = @enumFromInt(planar_raw);
 
-        // The predictors difference one sample width per row (TIFF 6.0
-        // p. 64; TN3's DecodeFPDelta takes a single bytesPerSample), so
-        // mixed BitsPerSample values are refused before decoding rather
-        // than decoded as if every sample had the first width (validate,
-        // 2026-11-05). The refusal is reach, not corruption.
+        // Chunky rows interleave every sample, and both predictors take one
+        // width for them: TIFF 6.0 p. 65 ("We require that BitsPerSample be
+        // the same for all 3 components") and TN3's single bytesPerSample.
+        // Mixed widths there are refused before decoding rather than decoded
+        // at the first width (validate, 2026-11-05); ifd_conformance names
+        // the fault on Predictor. A planar-separate chunk holds one plane,
+        // which "works the same as it does for grayscale data" (p. 65), so
+        // it is differenced at its own plane's width.
         var bps: u16 = 8;
         if (dir.get(tags.bits_per_sample)) |bps_entry| {
             var buf: [16]u8 = undefined;
@@ -1300,9 +1303,15 @@ pub const Decoder = struct {
             try dir.readEntryValueCached(tags.bits_per_sample, self.endian, self.source, buf[0..need]);
             bps = header_mod.readU16(buf[0..2], self.endian);
             if (stride == 2) {
+                var uniform = true;
                 var i: usize = 1;
                 while (i < bps_entry.count) : (i += 1) {
-                    if (header_mod.readU16(buf[i * 2 ..][0..2], self.endian) != bps) return error.UnsupportedBitDepth;
+                    if (header_mod.readU16(buf[i * 2 ..][0..2], self.endian) != bps) uniform = false;
+                }
+                if (!uniform) {
+                    if (planar_raw != tags.planar_separate) return error.UnsupportedBitDepth;
+                    if (plane_index >= bps_entry.count) return error.Malformed;
+                    bps = header_mod.readU16(buf[@as(usize, plane_index) * 2 ..][0..2], self.endian);
                 }
             }
         }
@@ -1317,8 +1326,8 @@ pub const Decoder = struct {
 
     /// Run the inverse Predictor transform over a just-decoded strip.
     fn applyPredictorStrip(self: *Decoder, ifd_index: usize, strip_index: u32, bytes: []u8) errors.Error!void {
-        const meta = (try self.readPredictorMeta(ifd_index)) orelse return;
         const dir = try self.ifd(ifd_index);
+        const meta = (try self.readPredictorMeta(ifd_index, try self.chunkPlane(dir, .strip, strip_index))) orelse return;
         const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
         const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
         const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
@@ -1332,12 +1341,38 @@ pub const Decoder = struct {
     /// Tile rows = TileLength regardless of image edge — the encoder
     /// pads tile data past the image edge to the full tile dimensions,
     /// so the predictor reverses across the FULL tile.
-    fn applyPredictorTile(self: *Decoder, ifd_index: usize, bytes: []u8) errors.Error!void {
-        const meta = (try self.readPredictorMeta(ifd_index)) orelse return;
+    fn applyPredictorTile(self: *Decoder, ifd_index: usize, tile_index: u32, bytes: []u8) errors.Error!void {
         const dir = try self.ifd(ifd_index);
+        const meta = (try self.readPredictorMeta(ifd_index, try self.chunkPlane(dir, .tile, tile_index))) orelse return;
         const tile_w = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
         const tile_h = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
         try predictors_mod.applyInverse(bytes, meta.predictor, tile_w, tile_h, meta.samples, meta.bps, meta.planar, self.endian, self.allocator);
+    }
+
+    /// The plane a chunk belongs to. Planar-separate chunks are stored plane
+    /// by plane, each plane a full set of strips or tiles (TIFF 6.0 pp. 38
+    /// and 68); chunky data is one plane. The geometry is the same that
+    /// stripRowSpan and the decoded-extent check use.
+    fn chunkPlane(self: *Decoder, dir: *const Ifd, kind: ChunkKind, chunk_index: u32) errors.Error!u16 {
+        const planar_raw = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse 1;
+        if (planar_raw != tags.planar_separate) return 0;
+        const image_width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
+        const image_length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
+        const per_plane: u32 = switch (kind) {
+            .strip => blk: {
+                const rps_raw = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse image_length;
+                break :blk try ceilDivU32(image_length, @min(rps_raw, image_length));
+            },
+            .tile => blk: {
+                const tile_w = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
+                const tile_h = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
+                const across = try ceilDivU32(image_width, tile_w);
+                const down = try ceilDivU32(image_length, tile_h);
+                break :blk std.math.mul(u32, across, down) catch return error.Malformed;
+            },
+        };
+        if (per_plane == 0) return error.Malformed;
+        return std.math.cast(u16, chunk_index / per_plane) orelse error.Malformed;
     }
 
     /// Per-chunk extent for the shared codec dispatch.
