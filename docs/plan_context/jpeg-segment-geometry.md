@@ -147,3 +147,47 @@ ok.
 **Controlled red.** Applying the rule outside DNG files failed the finding
 19 fixture test (on the non-DNG RGB control) and the rule 6 unit test.
 Restoring the gate made both pass again.
+
+## Reach from the marker walk (validate, 2026-11-05; landed)
+
+Rules 1 to 6 read marker-segment fields only. They are structural checks, so
+reach ruling A applies: records do not wait for the entropy data to decode.
+
+**The pass.** Finding 19 is now `checkJpegGeometry`, a per-IFD pass that
+reads each Compression 7 segment only up to its frame header.
+- **When it runs:** in the walk, right after the directory rules and before
+  decoding; and in the post-stop pass, for IFDs a stopping error left
+  unreached.
+- **Reads:** they start at 4 KiB and double only while the header is cut off
+  by the read, bounded by the segment's byte count and
+  `max_compressed_strip_bytes`.
+- **Segments that contribute nothing:**
+  - a segment whose markers do not parse, which is not examined;
+  - a segment that cannot be read.
+- **The byte budget:** exhausting it during this pass is that limit.
+- **No pass after a limit, OutOfMemory or Bug:** unchanged.
+- **Removed:** the old feed from inside the JPEG decode.
+
+**Readings for rule 6 (validate):**
+- Baseline DCT is SOF0 only (T.81 Table B.1).
+- Lossless Huffman is SOF3, the lossless mode of Annex H.
+- SOF7, a differential frame of the hierarchical mode (Annex J), and the
+  arithmetic SOF11 and SOF15 are faults.
+- A hierarchical stream (DHP, then frames) is a fault even with a SOF3
+  first frame. jpegz has been asked to report a DHP before the first frame.
+  Until it does, that case is not detected.
+
+**Fixtures (gen.pl):**
+- rows-bad-cut.tif: rule 1, second strip cut after SOS.
+- stop-then-rows-bad.tif: IFD 0 cut, so the walk stops; IFD 1 is rule 1.
+- dng-cfa-sof0-cut.tif: a DNG 1.2.0.0 CFA raw with cut DCT data, so rule 6
+  applies with lossless required.
+
+**Impact (263 files, ecad5628 against the change).** There are no status
+changes. Three already-invalid files gain exactly the records the oracle
+predicts:
+- Blackmagic Micro Cinema: IFD 0, rule 6, SOF1, 2 of 2.
+- Leica M11: IFDs 1 to 4, rule 4.
+- Ricoh GR: IFD 2, rule 4.
+
+**Controlled red.** Reinstating the decode gate silenced all three fixtures.

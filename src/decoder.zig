@@ -128,12 +128,6 @@ pub const Decoder = struct {
     active_chunk_offset: ?u64 = null,
     /// Rows fully decoded before CCITT T.6 EOFB. Absent unless that outcome fired.
     facsimile_rows: ?u32 = null,
-    /// Finding 19 evidence for the Compression 7 IFD being validated: each
-    /// segment's frame header, read where the JPEG branch holds its bytes.
-    /// Null outside `validatePages`.
-    jpeg_geometry: ?*jpeg_geometry.Accumulator = null,
-    /// Index of the chunk `validatePages` is decoding, for `jpeg_geometry`.
-    active_chunk_index: u32 = 0,
 
     pub fn open(allocator: Allocator, source: Source) errors.Error!Decoder {
         return openWithLimits(allocator, source, .{});
@@ -709,6 +703,7 @@ pub const Decoder = struct {
         var i = self.rules_checked;
         while (i < self.ifds.items.len) : (i += 1) {
             _ = self.checkIfdConformance(&self.ifds.items[i], i, dng) catch return;
+            _ = self.checkJpegGeometry(&self.ifds.items[i], i, dng) catch return;
         }
         self.rules_checked = self.ifds.items.len;
     }
@@ -750,6 +745,7 @@ pub const Decoder = struct {
                 return err;
             };
             if (try self.checkIfdConformance(dir, ifd_index, dng)) nonconforming = true;
+            if (try self.checkJpegGeometry(dir, ifd_index, dng)) nonconforming = true;
             self.rules_checked = ifd_index + 1;
             // No strip/tile arrays. A JPEGInterchangeFormat thumbnail (CR2
             // IFD1) is still a known page with nothing for this walk to
@@ -786,22 +782,9 @@ pub const Decoder = struct {
                 self.noteDiscrepancy(.warning, self.ifdFileOffset(ifd_index), "tiled_geometry_via_strip_tags_tolerated");
             }
 
-            // Finding 19: each Compression 7 segment's frame header is checked
-            // against the fields TIFF Technical Note 2 binds it to, and in a
-            // DNG against the JPEG variant Chapter 3 requires (rule 6). The JPEG
-            // branch of `decodeBytes` feeds the accumulator as it reads each
-            // segment; the records are emitted once the IFD's walk ends.
-            var geometry: ?jpeg_geometry.Accumulator = null;
-            if (((try readScalarU16(dir.*, tags.compression, self.endian)) orelse tags.compression_none) == tags.compression_jpeg) {
-                geometry = .{ .fields = try self.jpegGeometryFields(dir, ifd_index, layout) };
-                self.jpeg_geometry = &geometry.?;
-            }
-            defer self.jpeg_geometry = null;
-
             var chunk_index: u32 = 0;
             while (chunk_index < layout.count) : (chunk_index += 1) {
                 self.active_chunk_offset = self.chunkFileOffset(dir, layout, chunk_index);
-                self.active_chunk_index = chunk_index;
                 const ext = self.expectedChunkBytes(dir, layout.kind, chunk_index, layout.count) catch |err| {
                     self.noteFileClaim(err, self.active_chunk_offset);
                     return err;
@@ -842,9 +825,6 @@ pub const Decoder = struct {
                     return err;
                 };
             }
-            if (geometry) |*g| {
-                if (self.emitJpegGeometry(g, ifd_index)) nonconforming = true;
-            }
         }
         if (nonconforming) return error.Malformed;
     }
@@ -880,7 +860,6 @@ pub const Decoder = struct {
             else
                 photometric_entry,
             .planar_entry = self.tagEntryOffset(dir, ifd_index, tags.planar_configuration),
-            .dng_baseline = conformance.dngBaselineJpeg(dir, self.endian, self.dngContext()),
             .compression_entry = self.tagEntryOffset(dir, ifd_index, tags.compression),
         };
     }
@@ -892,6 +871,59 @@ pub const Decoder = struct {
             if (entry.tag == tag) return conformance.entryOffset(base, @intCast(i), dir.offset_width);
         }
         return 0;
+    }
+
+    /// Finding 19 over one IFD (owner-approved 2026-11-04; reach per
+    /// validate, 2026-11-05): a structural check of each Compression 7
+    /// segment's marker stream up to its frame header, with no entropy
+    /// decoding, so it applies whether or not the segment decodes and, like
+    /// the directory rules, to IFDs a stopping error left unreached. A
+    /// segment whose markers do not parse (jpegz `frameHeader` fails), or
+    /// that cannot be read, contributes nothing and is not examined. Reads
+    /// grow from 4 KiB, never past the segment's byte count or
+    /// `max_compressed_strip_bytes`. True if any record was emitted.
+    fn checkJpegGeometry(self: *Decoder, dir: *const Ifd, ifd_index: usize, dng: ?conformance.Dng) errors.Error!bool {
+        const compression = (readScalarU16(dir.*, tags.compression, self.endian) catch return false) orelse tags.compression_none;
+        if (compression != tags.compression_jpeg) return false;
+        const layout = (self.chunkLayout(dir) catch return false) orelse return false;
+        var fields = self.jpegGeometryFields(dir, ifd_index, layout) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            return false;
+        };
+        fields.dng_baseline = conformance.dngBaselineJpeg(dir, self.endian, dng);
+        var acc = jpeg_geometry.Accumulator{ .fields = fields };
+        var buf: []u8 = &.{};
+        defer self.allocator.free(buf);
+        var segment: u32 = 0;
+        while (segment < layout.count) : (segment += 1) {
+            const offset = dir.arrayElementU64(layout.offsets_tag, segment, self.endian, self.source) catch continue;
+            const count = dir.arrayElementU64(layout.counts_tag, segment, self.endian, self.source) catch continue;
+            const cap: u64 = @min(count, self.limits.max_compressed_strip_bytes);
+            var want: u64 = @min(cap, 4096);
+            while (want > 0) {
+                if (buf.len < want) {
+                    const grown = self.allocator.realloc(buf, @intCast(want)) catch return error.OutOfMemory;
+                    buf = grown;
+                }
+                // A read failure leaves the segment unexamined; the decode
+                // reports it. Running out of the byte budget is a limit, as
+                // anywhere else.
+                const got = self.source.readAt(buf[0..@intCast(want)], offset) catch |raw| {
+                    const err = parser.source.preserveReadError(raw);
+                    if (errors.isLimit(err)) return self.noteLimit(err, self.budget.last_offset, ifd_index);
+                    break;
+                };
+                if (compressions_jpeg.jpegz.frameHeader(buf[0..got])) |frame| {
+                    acc.add(segment, offset + frame.sof_offset, &frame);
+                    break;
+                } else |err| {
+                    // Only a header cut off by the read itself earns a longer read.
+                    if (err != error.Truncated or got < want or want >= cap) break;
+                    want = @min(cap, want * 2);
+                }
+            }
+        }
+        return self.emitJpegGeometry(&acc, ifd_index);
     }
 
     /// Emit one corrupt finding 19 per rule `acc` saw violated; true if any.
@@ -1644,16 +1676,6 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
-
-                // Finding 19 evidence: the segment's own frame header (TN2
-                // keeps one in every strip or tile, in both modes). A header
-                // that cannot be read leaves the segment unexamined; jpegz's
-                // validation below reports why.
-                if (self.jpeg_geometry) |acc| {
-                    if (compressions_jpeg.jpegz.frameHeader(scratch[0..byte_count])) |frame| {
-                        acc.add(self.active_chunk_index, offset + frame.sof_offset, &frame);
-                    } else |_| {}
-                }
 
                 // Read JPEGTables tag (347) if present — TIFF Tech Note 2
                 // Mode 2. The value is eagerly cached on the Ifd at

@@ -1,0 +1,239 @@
+sha256	source	name	ifd	kind	compression	photometric	data_fields	missing
+0274ace9b977bb5c8e370e5954857735704fb73930c4f4a078e4df5bd2207d9a	validate ground truth	tiff_jpeg/quad-tile-jpeg.tif	0	chain	7	6	324+325+322+323	XResolution,YResolution
+031aa7e15c2dfb21fe2fdd89eff88c4505c306f641be8b98f3666707d698b5ae	tiffz	tests/fixtures/deflate/deflate-last-strip.tiff	0	chain	8	1	273+279	XResolution,YResolution
+081118d951224d9909b105bb75f9667fd817e7b95122d141e91b43604dacd78b	libtiff pics-3.8.0	libtiffpic/quad-lzw.tif	0	chain	5	2	273+279	XResolution,YResolution
+11e5f52ac4201fb4ae8faa7b52c4179afc2128d9f69b625b44b398a2fd597a13	tiffz	tests/fixtures/photometric/rgb16.tif	0	chain	1	2	273+279	XResolution,YResolution
+156e43118811bcecb6fcc600b5f41ee1773c4f00b6a5b2dd72e177e35f6596ab	raw.pixls.us	Samsung / NX500 / Samsung - NX500 - 12bit 12bit normal compression (3:2).SRW	0	chain	-	-	none	ImageWidth,ImageLength,Photometric,XResolution,YResolution,StripOrTileData
+156e43118811bcecb6fcc600b5f41ee1773c4f00b6a5b2dd72e177e35f6596ab	raw.pixls.us	Samsung / NX500 / Samsung - NX500 - 12bit 12bit normal compression (3:2).SRW	1	sub	-	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+156e43118811bcecb6fcc600b5f41ee1773c4f00b6a5b2dd72e177e35f6596ab	raw.pixls.us	Samsung / NX500 / Samsung - NX500 - 12bit 12bit normal compression (3:2).SRW	2	sub	32773	-	273+279	Photometric,XResolution,YResolution
+156e43118811bcecb6fcc600b5f41ee1773c4f00b6a5b2dd72e177e35f6596ab	raw.pixls.us	Samsung / NX500 / Samsung - NX500 - 12bit 12bit normal compression (3:2).SRW	3	chain	-	-	none	ImageWidth,ImageLength,Photometric,XResolution,YResolution,StripOrTileData
+156e43118811bcecb6fcc600b5f41ee1773c4f00b6a5b2dd72e177e35f6596ab	raw.pixls.us	Samsung / NX500 / Samsung - NX500 - 12bit 12bit normal compression (3:2).SRW	4	sub	-	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+16b185b70346d6b88d3a92010bc27018a1a2377ce3c99c9968a1c0c4eba8ec98	libtiff pics-3.8.0	libtiffpic/ladoga.tif	0	chain	8	1	273+279	XResolution,YResolution
+17e35d98d448b44164ecf414f980e9248b5829233e83a1adbee396b6c1a1a0c6	raw.pixls.us	Sony / ILCE-7SM3 / Sony - ILCE-7SM3 - 14bit 14bit compressed (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+17e35d98d448b44164ecf414f980e9248b5829233e83a1adbee396b6c1a1a0c6	raw.pixls.us	Sony / ILCE-7SM3 / Sony - ILCE-7SM3 - 14bit 14bit compressed (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+17e35d98d448b44164ecf414f980e9248b5829233e83a1adbee396b6c1a1a0c6	raw.pixls.us	Sony / ILCE-7SM3 / Sony - ILCE-7SM3 - 14bit 14bit compressed (3:2).ARW	3	chain	7	6	513+514	XResolution,YResolution,StripOrTileData
+1d9470ee083f914e51aa0be782161b432f27f87dbef551a59ec435f5dbc289dd	raw.pixls.us	Nikon / COOLPIX P1000 / Nikon - COOLPIX P1000 - 12bit 12bit uncompressed (4:3).NRW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+1d9470ee083f914e51aa0be782161b432f27f87dbef551a59ec435f5dbc289dd	raw.pixls.us	Nikon / COOLPIX P1000 / Nikon - COOLPIX P1000 - 12bit 12bit uncompressed (4:3).NRW	1	sub	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+1d9470ee083f914e51aa0be782161b432f27f87dbef551a59ec435f5dbc289dd	raw.pixls.us	Nikon / COOLPIX P1000 / Nikon - COOLPIX P1000 - 12bit 12bit uncompressed (4:3).NRW	3	sub	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+1eb8eaa7709e68b4feffed1c1429eebdda4d0004aead1f87ae05e4273d6e691c	tiffz	tests/fixtures/photometric/ycbcr.tif	0	chain	1	6	273+279	XResolution,YResolution
+21a751d4d6cad3903e4833db726c1b645fc88a1161efffcabaf9ce9c8c8f7084	tiffz	tests/fixtures/uncompressed/rgb-3c-8b.tiff	0	chain	1	2	273+279	XResolution,YResolution
+250784580ea527442c09004417bb0eead484f2bf3ee8f9121a776ac65bb50d0f	raw.pixls.us	Sony / ILCE-7M3 / Sony - ILCE-7M3 - 14bit 14bit compressed (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+250784580ea527442c09004417bb0eead484f2bf3ee8f9121a776ac65bb50d0f	raw.pixls.us	Sony / ILCE-7M3 / Sony - ILCE-7M3 - 14bit 14bit compressed (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+264d4955898a35ae70af0ec6eed0dbc49d7929f6c18c92a4ed6198f6db396f4b	libtiff pics-3.8.0	libtiffpic/ycbcr-cat.tif	0	chain	5	6	273+279	XResolution,YResolution
+3372f4639d03a2832e893d5bb2b871f7f8b1b7cf0428e642ab90fd8115f59e06	tiffz	tests/fixtures/predictor/predictor2_deflate.tif	0	chain	8	2	273+279	XResolution,YResolution
+3559598b56e5ccb150c2698cb4b808f07d8ea52f55d52d522c7e026aa1b1b969	tiffz	tests/fixtures/predictor/predictor2_lzw.tif	0	chain	5	2	273+279	XResolution,YResolution
+3cbb4ac4be80226cc3fa7c6ad4f01ea5bb3c640288e3847621e947129489fbd1	validate ground truth	nrw/RAW_NIKON_COOLPIX_P7100.NRW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+3cbb4ac4be80226cc3fa7c6ad4f01ea5bb3c640288e3847621e947129489fbd1	validate ground truth	nrw/RAW_NIKON_COOLPIX_P7100.NRW	1	sub	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+3e592edc801ea7fec682e44a937410efb155b1473b0ae48b34c44fe97cd106ed	tiffz	tests/fixtures/zstd/rgb_zstd.tif	0	chain	50000	2	273+279	XResolution,YResolution
+46044fb6a9c805f2b4915cd4970316b4d04b0566bcf5287afaad3ef648d7a3db	raw.pixls.us	Sony / ILCE-7SM2 / Sony - ILCE-7SM2 - 12bit 12bit compressed (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+46044fb6a9c805f2b4915cd4970316b4d04b0566bcf5287afaad3ef648d7a3db	raw.pixls.us	Sony / ILCE-7SM2 / Sony - ILCE-7SM2 - 12bit 12bit compressed (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+4c65b8cda205087cfb94d8931811e53e15eb4df538ad67c1b4a3e76c1185b277	validate ground truth	dng/blackmagic_micro_cinema.dng	0	chain	7	32803	324+325+322+323	XResolution,YResolution
+4d18b1acf02e4bf40273d7da90483476c8201ce75885bbf7ef4185c63957a452	tiffz	tests/fixtures/photometric/rgb_separate.tif	0	chain	1	2	273+279	XResolution,YResolution
+4ded66cd13d87a36b7d33e663e3bfed7c2a150419579fd6491d09cd437f18edc	libtiff pics-3.8.0	libtiffpic/jello.tif	0	chain	32773	3	273+279	XResolution,YResolution
+4df7981ac4baec9648b4f106751ea4b09a6e27bc70a15f8ef09bec051fec362d	raw.pixls.us	Sony / DSLR-A100 / Sony - DSLR-A100 - compressed (3:2).ARW	0	chain	6	-	513+514	Photometric,StripOrTileData
+4df7981ac4baec9648b4f106751ea4b09a6e27bc70a15f8ef09bec051fec362d	raw.pixls.us	Sony / DSLR-A100 / Sony - DSLR-A100 - compressed (3:2).ARW	1	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+518cd5addd6b34206ec37e52678718b26af5027d1d11c16c00e974bb8685650c	tiffz	tests/fixtures/lerc/gray16_lerc_zstd.tif	0	chain	34887	1	273+279	XResolution,YResolution
+579a485b5126a25cbd55cbd5dadfa7d09cf021c99cc7d4869f9e56e3f759390b	raw.pixls.us	Sony / DSC-RX100 / Sony - DSC-RX100 - 12bit 12bit compressed (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+579a485b5126a25cbd55cbd5dadfa7d09cf021c99cc7d4869f9e56e3f759390b	raw.pixls.us	Sony / DSC-RX100 / Sony - DSC-RX100 - 12bit 12bit compressed (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+5a4f2e7825bd59be8144893fba77d78b498c8c70bd43cf547c87dbb514799d5a	tiffz	tests/fixtures/lerc/gray16_lerc.tif	0	chain	34887	1	273+279	XResolution,YResolution
+61f858392d372b9af0200901ab147d1103bc3e2c811df9ea7ea8dfe2d1d47b06	libtiff pics-3.8.0	libtiffpic/quad-jpeg.tif	0	chain	7	6	273+279	XResolution,YResolution
+639a6d4db881f1359e3ea7e1137b314e59417d24e6d4d862b7202111a2c823b2	raw.pixls.us	Sony / ILCE-7M4 / Sony - ILCE-7M4 - 14bit (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+639a6d4db881f1359e3ea7e1137b314e59417d24e6d4d862b7202111a2c823b2	raw.pixls.us	Sony / ILCE-7M4 / Sony - ILCE-7M4 - 14bit (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+639a6d4db881f1359e3ea7e1137b314e59417d24e6d4d862b7202111a2c823b2	raw.pixls.us	Sony / ILCE-7M4 / Sony - ILCE-7M4 - 14bit (3:2).ARW	3	chain	7	6	513+514	XResolution,YResolution,StripOrTileData
+6483855c5476cbb3ee895aa6441372fffb833c4837d47a291a4c29227a90c645	tiffz	tests/fixtures/tiled/quad-tile.tif	0	chain	5	2	324+325+322+323	XResolution,YResolution
+6a31d16edc5ce781a1cb764aed3b30204cef473737f379222d0f3429649b68ea	tiffz	tests/fixtures/predictor/predictor1_lzw.tif	0	chain	5	2	273+279	XResolution,YResolution
+6bdf897fb43de637a7044dcc26839d5e3d5450655f5ba2d36705fbf58323152e	tiffz	tests/fixtures/photometric/cmyk.tif	0	chain	1	5	273+279	XResolution,YResolution
+7993664077ea8898704d15128e563d9ddd9c85376b3e8b42b0865a2ba71ee175	tiffz	tests/fixtures/uncompressed/minisblack-1c-8b.tiff	0	chain	1	1	273+279	XResolution,YResolution
+7cc338a0abc8fdad32d61006f1f8f412297b93e040c7efba572eb2bd8f8e8be2	raw.pixls.us	Sony / ILCE-7S / Sony - ILCE-7S - 14bit 14bit compressed (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+7cc338a0abc8fdad32d61006f1f8f412297b93e040c7efba572eb2bd8f8e8be2	raw.pixls.us	Sony / ILCE-7S / Sony - ILCE-7S - 14bit 14bit compressed (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+7ceec1ea31c56b6e0414202504581b915f17818ffe018b4c8bba1393332c405e	raw.pixls.us	Ricoh / GR / Ricoh - GR - 12bit (4:3).DNG	1	sub	7	32803	273+279	XResolution,YResolution
+7ceec1ea31c56b6e0414202504581b915f17818ffe018b4c8bba1393332c405e	raw.pixls.us	Ricoh / GR / Ricoh - GR - 12bit (4:3).DNG	2	sub	7	6	273+279	XResolution,YResolution
+7e2fe2ed68400926b04732e86a11fd2c12e914b455cca02c7bb28182cac5eb61	tiffz	tests/fixtures/photometric/ycbcr_tiled_uncompressed_sub2x2.tif	0	chain	1	6	324+325+322+323	XResolution,YResolution
+8138d068d14e9ce90c6877b175759fc92358024303b8cd5e9b9eb5ae11e8c4b1	raw.pixls.us	Kodak / P880 / Kodak - P880 - NAN.KDC	0	chain	7	6	513+514	ImageWidth,ImageLength,StripOrTileData
+8138d068d14e9ce90c6877b175759fc92358024303b8cd5e9b9eb5ae11e8c4b1	raw.pixls.us	Kodak / P880 / Kodak - P880 - NAN.KDC	1	sub	1	-	none	ImageWidth,ImageLength,Photometric,StripOrTileData
+845fee4f09c832af3728778737f5ae9b99124debb821b6e2066b94aed1daa91c	raw.pixls.us	Apple / iPhone 6s Plus / Apple - iPhone 6s Plus - 16bit (4:3).DNG	0	chain	7	6	273+279	XResolution,YResolution
+845fee4f09c832af3728778737f5ae9b99124debb821b6e2066b94aed1daa91c	raw.pixls.us	Apple / iPhone 6s Plus / Apple - iPhone 6s Plus - 16bit (4:3).DNG	1	sub	7	32803	324+325+322+323	XResolution,YResolution
+86ec2383dbfda3eda38ca913b02874a70248efba6107aa304781c8d3779de8c9	validate ground truth	pef/IMGP1754.PEF	1	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+86ec2383dbfda3eda38ca913b02874a70248efba6107aa304781c8d3779de8c9	validate ground truth	pef/IMGP1754.PEF	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+89a9436665023e35498f0bf0571af9cb0f4ebfa7ab2498a11fafb13a9d2f0c30	tiffz	tests/fixtures/predictor/predictor3_deflate_fp32.tif	0	chain	8	2	273+279	XResolution,YResolution
+8bb9de0d8e5e091c1f388e938402395f8ecbc484655213223adfb3ab1d809593	tiffz	tests/fixtures/predictor/predictor1_deflate_fp32.tif	0	chain	8	2	273+279	XResolution,YResolution
+8d24d6e871994785469a8609d3730213ffdc86108b467e241cbc8175e4346319	libtiff pics-3.8.0	libtiffpic/caspian.tif	0	chain	32946	2	273+279	XResolution,YResolution
+91286d951ce3e6450fd9f3da849e7d69864b9a4a341170bca237dde45f1a969d	tiffz	tests/fixtures/jpeg/ycbcr_jpeg.tif	0	chain	7	6	273+279	XResolution,YResolution
+951b0ad3ea200bac4aac94c288b2f76051b7d1ee4c4fa468909ad3110fe97a8d	libtiff pics-3.8.0	libtiffpic/oxford.tif	0	chain	5	2	273+279	XResolution,YResolution
+9ef8051e9aa19f7439fdec77c7e5bdffef442572937287a83b5938bd02464286	tiffz	tests/fixtures/uncompressed/palette-1c-8b.tiff	0	chain	1	3	273+279	XResolution,YResolution
+a35ebb2fbec929daa5beb20d1ce5c15a8aac7b1a7a231455387f3df8a7442e07	validate ground truth	arw/sony_ilce_7s.arw	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+a35ebb2fbec929daa5beb20d1ce5c15a8aac7b1a7a231455387f3df8a7442e07	validate ground truth	arw/sony_ilce_7s.arw	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+ab5e5c87cd575472c6fc3e0d5824ebc818b88bf6e5e4aff3afe66f8725351a09	libtiff pics-3.8.0	libtiffpic/quad-tile.tif	0	chain	5	2	273+279+322+323	XResolution,YResolution,TileOffsets,TileByteCounts
+ac7c1532df77c321e8010aa1be60c1b9f245b1ac0db6f38fe617a73aae81af50	raw.pixls.us	Sony / DSLR-A900 / Sony - DSLR-A900 - 12bit 12bit compressed (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+ac7c1532df77c321e8010aa1be60c1b9f245b1ac0db6f38fe617a73aae81af50	raw.pixls.us	Sony / DSLR-A900 / Sony - DSLR-A900 - 12bit 12bit compressed (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+b1c3870c8c794f0271053a80a15296e3a9b575ab736796cdb53929d50c86a084	raw.pixls.us	Kodak / KODAK P712 ZOOM DIGITAL CAMERA / Kodak - KODAK P712 ZOOM DIGITAL CAMERA - NAN.KDC	0	chain	7	6	513+514	ImageWidth,ImageLength,StripOrTileData
+b1c3870c8c794f0271053a80a15296e3a9b575ab736796cdb53929d50c86a084	raw.pixls.us	Kodak / KODAK P712 ZOOM DIGITAL CAMERA / Kodak - KODAK P712 ZOOM DIGITAL CAMERA - NAN.KDC	1	sub	1	-	none	ImageWidth,ImageLength,Photometric,StripOrTileData
+b22f1e36331f679abb8b13e433b9bbde3988723adf10fee7aa0dda6381016a98	raw.pixls.us	Adobe DNG Converter / Canon EOS 5D Mark III / Adobe DNG Converter - Canon EOS 5D Mark III - Lossy JPEG compression, rgb (3:2).DNG	0	chain	7	6	273+279	XResolution,YResolution
+b22f1e36331f679abb8b13e433b9bbde3988723adf10fee7aa0dda6381016a98	raw.pixls.us	Adobe DNG Converter / Canon EOS 5D Mark III / Adobe DNG Converter - Canon EOS 5D Mark III - Lossy JPEG compression, rgb (3:2).DNG	1	sub	34892	34892	324+325+322+323	XResolution,YResolution
+b22f1e36331f679abb8b13e433b9bbde3988723adf10fee7aa0dda6381016a98	raw.pixls.us	Adobe DNG Converter / Canon EOS 5D Mark III / Adobe DNG Converter - Canon EOS 5D Mark III - Lossy JPEG compression, rgb (3:2).DNG	2	sub	7	6	273+279	XResolution,YResolution
+b22f1e36331f679abb8b13e433b9bbde3988723adf10fee7aa0dda6381016a98	raw.pixls.us	Adobe DNG Converter / Canon EOS 5D Mark III / Adobe DNG Converter - Canon EOS 5D Mark III - Lossy JPEG compression, rgb (3:2).DNG	3	sub	7	6	273+279	XResolution,YResolution
+ba644e7dd2abe74eca260e67f0206ff113bf0f62e710f8130611e964d6be5bf1	raw.pixls.us	Canon / EOS 40D / Canon - EOS 40D - sRAW2 (sRAW) (3:2).CR2	0	chain	6	-	273+279	Photometric
+ba644e7dd2abe74eca260e67f0206ff113bf0f62e710f8130611e964d6be5bf1	raw.pixls.us	Canon / EOS 40D / Canon - EOS 40D - sRAW2 (sRAW) (3:2).CR2	1	chain	-	-	513+514	ImageWidth,ImageLength,Photometric,XResolution,YResolution,StripOrTileData
+ba644e7dd2abe74eca260e67f0206ff113bf0f62e710f8130611e964d6be5bf1	raw.pixls.us	Canon / EOS 40D / Canon - EOS 40D - sRAW2 (sRAW) (3:2).CR2	2	chain	1	2	273+279	XResolution,YResolution
+ba644e7dd2abe74eca260e67f0206ff113bf0f62e710f8130611e964d6be5bf1	raw.pixls.us	Canon / EOS 40D / Canon - EOS 40D - sRAW2 (sRAW) (3:2).CR2	3	chain	6	-	273+279	ImageWidth,ImageLength,Photometric,XResolution,YResolution
+c242df04d4a0e246130600e102371d4aea2e7eeac35c1e65c4757191dcb7cd33	raw.pixls.us	Sony / ILCE-7 / Sony - ILCE-7 - 14bit 14bit compressed (3:2).arw	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+c242df04d4a0e246130600e102371d4aea2e7eeac35c1e65c4757191dcb7cd33	raw.pixls.us	Sony / ILCE-7 / Sony - ILCE-7 - 14bit 14bit compressed (3:2).arw	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+c284109d1a24388c786c2005743a642f5a7fc5d3536949140c9cff4a4eb6b669	tiffz	tests/fixtures/lerc/rgb16_lerc.tif	0	chain	34887	2	273+279	XResolution,YResolution
+cd14f8e22fc486f501fd4cdc9d9911e3582f7ac46972e71d4942c73e16ba3d7a	libtiff pics-3.8.0	libtiffpic/cramps-tile.tif	0	chain	1	0	273+279+322+323	XResolution,YResolution,TileOffsets,TileByteCounts
+ce8b4957281a817d52a07a691e2468567b6c78223bd0b514ffc1c65b002b8d89	raw.pixls.us	Sony / ILCE-6000 / Sony - ILCE-6000 - 12bit 12bit compressed (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+ce8b4957281a817d52a07a691e2468567b6c78223bd0b514ffc1c65b002b8d89	raw.pixls.us	Sony / ILCE-6000 / Sony - ILCE-6000 - 12bit 12bit compressed (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+ddb72880da333b46a4c13286f78473dacc11377ea874bc3656e64e30a8122a88	raw.pixls.us	Sony / ILCE-1 / Sony - ILCE-1 - 14bit 14bit compressed (3:2).ARW	0	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+ddb72880da333b46a4c13286f78473dacc11377ea874bc3656e64e30a8122a88	raw.pixls.us	Sony / ILCE-1 / Sony - ILCE-1 - 14bit 14bit compressed (3:2).ARW	2	chain	6	-	513+514	ImageWidth,ImageLength,Photometric,StripOrTileData
+ddb72880da333b46a4c13286f78473dacc11377ea874bc3656e64e30a8122a88	raw.pixls.us	Sony / ILCE-1 / Sony - ILCE-1 - 14bit 14bit compressed (3:2).ARW	3	chain	7	6	513+514	XResolution,YResolution,StripOrTileData
+e35ae4154a468be3154f5f462e884ba5941f010d3e8f23d347fbec14809f44d3	raw.pixls.us	Pentax / K10D / Pentax - K10D - 12bit 12bit compressed (3:2).PEF	1	chain	6	-	513+514	Photometric,StripOrTileData
+e35ae4154a468be3154f5f462e884ba5941f010d3e8f23d347fbec14809f44d3	raw.pixls.us	Pentax / K10D / Pentax - K10D - 12bit 12bit compressed (3:2).PEF	2	chain	6	-	513+514	Photometric,StripOrTileData
+e3eee5e7d42a90f7c57b547b022ccd0b1176551b53978b808d30f043a0f5fdea	tiffz	tests/fixtures/lerc/gray16_lerc_deflate.tif	0	chain	34887	1	273+279	XResolution,YResolution
+f0d2fe47507fadf50008bddbc6bd2c5e39fddbe90cca6bca72dd360fa0e0eb38	raw.pixls.us	Canon / Canon PowerShot A410 / Canon - Canon PowerShot A410 - 10bit 10bit CHDK ver. 1.5.0 (4:3).DNG	0	chain	1	2	273+279	XResolution,YResolution
+f33ddaf2a7fa70b395abced251faccea11100d2ab7e54ae0a6adbff043d72027	raw.pixls.us	DJI / FC4382 / DJI - FC4382 - 16bit (4:3).DNG	0	chain	7	6	273+279	XResolution,YResolution
+f33ddaf2a7fa70b395abced251faccea11100d2ab7e54ae0a6adbff043d72027	raw.pixls.us	DJI / FC4382 / DJI - FC4382 - 16bit (4:3).DNG	1	sub	7	32803	324+325+322+323	XResolution,YResolution
+f33ddaf2a7fa70b395abced251faccea11100d2ab7e54ae0a6adbff043d72027	raw.pixls.us	DJI / FC4382 / DJI - FC4382 - 16bit (4:3).DNG	2	sub	7	6	273+279	XResolution,YResolution
+f3eb9268f73dff0919c26b233d51c7a55f2a601725fc1f2ecc017c6f224efe38	tiffz	tests/fixtures/geotiff/gray16_geotiff.tif	0	chain	1	1	273+279	XResolution,YResolution
+fb638a47f2ef11a839fdf2603981ed74727d9eb13ab78e74a2489fff5971871f	tiffz	tests/fixtures/jpeg/rgb-jpeg.tif	0	chain	7	2	273+279	XResolution,YResolution
+7e95bce3beac79757ed03aed1b09f9635f034e8982fc4a3e8c987a298008c46a	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/6band_wrong_number_extrasamples.tif	0	chain	1	2	273+279	XResolution,YResolution
+25e6c060487bd2f9d0d67ff96ac69137428fff4bd2642f27997c06740597ba56	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_buggy_packbits.tif	0	chain	32773	1	273+279	XResolution,YResolution
+5f4c16b2041c930ce15c4597265e19a40813c808cd7c63d5b9d710a6be9aeeb8	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_gcp_pixelispoint.tif	0	chain	1	1	273+279	XResolution,YResolution
+75afa5fa32c5619a19376eb973a18b078b050e188c65438e0488d163d3b17cd9	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_gcp.tif	0	chain	1	1	273+279	XResolution,YResolution
+59ed6e9dd19291bbdc230092ab7f6bc46fb0537ee4c9eec15dd58021cd9c12be	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_inconsistent_georef.tif	0	chain	1	1	273+279	XResolution,YResolution
+00b7a23a86118a0db2c2ec110bf1fe86ac0b09ae6aa8a1a54fc4c5b413fc538c	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_jpg_tablesmodezero.tif	0	chain	7	1	273+279	XResolution,YResolution
+23ad054a0218e106b48d2027abbbd0f41049a2c53dce07412c5f4ef525daddf4	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_jpg_unusual_jpegtable.tif	0	chain	7	1	273+279	XResolution,YResolution
+1a6e99779ab9dab42f159c6aaab7edd3d3a6a0701247ee4e699f0ca104541913	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_lerc.tif	0	chain	34887	1	273+279	XResolution,YResolution
+55b45e6986ec58b087a1258e3dd62165a31719c70b1517674805255afb1b38aa	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode0.tif	0	chain	7	1	273+279	XResolution,YResolution
+55b45e6986ec58b087a1258e3dd62165a31719c70b1517674805255afb1b38aa	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode0.tif	1	chain	7	1	324+325+322+323	XResolution,YResolution
+9645ae9f0039e01b7696c0da47cd93dba467d71caf3c81a0c3e15e00e3797d6c	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode1.tif	0	chain	7	1	273+279	XResolution,YResolution
+9645ae9f0039e01b7696c0da47cd93dba467d71caf3c81a0c3e15e00e3797d6c	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode1.tif	1	chain	7	1	324+325+322+323	XResolution,YResolution
+6f43915a141039ae45627e72975e8371092ff6ae765bd6d754ca3d8ea41645ed	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode2.tif	0	chain	7	1	273+279	XResolution,YResolution
+6f43915a141039ae45627e72975e8371092ff6ae765bd6d754ca3d8ea41645ed	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode2.tif	1	chain	7	1	324+325+322+323	XResolution,YResolution
+23c96c8964580d9287d35a94537c9cf12135ef3dcda992e9930fe4033513b1d2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode3.tif	0	chain	7	1	273+279	XResolution,YResolution
+23c96c8964580d9287d35a94537c9cf12135ef3dcda992e9930fe4033513b1d2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode3.tif	1	chain	7	1	324+325+322+323	XResolution,YResolution
+1f0a2e0b8a0e3cdf108488001352504fb4850143a65d2482ddcd8e79cae9236e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode_not_correctly_set_on_ovr.tif	0	chain	7	1	273+279	XResolution,YResolution
+1f0a2e0b8a0e3cdf108488001352504fb4850143a65d2482ddcd8e79cae9236e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_ovr_jpeg_tablesmode_not_correctly_set_on_ovr.tif	1	chain	7	1	324+325+322+323	XResolution,YResolution
+45d0f68b312e0a8502f256a746454570e865e3dd9348f789c15e79043060b22e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_point.tif	0	chain	1	1	273+279	XResolution,YResolution
+0da40ec90820a3677aef8db549e459b30ae765f701ff230ace2ff577444e00d2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_truncated.tif	0	chain	1	1	273+279	XResolution,YResolution
+60745a88683084ce6dc2bffabd6819d674d0b63c6c06d83d66b7c43de08e90b5	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_user_defined_geokeys.tif	0	chain	1	1	273+279	XResolution,YResolution
+b0d837a199cabeb278ebdab725aa26415cc5ba0d77133d098f70446d0d204bd0	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_with_ovr.tif	0	chain	1	1	273+279	XResolution,YResolution
+b0d837a199cabeb278ebdab725aa26415cc5ba0d77133d098f70446d0d204bd0	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_with_ovr.tif	1	chain	1	1	324+325+322+323	XResolution,YResolution
+b0d837a199cabeb278ebdab725aa26415cc5ba0d77133d098f70446d0d204bd0	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_with_ovr.tif	2	chain	1	1	324+325+322+323	XResolution,YResolution
+de39d4b6caf445f6914cf173487f0f09d089e9fda9bc4ab3d0bb43ebb176a4d4	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_zstd_corrupted2.tif	0	chain	50000	1	273+279	XResolution,YResolution
+b100834483e42e85ca4b2fefa9eb73ecca51dae2c3893c2afa6a22657a7a6ce2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_zstd_corrupted.tif	0	chain	50000	1	273+279	XResolution,YResolution
+70892132bcda3f8318fe986a4625b634f58dd055c7b8435b5a4362eb0879ec26	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/byte_zstd.tif	0	chain	50000	1	273+279	XResolution,YResolution
+bfbada089a6911efca50bcd10fc6913959094fb07cdaedc08f9084d8f86ae1a1	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/cfloat32.tif	0	chain	1	1	273+279	XResolution,YResolution
+ea1c6461e7f6539ff927091015d176e2b2dbbed433c3bdd51860f0f76fe8e8eb	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/cfloat64.tif	0	chain	1	1	273+279	XResolution,YResolution
+b4b60961818d2386f19d43c15dcc7fc0a46c6eac83a3c02478e120213fb2916b	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/cint16.tif	0	chain	1	1	273+279	XResolution,YResolution
+c8305231fe87e428642da908660e54f59cefc036dd075339e4374236f036f0da	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/cint32.tif	0	chain	1	1	273+279	XResolution,YResolution
+186842cbaadac156f42c14a26ac5d978a9ac44a227b3458455631bc2cda045ec	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/cint_sar.tif	0	chain	1	1	273+279	XResolution,YResolution
+57529ab077f874a7910e48eb2b991d019bc53f56d4820ba5d6337781b9ebd0f2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/citation_mixedcase.tif	0	chain	1	1	273+279	XResolution,YResolution
+1c845103ac437d65660c4680d09c8aa28d9dbbdeaffecaacf35c23cb278bdf65	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/cog_strile_arrays_zeroified_when_possible.tif	0	chain	5	2	324+325+322+323	XResolution,YResolution
+1c845103ac437d65660c4680d09c8aa28d9dbbdeaffecaacf35c23cb278bdf65	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/cog_strile_arrays_zeroified_when_possible.tif	1	chain	8	4	324+325+322+323	XResolution,YResolution
+ef42f630b46ed4c1a901a3ec51c2eb97617e3f0219ab1ffba49701f6f3c12bcf	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/corrupted_gtiff_tags.tif	0	chain	1	1	273+279	XResolution,YResolution
+deab232c5f8985787e496b58180c4824899a9b5dd814686753fa41e3d016a2ab	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/dstsize_larger_than_source.tif	0	chain	8	1	273+279	XResolution,YResolution
+65acd9ed5eb86e9c1fa34a32ed63d53054500bb215f71c86cb988cf4b04bedf1	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg26711_3855_geotiff1_1.tif	0	chain	1	1	273+279	XResolution,YResolution
+2385532c4afa5883d8953ce674c81faaf7da802dcfd3a461f06e2b76355eeaea	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg26711_geotiff1_1.tif	0	chain	1	1	273+279	XResolution,YResolution
+fc5c1b320ce4be9d22d4f0eb5640b8b6e5322e1633cd772c5c3588d90c1c0899	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg26730_with_linear_units_set.tif	0	chain	1	1	273+279	XResolution,YResolution
+483c6c4864842cd90665eaf728e0ce168affd701df30553db042b2eb2d63f6ce	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg_2853_with_us_feet.tif	0	chain	1	1	273+279	XResolution,YResolution
+89931dd0d66635e88f97b3566611f5f0ff6969b97d0a4334d9d4e23f756b8a6f	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg32631_4979_geotiff1_1.tif	0	chain	1	1	273+279	XResolution,YResolution
+ed2892e32baaee59f482790d9841bafb5f315eb9e986c5cc1d85a2af2eece639	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg4326_3855_geotiff1_1.tif	0	chain	1	1	273+279	XResolution,YResolution
+3b258bff1e1bcd47f9cdfcf0e8fba21e4fc6f83888934cbc2d92d4d01b803005	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg4326_5030_geotiff1_1.tif	0	chain	1	1	273+279	XResolution,YResolution
+dc563d593c11af5e3cf654dc57cd51774017a32d959636a91646142199890f9d	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg4326_geotiff1_1.tif	0	chain	1	1	273+279	XResolution,YResolution
+28b4d4ad9456cd229752a9a45e0e1129652723be1d56ccef031c133aaeaa87dd	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/epsg4979_geotiff1_1.tif	0	chain	1	1	273+279	XResolution,YResolution
+47ba5d03e721c0f67132dfe9833922a5dd806f750f64da793f7fb843e94a41ab	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/excessive-memory-TIFFFillStrip2.tif	0	chain	8	1	273+279	XResolution,YResolution
+0cd39e2a79880927b07cbd0851fb2dbba92fbe4f292a4f834ccac03f3695f9da	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/excessive-memory-TIFFFillStrip.tif	0	chain	8	3	273+279	XResolution,YResolution
+0169f6595b62c9e8bed446bb1eeae63dabed78f15510570ce5a6eaedf13b8bc5	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/excessive-memory-TIFFFillTile.tif	0	chain	1	1	324+325+322+323	XResolution,YResolution
+f9b1c90270499a9fac298343528e1299a05ccb1733fdf2b81557b6dda7a45255	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/float16.tif	0	chain	1	1	273+279	XResolution,YResolution
+5b77eedd315e1590929399e0bb5f5d0aaff6de1f12192d93beb46d0955263b95	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/float24.tif	0	chain	1	1	273+279	XResolution,YResolution
+770e3c882c89a22150131f47e04b68d9788ab08f11a39ca47d02a0c333d50b8e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/float32_almost_nodata_max_float32.tif	0	chain	1	1	273+279	XResolution,YResolution
+2a271e3921571c9f03ee14e7320dce2f2dec17fb540eb9e0335e6e315c6f4af1	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/float32_minwhite.tif	0	chain	1	0	273+279	XResolution,YResolution
+dad4ed7e3bacc9277891181571a4e8879977b8763a611d5fe9217fe7139322fe	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/float32.tif	0	chain	1	1	273+279	XResolution,YResolution
+29156f3573e84b54a9e183b7cadb0b7bc230e1252166cf4df4576cd8e0bdb377	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/float64.tif	0	chain	1	1	273+279	XResolution,YResolution
+ffe7aeadbf758f53a1dc14013e534203352c108f104a4a58fd6606553a8eb39f	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/geolocation_arrays_lon180_lon360.tif	0	chain	8	1	273+279	XResolution,YResolution
+f5272110b8c9609acccb4babdf8857514eba39db643eb24e5e80dc77f320a19d	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/geomatrix.tif	0	chain	1	1	273+279	XResolution,YResolution
+a51f036d5dd37877acd7c0f05220c9508ea2138d528f8f92d6a0d57891001e78	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/gtiff_towgs84_override.tif	0	chain	1	1	273+279	XResolution,YResolution
+e3bf67f78d69cfa55e55c5d2d8eceb847d06149ee087ad7399c5bd58b58f13b6	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/GTModelTypeGeoKey_only.tif	0	chain	1	1	273+279	XResolution,YResolution
+87b18d14f1f0d00fc488215855fce670778dc16d87f8736a29899d2c3f2fe3ca	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/imagine_localcs_citation.tif	0	chain	1	1	273+279	XResolution,YResolution
+1bc3cfb49774fa3e7cb977432408e130565f1d05ca3e144554807c22e1d082af	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/int10.tif	0	chain	1	1	273+279	XResolution,YResolution
+c0e125e4a590d27f481c33111f8c8fab125a00f19fd7fb705447faa70a37813b	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/int12.tif	0	chain	1	1	273+279	XResolution,YResolution
+46ae0ee64dfc7818a56fcc3ed65e11c058326448f4b2c681c120ca8cab7fc686	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/int16.tif	0	chain	1	1	273+279	XResolution,YResolution
+8b8282a4ce2433be3cf60954b85401acf2b15a8ae3a706527e1ef532408c576c	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/int24.tif	0	chain	1	1	273+279	XResolution,YResolution
+ae5db6cb2146a64cab3ce9e14b70d4a0c90ae145c4ed4eed5452b1bbfa5d6488	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/int32.tif	0	chain	1	1	273+279	XResolution,YResolution
+aba9be621abf47a86844b55f8b54ca080f2d71805e5f15d5873e562f5d6b10e7	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/int64.tif	0	chain	1	1	273+279	XResolution,YResolution
+14f71ac235855c4ba614bb8543f7d72e02abddc6772a476ef9f94466a8eec203	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/leak-ZIPSetupDecode.tif	0	chain	8	1	273+279	XResolution,YResolution
+b255c8ae0248070b981193d637919364ae3bebaa2a9f19f5f02a6b4361c498ff	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/left_vrt_subpixel_offset.tif	0	chain	1	1	273+279	XResolution,YResolution
+526158dc544dbee2378c8e096ff32d3f8a3b4e6dc8b0d841688535d71611cbe2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/md_dg_2.tif	0	chain	32946	2	273+279	XResolution,YResolution
+68934e3f50b5e93cc68f84038a732bd4b399036be6dda1194fc12cc18ca72f44	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/ModelTiepointTag_z_non_zero_but_ModelPixelScaleTag_z_zero.tif	0	chain	1	1	273+279	XResolution,YResolution
+864c7284f358feef2b257dc5a38704c81da0dfd973d837b69375fc4717909f0f	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/nan32_nodata.tif	0	chain	1	1	273+279	XResolution,YResolution
+8eacb922e0ab61068d46ead5c573aee7499315a35c4d9ac683ade3fa1366099e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/negative_scaley.tif	0	chain	1	1	273+279	XResolution,YResolution
+02d4ec2f7d8c7ec4671a57db1cc4dde2f310a355e42c20f1bce838022330846e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/nodata_byte.tif	0	chain	1	1	273+279	XResolution,YResolution
+0fb0e4c5749b5a9bcd8feaa475dcdca422688605027340d2a031b297076b661a	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/oddsize_1bit2b.tif	0	chain	1	1	273+279	XResolution,YResolution
+b8bb891c48bbbcc465fd896c2fa7a18cc8048833a0809b5e173ca7d5a145812e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/pcscitation.tif	0	chain	1	1	273+279	XResolution,YResolution
+c962b774f8f9485ca9e0aded7e10479a61c3d1e054a21c6aaa936c64044a3597	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/projection_3856.tif	0	chain	1	1	273+279	XResolution,YResolution
+c2599f03f82c4e130cb41ca4e357daf911024be68283092c4bbcb8ffe9dc00c8	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/rasterio_lanczos_nodata.tif	0	chain	1	1	273+279	XResolution,YResolution
+964307d87e79982d5cc64e4985c1c70a3732094dcce76b946df3c17e67060212	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/rgba.tif	0	chain	1	2	273+279	XResolution,YResolution
+e225bfe2d0fb7d2b90a8464cb0e2971426855638b118fc2c7a6e5942cb094ef7	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/rgba_with_alpha_0_and_255.tif	0	chain	1	2	273+279	XResolution,YResolution
+755b32dc518d8caa8dff981129ba23eff8e68fbe223d9020cffbadb660feeb60	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/right_bottom_vrt_subpixel_offset.tif	0	chain	1	1	273+279	XResolution,YResolution
+053a0a7ee69d54d78a57160a354839b446da95fe10b84fd2a9a810f97b82b41d	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/right_top_vrt_subpixel_offset.tif	0	chain	1	1	273+279	XResolution,YResolution
+85c494bb6c991855f51cb2abb517962289cd04d7adf13a81504abd8e8d0fe0d3	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/spaf27_brokengdal.tif	0	chain	1	1	273+279	XResolution,YResolution
+a2c316f3c79053ce65c7a50e907185af07560090628f575447f416f988fa60b5	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/spaf27_correct.tif	0	chain	1	1	273+279	XResolution,YResolution
+056c3abb48c34362fbf24b51814cc9105983108d1e212fe79896a55227eb0084	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/spaf27_epsg.tif	0	chain	1	1	273+279	XResolution,YResolution
+553801a7f2032a3ed913e6f471468c219ef3731ddae34116cd900e8d6de74ba2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/spaf27_markedcorrect.tif	0	chain	1	1	273+279	XResolution,YResolution
+37deb6e69dc44fb5460d66c7c8954db52920f9b7b6dfb51c6486f8a7763a3a4e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/test_11555.tif	0	chain	8	1	324+325+322+323	XResolution,YResolution
+37deb6e69dc44fb5460d66c7c8954db52920f9b7b6dfb51c6486f8a7763a3a4e	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/test_11555.tif	1	chain	8	4	324+325+322+323	XResolution,YResolution
+34764736a483a96f9762d238640f8ef712c1970b9cdaca6a875a9f86cca7b877	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/test_hgrid_with_subgrid.tif	0	chain	1	1	273+279	XResolution,YResolution
+34764736a483a96f9762d238640f8ef712c1970b9cdaca6a875a9f86cca7b877	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/test_hgrid_with_subgrid.tif	1	chain	1	1	273+279	XResolution,YResolution
+34764736a483a96f9762d238640f8ef712c1970b9cdaca6a875a9f86cca7b877	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/test_hgrid_with_subgrid.tif	2	chain	1	1	273+279	XResolution,YResolution
+34764736a483a96f9762d238640f8ef712c1970b9cdaca6a875a9f86cca7b877	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/test_hgrid_with_subgrid.tif	3	chain	1	1	273+279	XResolution,YResolution
+c5409bfb559ae8b90a6071b0c0f3b3d0d08adb8e85fdc087e41f52f892c9d120	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/ticket3019.tif	0	chain	1	1	273+279	XResolution,YResolution
+158f1b28e79ab2312246c64aa00d77e8318b8b0ebc3722e21cb7e52d430a05ab	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tiff_vertcs_scale_offset.tif	0	chain	1	1	273+279	XResolution,YResolution
+c2b53a39d03cee9c2e5c4070c9010b2a6e9c9ac49ad214a20adef4555b944eec	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tiff_with_subifds.tif	0	chain	5	1	324+325+322+323	XResolution,YResolution
+c2b53a39d03cee9c2e5c4070c9010b2a6e9c9ac49ad214a20adef4555b944eec	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tiff_with_subifds.tif	1	sub	5	1	324+325+322+323	XResolution,YResolution
+c2b53a39d03cee9c2e5c4070c9010b2a6e9c9ac49ad214a20adef4555b944eec	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tiff_with_subifds.tif	2	sub	5	1	324+325+322+323	XResolution,YResolution
+c2b53a39d03cee9c2e5c4070c9010b2a6e9c9ac49ad214a20adef4555b944eec	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tiff_with_subifds.tif	3	chain	5	1	324+325+322+323	XResolution,YResolution
+c2b53a39d03cee9c2e5c4070c9010b2a6e9c9ac49ad214a20adef4555b944eec	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tiff_with_subifds.tif	4	sub	5	1	324+325+322+323	XResolution,YResolution
+c2b53a39d03cee9c2e5c4070c9010b2a6e9c9ac49ad214a20adef4555b944eec	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tiff_with_subifds.tif	5	sub	5	1	324+325+322+323	XResolution,YResolution
+393e5716b77f6421ceaa455b800d5c0077530b088366fc8553cd98be3e277897	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tif_jpeg_too_big_last_stripe.tif	0	chain	7	1	273+279	XResolution,YResolution
+534e6e50ab5b0c4ee5f5246a84d829c5288d2a898b6da673cc8b77ed10a4e195	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tif_jpeg_ycbcr_too_big_last_stripe.tif	0	chain	7	6	273+279	XResolution,YResolution
+082acfcaccf0af16e0efef264eba8bda2d47a2230f6632f98a789cb648af98d9	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tif_webp_huge_single_strip.tif	0	chain	50001	2	273+279	XResolution,YResolution
+c7e1c4f12bf4e6a8d8a4bcebb31c0d0597545f39e768f80d218c53f91037c9c5	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/tif_webp.tif	0	chain	50001	2	273+279	XResolution,YResolution
+3f8a4a877444be47e0664177cb910efac9eaec157b3ecf25b727a9f5d3724df7	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/transformer_13_dem.tif	0	chain	8	1	273+279	XResolution,YResolution
+686b86cb22bf121fb2abcc47511bdc12c0b838a7f9681eb967dc89bd16e20cef	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/transformer_14_dem.tif	0	chain	1	1	273+279	XResolution,YResolution
+864d307bf352b81b0633e374c2e719e060a3f62550e0a4196b024af1ac74b800	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/uint16.tif	0	chain	1	1	273+279	XResolution,YResolution
+7275183363270fff501c4a8c65a87dbb44f74c10571a1ef154b9f330478a9ebb	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/uint32.tif	0	chain	1	1	273+279	XResolution,YResolution
+2e778dca2e7c1510f25ef1743277c79859fc81034ced97c25f87fad2ec8bd509	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/uint64.tif	0	chain	1	1	273+279	XResolution,YResolution
+f40dae6e8b5e18f3648e9f095e22a0d7027014bb463418d32f732c3756d8c54f	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/utmsmall.tif	0	chain	1	1	273+279	XResolution,YResolution
+0c4441a02e239787fa2a294866fce00f8cd2353305bf1055d9f7ab13a49a2702	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/vertcs_user_defined.tif	0	chain	1	1	273+279	XResolution,YResolution
+501e70fa6190e785b09b78c5ee0a551c18292ce6eab00a726d55b1136d2e4575	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/vrtmisc16_tile1.tif	0	chain	8	3	273+279	XResolution,YResolution
+27d9685a15ef7e46fad82d4b62e4146c8030cc2f01b6b945df95a78c06954cd8	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/vrtmisc16_tile2.tif	0	chain	8	3	273+279	XResolution,YResolution
+39daee5342091749489eb8797d56b2489cd00d2d8dc2fc3a09f5bc39f40d458a	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/weird_mercator_2sp.tif	0	chain	1	1	273+279	XResolution,YResolution
+6e34e16e865403f2ad14cb1d6766b56d2fd3f5c49926dc1c165611806c408acd	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/WGS_1984_Web_Mercator_Auxiliary_Sphere.tif	0	chain	1	1	273+279	XResolution,YResolution
+87916d141469e794602c62bbf76b4169412b2088d43ecd580ddfb674b9932c8a	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/WGS_1984_Web_Mercator.tif	0	chain	1	2	273+279	XResolution,YResolution
+227566ff6d6b7b81f1c56c6f34ac06a7cc9a732d499343e74b8f9306aab9dda2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/ycbcr_with_mask.tif	0	chain	7	6	324+325+322+323	XResolution,YResolution
+227566ff6d6b7b81f1c56c6f34ac06a7cc9a732d499343e74b8f9306aab9dda2	GDAL autotest fa1fc3c	gdal/autotest/gcore/data/ycbcr_with_mask.tif	1	chain	32946	4	324+325+322+323	XResolution,YResolution
+ed89ec77348d6445db2d7e7755fa8f2e4baa95fdeea268bd3e7e13506c4c8b23	GDAL autotest fa1fc3c	gdal/autotest/gdrivers/data/gtiff/byte_with_xmp.tif	0	chain	1	1	273+279	XResolution,YResolution
+3d2625b03da3de3fda100ec577362b10307aafc3aa9793c28d6480a2c5e96cc5	GDAL autotest fa1fc3c	gdal/autotest/gdrivers/data/gtiff/int8.tif	0	chain	1	1	273+279	XResolution,YResolution
+e91e77a4533ed7cce551d83330676ea5c47dd5e55fb38adda7819366afdbdfc2	raw.pixls.us	Apple / iPhone 12 Pro / Apple - iPhone 12 Pro - 8bit (4:3).DNG	0	chain	7	6	273+279	XResolution,YResolution
+e91e77a4533ed7cce551d83330676ea5c47dd5e55fb38adda7819366afdbdfc2	raw.pixls.us	Apple / iPhone 12 Pro / Apple - iPhone 12 Pro - 8bit (4:3).DNG	1	sub	7	34892	324+325+322+323	XResolution,YResolution
+e91e77a4533ed7cce551d83330676ea5c47dd5e55fb38adda7819366afdbdfc2	raw.pixls.us	Apple / iPhone 12 Pro / Apple - iPhone 12 Pro - 8bit (4:3).DNG	2	sub	34892	52527	273+279	XResolution,YResolution
+45420c595401547cca950ae58d552bc82b32d31ce1d58c082df33004016197f5	raw.pixls.us	Google / Pixel 8 Pro / Google - Pixel 8 Pro - 16bit (4:3).dng	0	chain	7	6	273+279	XResolution,YResolution
+45420c595401547cca950ae58d552bc82b32d31ce1d58c082df33004016197f5	raw.pixls.us	Google / Pixel 8 Pro / Google - Pixel 8 Pro - 16bit (4:3).dng	1	sub	7	32803	324+325+322+323	XResolution,YResolution
+5baeb5f0c4a125647df03b82c2d38b0f02784393bd39eff1a5b23d8f5308dc5e	raw.pixls.us	Samsung / Galaxy S21 Ultra / Samsung - Galaxy S21 Ultra - 4:3.dng	1	sub	7	6	273+279	XResolution,YResolution
+13ddd4b117299d16d47b6404ad1981258a00b6bce60382524a51cab15a41334d	raw.pixls.us	Samsung / Galaxy S22 Ultra / Samsung - Galaxy S22 Ultra - 4:3.dng	1	sub	7	6	273+279	XResolution,YResolution
+873184113210f9c4f684ad1eccea587a973b2c4d4ca88036b6962a1f6ca513bb	raw.pixls.us	Samsung / Galaxy S23 / Samsung - Galaxy S23 - 16:9.dng	1	sub	7	6	273+279	XResolution,YResolution
+119d9852dd6735f38a1211c035bbef15241c896dbfbedd2922390df705cbfc69	tiffz fixture	tests/fixtures/known_defect/canon-cr2-ifd0-bps-control-spp-present.tif	0	chain	6	-	273+279	Photometric,XResolution,YResolution
+474ab9b1f7ac06b615e6b8676e8ab78f1d3e6ffe97706847817b1f0afff2752f	tiffz fixture	tests/fixtures/known_defect/canon-cr2-ifd0-bps-exemplar.tif	0	chain	6	-	273+279	Photometric,XResolution,YResolution
+55f12666e991326b3ebbe56bfcc491db60c0bfb67e9a2e3d17375cfc44e415c3	tiffz fixture	tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-8-8-16.tif	0	chain	6	-	273+279	Photometric,XResolution,YResolution
+5b81f7b50b41a0e11afc10c44a9b7abbeb74091d6dbb91a716e22f9cbd63f8c2	tiffz fixture	tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-count2.tif	0	chain	6	-	273+279	Photometric,XResolution,YResolution
+f337ccff7a4dba023672314bfa73e24c2ad717bd33dcfd23fb04829ae0a911e8	tiffz fixture	tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-subifd.tif	0	chain	6	6	273+279	XResolution,YResolution
+f337ccff7a4dba023672314bfa73e24c2ad717bd33dcfd23fb04829ae0a911e8	tiffz fixture	tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-subifd.tif	1	sub	6	-	273+279	Photometric,XResolution,YResolution
+028c2b4a7308fbdad036a91d16c18660269b39e3ee6380af5cc4e8427cbcab48	tiffz fixture	tests/fixtures/known_defect/kodak-minsamplevalue-exemplar.tif	0	chain	1	6	273+279	XResolution,YResolution
+d5e349008b69b1a0bdf309ef7ef66f840b737d99cd52738c1e6657e37af4babf	tiffz fixture	tests/fixtures/known_defect/kodak-minsamplevalue-near-count2.tif	0	chain	1	6	273+279	XResolution,YResolution
+c1fb82c3e5339000c345b1afd88ff15987767b2327b08236c2df7ca48d935eb9	tiffz fixture	tests/fixtures/known_defect/kodak-minsamplevalue-near-max-short.tif	0	chain	1	6	273+279	XResolution,YResolution
+a511418dc8d4328d79bc60cfa59dfaa0a44ac2d37878069a357d9592f8c8e630	tiffz fixture	tests/fixtures/known_defect/kodak-minsamplevalue-near-one-ifd-sound.tif	0	chain	1	6	273+279	XResolution,YResolution
+a511418dc8d4328d79bc60cfa59dfaa0a44ac2d37878069a357d9592f8c8e630	tiffz fixture	tests/fixtures/known_defect/kodak-minsamplevalue-near-one-ifd-sound.tif	1	chain	1	6	273+279	XResolution,YResolution
+a511418dc8d4328d79bc60cfa59dfaa0a44ac2d37878069a357d9592f8c8e630	tiffz fixture	tests/fixtures/known_defect/kodak-minsamplevalue-near-one-ifd-sound.tif	2	chain	1	6	273+279	XResolution,YResolution
+7adbee76d3d2a81ed65b5a4224c896774e80658f288b2a505b97c1d5e39ebb4e	tiffz fixture	tests/fixtures/known_defect/kodak-minsamplevalue-near-spp4.tif	0	chain	1	6	273+279	XResolution,YResolution
+39f0c9a5498cd27cc38303eae176477e66a9f0df9439d5e4acf86c32b87f48f1	patched control (scratch)	dngctl/iphone-mask-photometric1.dng	0	chain	7	6	273+279	XResolution,YResolution
+39f0c9a5498cd27cc38303eae176477e66a9f0df9439d5e4acf86c32b87f48f1	patched control (scratch)	dngctl/iphone-mask-photometric1.dng	1	sub	7	34892	324+325+322+323	XResolution,YResolution
+39f0c9a5498cd27cc38303eae176477e66a9f0df9439d5e4acf86c32b87f48f1	patched control (scratch)	dngctl/iphone-mask-photometric1.dng	2	sub	34892	1	273+279	XResolution,YResolution

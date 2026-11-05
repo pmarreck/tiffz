@@ -3527,3 +3527,92 @@ test "finding 19: JPEG-in-TIFF segment geometry against RowsPerStrip, tile sizes
         }
     }
 }
+
+/// Absolute offset of IFD `n`'s entry for `tag`, following the main chain of
+/// a little-endian classic TIFF.
+fn chainEntryOffset(bytes: []const u8, n: usize, tag: u16) ?usize {
+    var ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    var k: usize = 0;
+    while (k < n) : (k += 1) {
+        const count = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+        ifd = std.mem.readInt(u32, bytes[ifd + 2 + 12 * count ..][0..4], .little);
+        if (ifd == 0) return null;
+    }
+    const count = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+    for (0..count) |i| {
+        const at = ifd + 2 + 12 * i;
+        if (std.mem.readInt(u16, bytes[at..][0..2], .little) == tag) return at;
+    }
+    return null;
+}
+
+test "finding 19 reads markers only: records do not wait for the entropy data to decode" {
+    // Validate, 2026-11-05: rules 1 to 6 read marker segments, so a segment
+    // whose markers parse is examined whether or not its entropy data
+    // decodes, and IFDs a stopping error leaves unreached are checked too.
+    const allocator = std.testing.allocator;
+    const Case = struct {
+        path: []const u8,
+        ifd: u32,
+        /// The record's SOF is the (sof_index + 1)th FF C(sof_type) in the file.
+        sof_index: usize,
+        sof_type: u8 = 0,
+        rule: u16,
+        entry_tag: u16,
+        tiff_value: u32,
+        required: u32,
+        violating: u32,
+        examined: u32,
+    };
+    const cases = [_]Case{
+        // The second strip's entropy data is cut short: both strips count.
+        .{ .path = "tests/fixtures/jpeg_geometry/rows-bad-cut.tif", .ifd = 0, .sof_index = 0, .rule = 1, .entry_tag = 278, .tiff_value = 8, .required = 16, .violating = 2, .examined = 2 },
+        // IFD 0's strip is cut short and stops the walk; IFD 1 still reports.
+        .{ .path = "tests/fixtures/jpeg_geometry/stop-then-rows-bad.tif", .ifd = 1, .sof_index = 1, .rule = 1, .entry_tag = 278, .tiff_value = 8, .required = 16, .violating = 2, .examined = 2 },
+        // Rule 6 in a DNG 1.2.0.0 CFA raw IFD whose DCT data does not decode
+        // (the shape of a pre-1.4 lossy CinemaDNG raw): lossless required.
+        .{ .path = "tests/fixtures/jpeg_geometry/dng-cfa-sof0-cut.tif", .ifd = 0, .sof_index = 0, .rule = 6, .entry_tag = 259, .tiff_value = 32803, .required = 3, .violating = 1, .examined = 1 },
+    };
+    // Every case is checked before failing, so a regression names them all.
+    var silent: usize = 0;
+    for (cases) |case| {
+        const bytes = try loadFile(allocator, case.path);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        const result = validateRecording(allocator, bytes, &recorder);
+        std.testing.expectError(error.JpegInTiffPayload, result) catch |err| {
+            std.debug.print("{s}: expected the decode to fail\n", .{case.path});
+            return err;
+        };
+        var sof: usize = 0;
+        var from: usize = 0;
+        for (0..case.sof_index + 1) |_| {
+            sof = std.mem.indexOfPos(u8, bytes, from, &.{ 0xFF, 0xC0 + case.sof_type }) orelse return error.TestUnexpectedResult;
+            from = sof + 2;
+        }
+        const entry = chainEntryOffset(bytes, case.ifd, case.entry_tag) orelse return error.TestUnexpectedResult;
+        var records: usize = 0;
+        for (recorder.findings.items) |f| {
+            if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.jpeg_segment_geometry_invalid)) continue;
+            records += 1;
+            const p = f.payload_bytes;
+            try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, f.verdict);
+            try std.testing.expectEqual(case.ifd, std.mem.readInt(u32, p[0..4], .little));
+            try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[4..8], .little));
+            try std.testing.expectEqual(@as(u64, entry), std.mem.readInt(u64, p[8..16], .little));
+            try std.testing.expectEqual(@as(u64, sof), std.mem.readInt(u64, p[16..24], .little));
+            try std.testing.expectEqual(case.rule, std.mem.readInt(u16, p[24..26], .little));
+            try std.testing.expectEqual(@as(u16, case.sof_type), std.mem.readInt(u16, p[26..28], .little));
+            try std.testing.expectEqual(case.tiff_value, std.mem.readInt(u32, p[28..32], .little));
+            try std.testing.expectEqual(case.required, std.mem.readInt(u32, p[32..36], .little));
+            try std.testing.expectEqual(case.violating, std.mem.readInt(u32, p[36..40], .little));
+            try std.testing.expectEqual(case.examined, std.mem.readInt(u32, p[40..44], .little));
+        }
+        if (records != 1) {
+            std.debug.print("{s}: {d} finding-19 records, want 1\n", .{ case.path, records });
+            silent += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), silent);
+}

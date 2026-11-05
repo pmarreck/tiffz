@@ -8,6 +8,7 @@
 #   s16x16_22.jpg  16x16, Y 2x2, Cb Cr 1x1 (MCU 16x16)
 #   s16x16_41.jpg  16x16, Y 4x1, Cb Cr 1x1 (MCU 32x8)
 #   s16x16_11.jpg  16x16, all components 1x1 (gradient:red-blue, 2026-11-05)
+#   s16x16_gray.jpg 16x16, one component (gradient:white-black -colorspace Gray)
 # The DNG fixtures (finding 19 rule 6) are one-IFD DNG 1.6.0.0 previews.
 use strict; use warnings;
 my $dir = shift or die "usage: gen.pl DIR\n";
@@ -88,3 +89,72 @@ my $rgb = ycbcr(width => 16, length => 16, rows => 16, sub => [1, 1]);
 delete $rgb->{530};
 $rgb->{262} = [3, [2]];
 put('dng-rgb-sof0.tif', tiff(dng($rgb), [slurp('s16x16_11.jpg')], 0));
+
+# Reach (validate, 2026-11-05): finding 19 reads markers only, so its records
+# do not depend on the entropy data decoding. `cut` keeps a stream's markers
+# through SOS and a few entropy bytes, with no EOI, so the decode fails.
+sub cut { substr($_[0], 0, 295) }
+# Rule 1 with the second strip's entropy data cut short.
+put('rows-bad-cut.tif', tiff(ycbcr(width => 16, length => 16, rows => 8, sub => [2, 2]),
+    [slurp('s16x8_22.jpg'), cut(slurp('s16x8_22.jpg'))], 0));
+
+# Two IFDs in the main chain, each written like `tiff`.
+sub chain2 {
+    my (@ifds) = @_;
+    my $buf = "II" . pack("v", 42) . pack("V", 0);
+    my @f;
+    for my $spec (@ifds) {
+        my ($fields, $segments) = @$spec;
+        my (@offs, @counts);
+        for my $s (@$segments) {
+            $buf .= "\0" if length($buf) % 2;
+            push @offs, length $buf; push @counts, length $s; $buf .= $s;
+        }
+        my %f = %$fields;
+        $f{273} = [4, \@offs];
+        $f{279} = [4, \@counts];
+        push @f, \%f;
+    }
+    my @ifd_offs;
+    for my $k (0 .. $#f) {
+        $buf .= "\0" if length($buf) % 2;
+        my %f = %{ $f[$k] };
+        my @tags = sort { $a <=> $b } keys %f;
+        my $ifd_off = length $buf;
+        push @ifd_offs, $ifd_off;
+        my $vals_off = $ifd_off + 2 + 12 * @tags + 4;
+        my ($ifd, $vals) = (pack("v", scalar @tags), '');
+        for my $t (@tags) {
+            my ($type, $v) = @{ $f{$t} };
+            my $bytes = pack($type == 1 ? 'C*' : $type == 3 ? 'v*' : 'V*', @$v);
+            if (length $bytes <= 4) {
+                $ifd .= pack("v v V", $t, $type, scalar @$v) . $bytes . ("\0" x (4 - length $bytes));
+            } else {
+                $ifd .= pack("v v V V", $t, $type, scalar @$v, $vals_off + length $vals);
+                $vals .= $bytes;
+            }
+        }
+        $buf .= $ifd . pack("V", 0) . $vals;
+    }
+    substr($buf, 4, 4) = pack("V", $ifd_offs[0]);
+    # Link IFD 0's next offset (after its entries) to IFD 1.
+    my $n0 = unpack("v", substr($buf, $ifd_offs[0], 2));
+    substr($buf, $ifd_offs[0] + 2 + 12 * $n0, 4) = pack("V", $ifd_offs[1]);
+    return $buf;
+}
+# IFD 0's only strip is cut short, so the walk stops there; IFD 1 is the
+# rule 1 image, reached only by the pass over unreached IFDs.
+put('stop-then-rows-bad.tif', chain2(
+    [ycbcr(width => 16, length => 16, rows => 16, sub => [2, 2]), [cut(slurp('s16x16_22.jpg'))]],
+    [ycbcr(width => 16, length => 16, rows => 8, sub => [2, 2]), [slurp('s16x8_22.jpg'), slurp('s16x8_22.jpg')]],
+));
+
+# Rule 6 when the data does not decode, in the shape of a pre-1.4 lossy
+# CinemaDNG raw: a DNG 1.2.0.0 CFA raw IFD (NewSubFileType 0), Compression 7
+# with a DCT (SOF0) stream where lossless is required, cut after SOS.
+my $cfa = {
+    254 => [4, [0]], 256 => [3, [16]], 257 => [3, [16]], 258 => [3, [8]],
+    259 => [3, [7]], 262 => [3, [32803]], 277 => [3, [1]], 278 => [3, [16]],
+    50706 => [1, [1, 2, 0, 0]],
+};
+put('dng-cfa-sof0-cut.tif', tiff($cfa, [substr(slurp('s16x16_gray.jpg'), 0, 165)], 0));

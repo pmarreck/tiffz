@@ -15,7 +15,13 @@
 //!    BitsPerSample 8 must be baseline DCT JPEG (SOF0); anything else must
 //!    be lossless Huffman JPEG (SOF3). The record cites Compression, its TIFF
 //!    value is the PhotometricInterpretation and its required value the SOF
-//!    type the rule requires.
+//!    type the rule requires. Readings (validate, 2026-11-05): T.81 Table
+//!    B.1 names only SOF0 baseline DCT, so SOF1 is a fault even at 8 bits;
+//!    lossless Huffman JPEG is the lossless mode of Annex H (SOF3), so SOF7,
+//!    a differential frame of the hierarchical mode (Annex J), is a fault,
+//!    and so are the arithmetic-coded SOF11 and SOF15. A hierarchical stream
+//!    (DHP, then frames) is a fault even when its first frame is SOF3; that
+//!    case waits on jpegz reporting the DHP marker.
 //!
 //! Lossless SOFs (3, 7, 11, 15) are exempt from rules 1 to 3. Every segment
 //! is examined; one record per IFD per violated rule carries the first
@@ -23,6 +29,10 @@
 //! read is not examined (jpegz reports why) and never counts as a pass.
 //!
 //! Pure: the decoder feeds it parsed frame headers and TIFF field values.
+//! The rules read marker segments only, so the decoder runs them as a
+//! structural pass over each segment's markers up to its frame header,
+//! whether or not the entropy data decodes, and over IFDs a stopping error
+//! left unreached (validate, 2026-11-05).
 
 const std = @import("std");
 const jpegz = @import("jpegz");
