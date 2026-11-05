@@ -72,6 +72,11 @@ const char *tiffz_last_error_message(const tiffz_decoder_t *decoder);
 /* 1 when `status` is a resource cap (11-19, 27, 28). EOFB (26) is not. */
 int tiffz_status_is_limit(tiffz_status_t status);
 
+/* 1 when `status` is a feature tiffz does not implement (3-6: compression,
+   photometric, predictor, bit depth). Like a limit, that is reach, not
+   corruption. Unsupported tag type (7) is not: it is an unreadable field. */
+int tiffz_status_is_unsupported(tiffz_status_t status);
+
 /* 0 when a limit recorded where it stopped. Otherwise 1. */
 int tiffz_limit_progress(
     const tiffz_decoder_t *decoder,

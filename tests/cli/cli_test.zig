@@ -461,3 +461,42 @@ test "tiffz with unknown arg exits non-zero" {
     try std.testing.expect(code == null or code.? != 0);
     try std.testing.expect(std.mem.indexOf(u8, r.stderr, "unknown argument") != null);
 }
+
+// What tiffz does not implement is reach, never corruption (validate
+// TERMINOLOGY.md, 2026-11-05): exit 4 and "unsupported". A corrupt record
+// outranks the refusal. The fixtures are from tests/fixtures/predictor/gen.pl.
+test "tiffz validate: an unimplemented feature is unsupported (reach), not invalid" {
+    const allocator = std.testing.allocator;
+    // RGB 8,8,16 with Predictor 2: TIFF 6.0 defines it, tiffz refuses the
+    // mixed widths.
+    const path = "tests/fixtures/predictor/predictor2_deflate_mixed.tif";
+    const r = try runCli(&.{ "validate", path });
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+    try std.testing.expectEqual(@as(?u8, 4), exitedCode(r.term));
+    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "unsupported") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "UnsupportedBitDepth") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "invalid") == null);
+
+    const j = try runCli(&.{ "validate", "--json", path });
+    defer allocator.free(j.stdout);
+    defer allocator.free(j.stderr);
+    try std.testing.expectEqual(@as(?u8, 4), exitedCode(j.term));
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"status\":\"unsupported\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"error\":6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"verdict\":1") == null);
+}
+
+test "tiffz validate: a corrupt record outranks an unsupported refusal" {
+    const allocator = std.testing.allocator;
+    // 12-bit Predictor 3: the decoder refuses the width (UnsupportedBitDepth),
+    // and finding 18 on Predictor says the file is at fault.
+    const path = "tests/fixtures/predictor/predictor3_deflate_bps12.tif";
+    const j = try runCli(&.{ "validate", "--json", path });
+    defer allocator.free(j.stdout);
+    defer allocator.free(j.stderr);
+    try std.testing.expectEqual(@as(?u8, 1), exitedCode(j.term));
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"status\":\"invalid\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"code\":18,\"verdict\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "unsupported") == null);
+}

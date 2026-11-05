@@ -1286,15 +1286,25 @@ pub const Decoder = struct {
         const planar_raw = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse 1;
         const planar: predictors_mod.PlanarConfig = @enumFromInt(planar_raw);
 
-        // BitsPerSample is technically per-sample; read the first
-        // value and assume uniform (M5 limitation).
+        // The predictors difference one sample width per row (TIFF 6.0
+        // p. 64; TN3's DecodeFPDelta takes a single bytesPerSample), so
+        // mixed BitsPerSample values are refused before decoding rather
+        // than decoded as if every sample had the first width (validate,
+        // 2026-11-05). The refusal is reach, not corruption.
         var bps: u16 = 8;
         if (dir.get(tags.bits_per_sample)) |bps_entry| {
             var buf: [16]u8 = undefined;
-            const need: usize = @as(usize, bps_entry.field_type.elementBytes()) * @as(usize, bps_entry.count);
+            const stride: usize = bps_entry.field_type.elementBytes();
+            const need: usize = stride * @as(usize, bps_entry.count);
             if (need > buf.len) return error.Malformed;
             try dir.readEntryValueCached(tags.bits_per_sample, self.endian, self.source, buf[0..need]);
             bps = header_mod.readU16(buf[0..2], self.endian);
+            if (stride == 2) {
+                var i: usize = 1;
+                while (i < bps_entry.count) : (i += 1) {
+                    if (header_mod.readU16(buf[i * 2 ..][0..2], self.endian) != bps) return error.UnsupportedBitDepth;
+                }
+            }
         }
 
         return .{

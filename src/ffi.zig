@@ -182,6 +182,15 @@ export fn tiffz_status_is_limit(status: i32) callconv(.c) i32 {
     };
 }
 
+/// 1 for a feature tiffz does not implement (statuses 3-6): reach, like a
+/// limit, never corruption. See `errors.isUnsupported`.
+export fn tiffz_status_is_unsupported(status: i32) callconv(.c) i32 {
+    return switch (status) {
+        3...6 => 1,
+        else => 0,
+    };
+}
+
 export fn tiffz_limit_progress(
     decoder: ?*const Handle,
     out_offset: ?*u64,
@@ -446,6 +455,7 @@ test "limit statuses are exactly the LimitExceeded errors, and EOFB is not one" 
         const status = statusFromError(err);
         const limit = std.mem.startsWith(u8, @errorName(err), "LimitExceeded");
         try std.testing.expectEqual(limit, tiffz_status_is_limit(status) == 1);
+        try std.testing.expectEqual(errors.isUnsupported(err), tiffz_status_is_unsupported(status) == 1);
     }
     try std.testing.expectEqual(@as(i32, 26), statusFromError(error.EndOfFacsimileBlock));
     try std.testing.expectEqual(@as(i32, 27), statusFromError(error.LimitExceededIfdDepth));

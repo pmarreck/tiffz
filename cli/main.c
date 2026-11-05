@@ -101,7 +101,8 @@ static int print_help(void) {
 		"    1  corrupt or malformed\n"
 		"    2  usage error\n"
 		"    3  I/O error (missing file, read failure)\n"
-		"    4  configured resource limit (not a corruption finding)\n",
+		"    4  reach: a configured resource limit, or a feature tiffz does not\n"
+		"       implement (not a corruption finding)\n",
 		tiffz_version());
 	return EXIT_OK;
 }
@@ -116,6 +117,15 @@ static int is_exact(const char *arg, const char *a, const char *b) {
 
 static int is_stdin_name(const char *path) {
 	return strcmp(path, "-") == 0 || strcmp(path, "@stdin") == 0;
+}
+
+static int has_corrupt(const FindingList *list) {
+	size_t i;
+	for (i = 0; i < list->len; i++) {
+		if (list->items[i].verdict == TIFFZ_VERDICT_CORRUPT)
+			return 1;
+	}
+	return 0;
 }
 
 static void findings_free(FindingList *list) {
@@ -200,16 +210,27 @@ static int is_resource_limit(tiffz_status_t status) {
 	return tiffz_status_is_limit(status) != 0;
 }
 
-static const char *report_word(int ok, tiffz_status_t status) {
+static int is_unsupported(tiffz_status_t status) {
+	return tiffz_status_is_unsupported(status) != 0;
+}
+
+/* Reach is a resource limit or a feature tiffz does not implement; it
+   never proves corruption (exit 4). A corrupt record outranks an
+   unsupported refusal: then the file is invalid. */
+static const char *report_word(int ok, tiffz_status_t status, int corrupt) {
 	if (ok)
 		return "ok";
 	if (is_resource_limit(status))
 		return "limited";
+	if (is_unsupported(status) && !corrupt)
+		return "unsupported";
 	return "invalid";
 }
 
-static int exit_for_status(tiffz_status_t status) {
+static int exit_for_status(tiffz_status_t status, int corrupt) {
 	if (is_resource_limit(status))
+		return EXIT_LIMITED;
+	if (is_unsupported(status) && !corrupt)
 		return EXIT_LIMITED;
 	return EXIT_INVALID;
 }
@@ -223,7 +244,7 @@ static void write_json(
 	tiffz_decoder_t *dec) {
 	size_t i;
 	fputs("{\"status\":", stdout);
-	json_escape(stdout, report_word(ok, status));
+	json_escape(stdout, report_word(ok, status, has_corrupt(list)));
 	fputs(",\"path\":", stdout);
 	json_escape(stdout, path);
 	fprintf(stdout, ",\"error\":%d,\"ifds\":%zu,\"findings\":[", (int)status, ifds);
@@ -363,18 +384,18 @@ static int dump_one(const char *path, const char *out_path, size_t ifd_index) {
 
 	dec = tiffz_open_from_buffer(buf, len, &status);
 	if (dec == NULL) {
-		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, tiffz_status_name(status));
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status, 0), path, tiffz_status_name(status));
 		free(buf);
-		return exit_for_status(status);
+		return exit_for_status(status, 0);
 	}
 	status = tiffz_decode_rgba(dec, ifd_index, &pixels, &width, &height);
 	if (status != TIFFZ_OK) {
 		const char *msg = tiffz_last_error_message(dec);
-		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path,
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status, 0), path,
 			(msg != NULL && msg[0] != '\0') ? msg : tiffz_status_name(status));
 		tiffz_close(dec);
 		free(buf);
-		return exit_for_status(status);
+		return exit_for_status(status, 0);
 	}
 	pix_len = (size_t)width * (size_t)height * 4;
 
@@ -467,16 +488,16 @@ static int decode_tiff(const char *path, const uint8_t *buf, size_t len, size_t 
 	uint32_t width = 0, height = 0;
 	size_t n;
 	if (dec == NULL) {
-		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, tiffz_status_name(status));
-		return exit_for_status(status);
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status, 0), path, tiffz_status_name(status));
+		return exit_for_status(status, 0);
 	}
 	status = tiffz_decode_rgba_straight(dec, ifd_index, &pixels, &width, &height);
 	if (status != TIFFZ_OK) {
 		const char *msg = tiffz_last_error_message(dec);
-		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path,
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status, 0), path,
 			(msg != NULL && msg[0] != '\0') ? msg : tiffz_status_name(status));
 		tiffz_close(dec);
-		return exit_for_status(status);
+		return exit_for_status(status, 0);
 	}
 	n = (size_t)width * height * 4;
 	img->pixels = malloc(n);
@@ -553,7 +574,7 @@ static int convert_one(const char *path, const char *out_path, format_t to, uint
 		if (status != TIFFZ_OK) {
 			fprintf(stderr, "tiffz: cannot encode TIFF (%s)\n", tiffz_status_name(status));
 			image_free(&img);
-			return exit_for_status(status);
+			return exit_for_status(status, 0);
 		}
 	} else if ((to == FMT_PNG ? png_encode(&img, &encoded, &encoded_len)
 	                          : bmp_encode(&img, &encoded, &encoded_len)) != 0) {
@@ -629,10 +650,10 @@ static int validate_one(const char *path, int json) {
 			FindingList empty = {0};
 			write_json(path, 0, status, 0, &empty, NULL);
 		} else {
-			fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, tiffz_status_name(status));
+			fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status, 0), path, tiffz_status_name(status));
 		}
 		free(buf);
-		return exit_for_status(status);
+		return exit_for_status(status, 0);
 	}
 
 	tiffz_set_finding_callback(dec, on_finding, &findings);
@@ -647,13 +668,16 @@ static int validate_one(const char *path, int json) {
 	} else {
 		const char *msg = tiffz_last_error_message(dec);
 		const char *detail = (msg != NULL && msg[0] != '\0') ? msg : tiffz_status_name(status);
-		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status), path, detail);
+		fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status, has_corrupt(&findings)), path, detail);
 	}
 
-	tiffz_close(dec);
-	findings_free(&findings);
-	free(buf);
-	return ok ? EXIT_OK : exit_for_status(status);
+	{
+		int corrupt = has_corrupt(&findings);
+		tiffz_close(dec);
+		findings_free(&findings);
+		free(buf);
+		return ok ? EXIT_OK : exit_for_status(status, corrupt);
+	}
 }
 
 static int is_win_alias(const char *arg, const char *name) {

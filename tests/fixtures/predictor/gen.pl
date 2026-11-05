@@ -13,6 +13,11 @@
 #                                   12 is not a multiple of 8, so the
 #                                   transform, a split into bytes, is
 #                                   undefined.
+#   predictor3_deflate_mixed.tif    8x8 RGB float at 32,32,16 with Predictor 3.
+#                                   Corrupt: TN3 defines one width per row.
+#   predictor2_deflate_mixed.tif    8x8 RGB at 8,8,16 with Predictor 2.
+#                                   Clean; tiffz refuses the mixed widths as
+#                                   reach (unsupported, exit 4).
 use strict; use warnings;
 use Compress::Zlib qw(compress);
 my $dir = shift or die "usage: gen.pl DIR\n";
@@ -89,3 +94,19 @@ put('predictor3_deflate_bps12.tif', tiff({
     262 => [3, [1]], 277 => [3, [1]], 278 => [3, [$length]], 284 => [3, [1]],
     317 => [3, [3]], 339 => [3, [3]],
 }, compress(pack('C*', map { $_ & 0xFF } 0 .. 12 * $length - 1), 9)));
+
+# Mixed sample widths (validate, 2026-11-05). TN3's DecodeFPDelta takes a
+# single bytesPerSample for every sample of a row, so a Predictor 3 image
+# with mixed widths has no specified decode: a fault on Predictor. TIFF 6.0
+# defines Predictor 2 per sample; tiffz refuses mixed widths there as reach
+# until it implements them. The strip bytes are a plain gradient.
+put('predictor3_deflate_mixed.tif', tiff({
+    256 => [3, [$width]], 257 => [3, [$length]], 258 => [3, [32, 32, 16]], 259 => [3, [8]],
+    262 => [3, [2]], 277 => [3, [3]], 278 => [3, [$length]], 284 => [3, [1]],
+    317 => [3, [3]], 339 => [3, [3, 3, 3]],
+}, compress(pack('C*', map { $_ & 0xFF } 0 .. 10 * $width * $length - 1), 9)));
+put('predictor2_deflate_mixed.tif', tiff({
+    256 => [3, [$width]], 257 => [3, [$length]], 258 => [3, [8, 8, 16]], 259 => [3, [8]],
+    262 => [3, [2]], 277 => [3, [3]], 278 => [3, [$length]], 284 => [3, [1]],
+    317 => [3, [2]],
+}, compress(pack('C*', map { $_ & 0xFF } 0 .. 4 * $width * $length - 1), 9)));

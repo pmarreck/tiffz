@@ -242,8 +242,11 @@ const Extra = enum {
     /// TIFF Technical Note 3, 2005, p. 2). The transform splits each sample
     /// into bytes, so a sample that is not whole bytes has no defined decode:
     /// a value fault on Predictor (validate, 2026-11-05). Every BitsPerSample
-    /// value counts, and an absent BitsPerSample is 1. The SampleFormat half
-    /// of the sentence is a should-row, not checked here.
+    /// value counts, and an absent BitsPerSample is 1. The widths must also
+    /// match: TN3's DecodeFPDelta reorders every sample of a row with one
+    /// "int32 bytesPerSample" (p. 4), so mixed widths have no specified
+    /// decode either. The SampleFormat half of the sentence is a should-row,
+    /// not checked here.
     floating_point_predictor_whole_bytes,
     /// DNG DefaultUserCrop: "0 <= Top < Bottom <= 1.0, 0 <= Left < Right <= 1.0".
     user_crop,
@@ -875,7 +878,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
         .floating_point_predictor_whole_bytes => {
             const value = element(bytes, entry.field_type, 0, endian) orelse return .count;
             if (value != 3) continue; // the floating-point predictor
-            if (!allBitsWholeBytes(dir, endian)) return .value;
+            if (!uniformWholeByteBits(dir, endian)) return .value;
         },
         .mask_sub_area_bounds => {
             const top = element(bytes, entry.field_type, 0, endian) orelse return .count;
@@ -1187,16 +1190,20 @@ fn allBitsIn(dir: *const Ifd, endian: Endian, allowed: []const u64) bool {
     return true;
 }
 
-/// Whether every BitsPerSample value (default 1) is a multiple of 8; true
-/// when BitsPerSample is malformed (its own fault).
-fn allBitsWholeBytes(dir: *const Ifd, endian: Endian) bool {
+/// Whether every BitsPerSample value (default 1) is a multiple of 8 and all
+/// are the same width; true when BitsPerSample is malformed (its own fault).
+fn uniformWholeByteBits(dir: *const Ifd, endian: Endian) bool {
     const k = indexOf(dir, tags.bits_per_sample) orelse return false;
     const entry = dir.entries[k];
     const values = dir.entryValueSlice(k);
+    var first: ?u64 = null;
     var i: usize = 0;
     while (i < entry.count) : (i += 1) {
         const bits = element(values, entry.field_type, i, endian) orelse return true;
         if (bits % 8 != 0) return false;
+        if (first) |f| {
+            if (bits != f) return false;
+        } else first = bits;
     }
     return true;
 }
@@ -1964,11 +1971,16 @@ test "Predictor 3 needs whole-byte samples (Adobe Photoshop TIFF Technical Note 
     // An absent BitsPerSample is 1.
     var absent = [_]Entry{inline16(tags.predictor, .short, 1, 3)};
     try expectFaults(&absent, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.predictor, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 3 } }});
-    // Every value counts: RGB 32,32,12 fails and 32,32,16 does not.
-    for ([_]struct { last: u16, fault: bool }{ .{ .last = 12, .fault = true }, .{ .last = 16, .fault = false } }) |case| {
+    // Every value counts, and the widths must match (TN3's single
+    // bytesPerSample): RGB 32,32,12 and 32,32,16 fail, 16,16,16 does not.
+    for ([_]struct { first: u16, last: u16, fault: bool }{
+        .{ .first = 32, .last = 12, .fault = true },
+        .{ .first = 32, .last = 16, .fault = true },
+        .{ .first = 16, .last = 16, .fault = false },
+    }) |case| {
         var bits: [6]u8 = undefined;
-        std.mem.writeInt(u16, bits[0..2], 32, .little);
-        std.mem.writeInt(u16, bits[2..4], 32, .little);
+        std.mem.writeInt(u16, bits[0..2], case.first, .little);
+        std.mem.writeInt(u16, bits[2..4], case.first, .little);
         std.mem.writeInt(u16, bits[4..6], case.last, .little);
         var entries = [_]Entry{
             inline16(tags.bits_per_sample, .short, 3, 0),

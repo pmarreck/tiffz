@@ -3744,3 +3744,44 @@ test "corruption replay: predictor3_deflate_fp32.tif bolter master 0x20261105 ro
         try std.testing.expectEqualSlices(u8, &a.payload_bytes, &b.payload_bytes);
     }
 }
+
+// Mixed sample widths (validate, 2026-11-05). The predictors difference one
+// width per row, so tiffz refuses mixed BitsPerSample before decoding, as
+// reach, instead of decoding every sample at the first width. For Predictor
+// 3 that is also a fault: TN3's DecodeFPDelta takes a single bytesPerSample.
+// Fixtures from tests/fixtures/predictor/gen.pl; libtiff refuses both
+// ("Cannot handle different values per sample for BitsPerSample").
+test "Predictor 3 at 32,32,16 is a value fault on Predictor and never decodes" {
+    const allocator = std.testing.allocator;
+    const path = "tests/fixtures/predictor/predictor3_deflate_mixed.tif";
+    const bytes = try loadFile(allocator, path);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.UnsupportedBitDepth, validateRecording(allocator, bytes, &recorder));
+    const entry = ifd0EntryOffset(bytes, 317) orelse return error.TestUnexpectedResult;
+    var records: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz or f.verdict != .corrupt) continue;
+        const p = f.payload_bytes;
+        try std.testing.expectEqual(@intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid), @as(u32, @intCast(f.finding_code)));
+        try std.testing.expectEqual(@as(u64, entry), std.mem.readInt(u64, p[8..16], .little));
+        try std.testing.expectEqual(@as(u16, 317), std.mem.readInt(u16, p[16..18], .little));
+        try std.testing.expectEqual(@as(u16, 3), std.mem.readInt(u16, p[18..20], .little));
+        records += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), records);
+    try std.testing.expectError(error.UnsupportedBitDepth, decodeAllStripsBytes(allocator, path));
+}
+
+test "Predictor 2 at 8,8,16 is refused before decoding, as reach, with no corrupt record" {
+    const allocator = std.testing.allocator;
+    const path = "tests/fixtures/predictor/predictor2_deflate_mixed.tif";
+    const bytes = try loadFile(allocator, path);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.UnsupportedBitDepth, validateRecording(allocator, bytes, &recorder));
+    for (recorder.findings.items) |f| try std.testing.expect(f.verdict != .corrupt);
+    try std.testing.expectError(error.UnsupportedBitDepth, decodeAllStripsBytes(allocator, path));
+}

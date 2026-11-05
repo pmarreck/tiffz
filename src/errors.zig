@@ -55,6 +55,22 @@ pub fn isLimit(err: Error) bool {
     };
 }
 
+/// True for what tiffz does not implement: a codec, photometric, predictor
+/// or sample width the file may use correctly. Reach, never corruption
+/// (validate TERMINOLOGY.md: "Unsupported features, resource exhaustion and
+/// implementation gaps describe reach and never prove corruption").
+/// UnsupportedTagType stays false: it is raised for a field type no reader
+/// can read, which is the file's fault.
+pub fn isUnsupported(err: Error) bool {
+    return switch (err) {
+        error.UnsupportedCompression,
+        error.UnsupportedPhotometric,
+        error.UnsupportedPredictor,
+        error.UnsupportedBitDepth => true,
+        else => false,
+    };
+}
+
 test "Error type compiles and references resolve" {
     const std = @import("std");
     // Reference a known variant — drop the variant from the set and
