@@ -98,6 +98,9 @@ const Kind = enum {
     rational,
     /// SRATIONAL only.
     srational,
+    /// DOUBLE only (IEEE 754 binary64): GeoTIFF's model and parameter tags
+    /// (OGC GeoTIFF 1.1 Requirements 5.1, 9.2, 10.2, 11.2). No value check.
+    double,
     /// Defined as BYTE. Stored as BYTE, SHORT or LONG (TIFF 6.0 p. 16); every
     /// value must fit in 8 bits.
     unsigned_byte,
@@ -141,6 +144,12 @@ const Count = enum {
     strips,
     /// Any count, zero included ("N = number of child IFDs").
     zero_or_more,
+    /// Exactly 16 (ModelTransformationTag's 4x4 matrix).
+    sixteen,
+    /// Six per tiepoint, at least one tiepoint.
+    multiple_of_six,
+    /// At least the four-value GeoKeyDirectory header.
+    at_least_four,
 };
 
 /// A constraint beyond type, count and value set.
@@ -290,7 +299,13 @@ pub const rules = [_]Rule{
     .{ .tag = tags.strip_row_counts, .kind = .unsigned_long, .count = .strips, .extras = &.{.not_with_rows_per_strip}, .citation = "RFC 3949 p. 68 (RFC 2301 agrees)" },
     .{ .tag = tags.image_id, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16; PageMaker 6.0 TIFF Technical Notes p. 15" },
     .{ .tag = tags.copyright, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 31" },
+    .{ .tag = tags.model_pixel_scale, .kind = .double, .count = .three, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 10.2, 10.3" },
+    .{ .tag = tags.model_tiepoint, .kind = .double, .count = .multiple_of_six, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 9.2, 9.3" },
+    .{ .tag = tags.model_transformation, .kind = .double, .count = .sixteen, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 11.2, 11.3" },
     .{ .tag = tags.image_layer, .kind = .unsigned_long, .count = .two, .extras = &.{.image_layer}, .citation = "RFC 3949 p. 68 (RFC 2301: SHORT or LONG, which p. 16 widening also allows)" },
+    .{ .tag = tags.geo_key_directory, .kind = .unsigned_short, .count = .at_least_four, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 2.2, 2.3 (the exact count waits for the GeoKeyDirectory batch)" },
+    .{ .tag = tags.geo_double_params, .kind = .double, .count = .any, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 5.1, 5.2" },
+    .{ .tag = tags.geo_ascii_params, .kind = .ascii, .count = .any, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirement 6.5; TIFF 6.0 p. 15" },
     .{ .tag = tags.image_source_data, .kind = .undefined, .count = .any, .citation = "Adobe Photoshop TIFF Technical Notes (2002)" },
 };
 
@@ -366,6 +381,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
         .offsets_or_counts => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long or
             (entry.field_type == .long8 and dir.offset_width == .big),
         .rational => entry.field_type == .rational,
+        .double => entry.field_type == .double,
         .srational => entry.field_type == .srational,
         .unsigned_byte => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long,
         .integer32 => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long or entry.field_type == .slong,
@@ -408,12 +424,15 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
         .two_per_sample => entry.count == 2 * spp,
         .strips => if (indexOf(dir, tags.strip_offsets)) |offsets| entry.count == dir.entries[offsets].count else entry.count >= 1,
         .zero_or_more => true,
+        .sixteen => entry.count == 16,
+        .multiple_of_six => entry.count >= 6 and entry.count % 6 == 0,
+        .at_least_four => entry.count >= 4,
     };
     if (!count_ok) return .count;
 
     const bytes = dir.entryValueSlice(index);
     switch (rule.kind) {
-        .rational, .srational, .bytes, .undefined, .ifd_offsets, .integer32 => return null,
+        .rational, .srational, .double, .bytes, .undefined, .ifd_offsets, .integer32 => return null,
         .ascii => {
             if (!isAscii(bytes)) return .value;
             if (hasExtra(rule, .date_time) and !isDateTime(bytes)) return .value;
@@ -904,7 +923,7 @@ fn faultsWithBytes(before: []const Entry, tag: u16, field_type: FieldType, count
 }
 
 fn expectBytesReason(before: []const Entry, tag: u16, field_type: FieldType, count: u64, text: []const u8, expected: ?Reason) !void {
-    var buf: [64]u8 = undefined;
+    var buf: [128]u8 = undefined;
     @memcpy(buf[0..text.len], text);
     var out = try faultsWithBytes(before, tag, field_type, count, buf[0..text.len]);
     defer out.deinit(testing.allocator);
@@ -918,7 +937,7 @@ fn expectBytesReason(before: []const Entry, tag: u16, field_type: FieldType, cou
 
 test "ruleFor finds every row and nothing else" {
     for (&rules) |*rule| try testing.expectEqual(rule, ruleFor(rule.tag).?);
-    for ([_]u16{ 0, 253, 257 + 10000, 34737, 65535 }) |tag| try testing.expect(ruleFor(tag) == null);
+    for ([_]u16{ 0, 253, 257 + 10000, 34738, 65535 }) |tag| try testing.expect(ruleFor(tag) == null);
 }
 
 test "ASCII: 7-bit, NUL-terminated, and no NUL run before more text" {
@@ -1204,6 +1223,41 @@ test "TIFF-FX kinds and rules" {
         var bad = [_]Entry{inline16(tags.image_layer, .short, 2, slot)};
         try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.image_layer, .reason = .value, .raw_type = 3, .raw_count = 2, .raw_slot = slot } }});
     }
+}
+
+test "GeoTIFF Tier 1: DOUBLE only for the DOUBLE tags, and the model-tag counts" {
+    const none: []const Entry = &.{};
+    var d = [_]u8{0} ** (16 * 8);
+    // DOUBLE is the only valid type; FLOAT, RATIONAL and integers are type faults.
+    for ([_]u16{ tags.model_pixel_scale, tags.model_tiepoint, tags.model_transformation, tags.geo_double_params }) |tag| {
+        const n: u32 = switch (tag) {
+            tags.model_pixel_scale => 3,
+            tags.model_transformation => 16,
+            else => 6,
+        };
+        try expectBytesReason(none, tag, .double, n, d[0 .. 8 * n], null);
+        for ([_]FieldType{ .float, .rational, .srational, .long, .short }) |t| {
+            try expectBytesReason(none, tag, t, n, d[0 .. 8 * n], .type);
+        }
+    }
+    // ModelPixelScale is exactly 3 and ModelTransformation exactly 16.
+    try expectBytesReason(none, tags.model_pixel_scale, .double, 2, d[0..16], .count);
+    try expectBytesReason(none, tags.model_pixel_scale, .double, 4, d[0..32], .count);
+    try expectBytesReason(none, tags.model_transformation, .double, 15, d[0..120], .count);
+    // ModelTiepoint is a positive multiple of 6.
+    try expectBytesReason(none, tags.model_tiepoint, .double, 12, d[0..96], null);
+    for ([_]u32{ 0, 5, 7, 11 }) |n| {
+        try expectBytesReason(none, tags.model_tiepoint, .double, n, d[0 .. 8 * n], .count);
+    }
+    // GeoDoubleParams takes any count.
+    try expectBytesReason(none, tags.geo_double_params, .double, 1, d[0..8], null);
+    // GeoKeyDirectory: unsigned 16-bit values, at least the 4-value header.
+    try expectBytesReason(none, tags.geo_key_directory, .short, 4, d[0..8], null);
+    try expectBytesReason(none, tags.geo_key_directory, .short, 3, d[0..6], .count);
+    try expectBytesReason(none, tags.geo_key_directory, .double, 4, d[0..32], .type);
+    // GeoAsciiParams is ASCII.
+    try expectBytesReason(none, tags.geo_ascii_params, .ascii, 8, "WGS 84|\x00", null);
+    try expectBytesReason(none, tags.geo_ascii_params, .byte, 8, "WGS 84|\x00", .type);
 }
 
 test "SamplesPerPixel is the photometric's color channels plus the ExtraSamples count" {

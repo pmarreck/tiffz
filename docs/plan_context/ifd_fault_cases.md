@@ -338,3 +338,81 @@ palette IFDs, all with a ColorMap, and no transparency masks. Controlled
 reds: dropping the ColorMap rule, or the mask rule alone, failed the p. 37
 test; reporting the mismatch as a value fault failed the channel table and
 the payload test.
+
+## GeoTIFF Tier 1 (validate, 2026-11-04)
+
+validate approved six rows under finding 18, cited to OGC GeoTIFF 1.1
+(19-008r4):
+
+| Tag | Name | Type | Count | Requirements |
+|---|---|---|---|---|
+| 33550 | ModelPixelScale | DOUBLE | 3 | 10.2, 10.3 |
+| 33922 | ModelTiepoint | DOUBLE | a positive multiple of 6 | 9.2, 9.3 |
+| 34264 | ModelTransformation | DOUBLE | 16 | 11.2, 11.3 |
+| 34735 | GeoKeyDirectory | SHORT | at least 4 | 2.2, 2.3 |
+| 34736 | GeoDoubleParams | DOUBLE | any | 5.1, 5.2 |
+| 34737 | GeoAsciiParams | ASCII | any | 6.5; TIFF 6.0 p. 15 |
+
+DOUBLE is the only valid type for the four DOUBLE tags: the pending
+widening ruling concerns only BYTE, SHORT and LONG, so FLOAT, RATIONAL or an
+integer type there is a type fault under either reading. A ModelTiepoint
+count of 0 or a count that is not a multiple of 6 is a count fault.
+GeoKeyDirectory's count of at least 4 is the Tier 1 floor; the exact count
+equation belongs to Tier 3. GeoKeyDirectory uses the unsigned-short kind,
+so it currently accepts BYTE and LONG holding 16-bit values, as every
+SHORT array does under the p. 16 widening; it follows the widening ruling
+when that is made.
+
+Tier 2 (cross-tag presence) and Tier 3 (GeoKeyDirectory structure) wait for
+the owner's decision on the reporting form. Model tags without a
+GeoKeyDirectory are not a violation (Q1b).
+
+### Corpus extension
+
+validate asked for real GeoTIFFs with sha256, size, source URL and license.
+The pinned manifest gains `url` and `license` columns (`-` where a row was
+pinned before they existed) and 104 files from GDAL's autotest data at
+commit fa1fc3c77e75787c614e12a2ba5ac366db833e1f: every TIFF of 1 MiB or less
+in `autotest/gcore/data` and `autotest/gdrivers/data/gtiff` that carries a
+GeoKeyDirectory, deduplicated by sha256 (114 files, 10 byte-identical
+duplicates). Their license is the MIT terms in GDAL's LICENSE.TXT ("GDAL/OGR
+General"); neither directory has a file-specific notice. Many of these files
+are deliberately malformed GDAL regression inputs; they are pinned as they
+are, and their verdicts are baseline, not findings of this batch.
+
+The corpus is now 244 distinct sha256, and every row's `seen` count is
+recomputed over it. The GeoTIFF rows occur in 105 (ModelPixelScale), 108
+(ModelTiepoint), 1 (ModelTransformation), 110 (GeoKeyDirectory), 25
+(GeoDoubleParams) and 99 (GeoAsciiParams) IFDs.
+
+### Corpus report (244 distinct sha256, pinned manifest), 2026-11-04
+
+Old (yolo c821d4e9) against new, over all 244 files: no verdict changes and
+no finding changes. An independent byte scan of every GeoTIFF entry agrees:
+every one is DOUBLE, SHORT or ASCII as required, and every count fits
+(ModelTiepoint 6, 12 or 24).
+
+The 104 new files: 80 ok, 24 invalid. Seven of the invalid ones carry a
+finding 18 from existing rows:
+
+| File | sha256 | Bytes | Tag | Cause |
+|---|---|---|---|---|
+| gcore/cfloat32.tif | bfbada089a6911efca50bcd10fc6913959094fb07cdaedc08f9084d8f86ae1a1 | 3536 | SampleFormat 6 | producer pattern |
+| gcore/cfloat64.tif | ea1c6461e7f6539ff927091015d176e2b2dbbed433c3bdd51860f0f76fe8e8eb | 6736 | SampleFormat 6 | producer pattern |
+| gcore/cint16.tif | b4b60961818d2386f19d43c15dcc7fc0a46c6eac83a3c02478e120213fb2916b | 1936 | SampleFormat 5 | producer pattern |
+| gcore/cint32.tif | c8305231fe87e428642da908660e54f59cefc036dd075339e4374236f036f0da | 3536 | SampleFormat 5 | producer pattern |
+| gcore/cint_sar.tif | 186842cbaadac156f42c14a26ac5d978a9ac44a227b3458455631bc2cda045ec | 1587 | SampleFormat 5 | producer pattern |
+| gcore/6band_wrong_number_extrasamples.tif | 7e95bce3beac79757ed03aed1b09f9635f034e8982fc4a3e8c987a298008c46a | 2804 | ExtraSamples count | deliberate damage |
+| gcore/leak-ZIPSetupDecode.tif | 14f71ac235855c4ba614bb8543f7d72e02abddc6772a476ef9f94466a8eec203 | 379 | Predictor 255 | deliberate damage (fuzz input) |
+
+SampleFormat 5 and 6 are libtiff's complex signed integer and complex IEEE
+floating point, which GDAL writes for complex rasters. No claimed
+specification defines them, so they stay value faults; this is a
+producer-pattern candidate for validate's registry, not admitted. The
+files carry no Software tag; cint_sar.tif's GDAL metadata names
+CEOS_SOFTWARE_ID ERS2-SLC-6.1.
+
+Controlled reds: letting RATIONAL pass as DOUBLE failed the GeoTIFF unit
+test and both IFD-entry fixture tests; dropping the multiple-of-6 test
+failed the unit test only, until the ModelTiepoint corrupt case used 7
+values instead of 4; it now fails the unit test and both fixture tests.

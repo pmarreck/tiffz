@@ -2510,19 +2510,19 @@ test "IFD-entry rules: SampleFormat and TransferFunction stored as BYTE or LONG 
 /// Every single-value enumerated rule, written out independently of
 /// `ifd_conformance.rules` so that dropping or narrowing a row fails here.
 /// `seen` counts the classic-TIFF IFDs (next chain and SubIFDs) carrying the
-/// tag across the 140 distinct files of the pinned corpus
+/// tag across the 244 distinct files of the pinned corpus
 /// (docs/plan_context/real_corpus_manifest.tsv); 0 means the row rests on the text alone.
 const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: []const u8, seen: u32, drives_decoding: bool = false, max: u32 = 65535 }{
     .{ .tag = 255, .ranges = &.{.{ 1, 3 }}, .citation = "SubfileType, TIFF 6.0 pp. 40-41", .seen = 3 },
-    .{ .tag = 259, .ranges = &.{.{ 1, 10 }}, .citation = "Compression, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 216, .drives_decoding = true },
-    .{ .tag = 262, .ranges = &.{ .{ 0, 6 }, .{ 8, 10 } }, .citation = "PhotometricInterpretation, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 180, .drives_decoding = true },
+    .{ .tag = 259, .ranges = &.{.{ 1, 10 }}, .citation = "Compression, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 338, .drives_decoding = true },
+    .{ .tag = 262, .ranges = &.{ .{ 0, 6 }, .{ 8, 10 } }, .citation = "PhotometricInterpretation, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 302, .drives_decoding = true },
     .{ .tag = 263, .ranges = &.{.{ 1, 3 }}, .citation = "Threshholding, TIFF 6.0 p. 41", .seen = 1 },
     .{ .tag = 266, .ranges = &.{.{ 1, 2 }}, .citation = "FillOrder, TIFF 6.0 p. 32", .seen = 21 },
-    .{ .tag = 274, .ranges = &.{.{ 1, 8 }}, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 125 },
-    .{ .tag = 284, .ranges = &.{.{ 1, 2 }}, .citation = "PlanarConfiguration, TIFF 6.0 p. 38", .seen = 159, .drives_decoding = true },
+    .{ .tag = 274, .ranges = &.{.{ 1, 8 }}, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 127 },
+    .{ .tag = 284, .ranges = &.{.{ 1, 2 }}, .citation = "PlanarConfiguration, TIFF 6.0 p. 38", .seen = 281, .drives_decoding = true },
     .{ .tag = 290, .ranges = &.{.{ 1, 5 }}, .citation = "GrayResponseUnit, TIFF 6.0 pp. 33-34", .seen = 0 },
-    .{ .tag = 317, .ranges = &.{.{ 1, 3 }}, .citation = "Predictor, TIFF 6.0 p. 64; Adobe TN3 (2005)", .seen = 7, .drives_decoding = true },
-    .{ .tag = 296, .ranges = &.{.{ 1, 3 }}, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 160 },
+    .{ .tag = 317, .ranges = &.{.{ 1, 3 }}, .citation = "Predictor, TIFF 6.0 p. 64; Adobe TN3 (2005)", .seen = 25, .drives_decoding = true },
+    .{ .tag = 296, .ranges = &.{.{ 1, 3 }}, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 163 },
     .{ .tag = 327, .ranges = &.{.{ 0, 2 }}, .citation = "CleanFaxData, RFC 3949 p. 33", .seen = 2 },
     .{ .tag = 332, .ranges = &.{.{ 1, 2 }}, .citation = "InkSet, TIFF 6.0 p. 70", .seen = 5 },
     .{ .tag = 346, .ranges = &.{.{ 0, 1 }}, .citation = "Indexed, PageMaker 6.0 TIFF Technical Notes p. 11", .seen = 0 },
@@ -2676,6 +2676,14 @@ fn rational(comptime n: u32) RowField {
 fn ascii(comptime text: []const u8) RowField {
     return .{ .typ = 2, .count = text.len, .raw = text };
 }
+fn dbl(comptime values: []const f64) RowField {
+    const bytes = comptime blk: {
+        var out: [values.len * 8]u8 = undefined;
+        for (values, 0..) |v, i| std.mem.writeInt(u64, out[8 * i ..][0..8], @bitCast(v), .little);
+        break :blk out;
+    };
+    return .{ .typ = 12, .count = values.len, .raw = &bytes };
+}
 
 /// One clean and one corrupt instance of every rule, written independently
 /// of `ifd_conformance.rules`, in the context of an 8-bit grayscale image
@@ -2685,31 +2693,31 @@ fn ascii(comptime text: []const u8) RowField {
 /// file would test the decoder more than the rule. `seen` is counted as for
 /// `enumerated_rows`.
 const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reason: u16, end_to_end: bool = true, seen: u32 }{
-    .{ .tag = 254, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 125 },
+    .{ .tag = 254, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 140 },
     .{ .tag = 255, .clean = short(&.{1}), .corrupt = short(&.{4}), .reason = 3, .seen = 3 },
-    .{ .tag = 256, .clean = long(&.{2}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 182 },
-    .{ .tag = 257, .clean = long(&.{1}), .corrupt = ascii("1\x00"), .reason = 1, .end_to_end = false, .seen = 182 },
-    .{ .tag = 258, .clean = short(&.{8}), .corrupt = short(&.{ 8, 8 }), .reason = 2, .end_to_end = false, .seen = 179 },
-    .{ .tag = 259, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 216 },
-    .{ .tag = 262, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 180 },
+    .{ .tag = 256, .clean = long(&.{2}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 304 },
+    .{ .tag = 257, .clean = long(&.{1}), .corrupt = ascii("1\x00"), .reason = 1, .end_to_end = false, .seen = 304 },
+    .{ .tag = 258, .clean = short(&.{8}), .corrupt = short(&.{ 8, 8 }), .reason = 2, .end_to_end = false, .seen = 301 },
+    .{ .tag = 259, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 338 },
+    .{ .tag = 262, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 302 },
     .{ .tag = 263, .clean = short(&.{1}), .corrupt = short(&.{0}), .reason = 3, .seen = 1 },
     .{ .tag = 264, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
     .{ .tag = 265, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
     .{ .tag = 266, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 21 },
     .{ .tag = 269, .clean = ascii("doc\x00"), .corrupt = ascii("doc"), .reason = 3, .seen = 41 },
-    .{ .tag = 270, .clean = ascii("a\x00b\x00\x00"), .corrupt = ascii("a\x00\x00b\x00"), .reason = 3, .seen = 43 },
+    .{ .tag = 270, .clean = ascii("a\x00b\x00\x00"), .corrupt = ascii("a\x00\x00b\x00"), .reason = 3, .seen = 44 },
     .{ .tag = 271, .clean = ascii("Make\x00"), .corrupt = .{ .typ = 1, .count = 5, .raw = "Make\x00" }, .reason = 1, .seen = 57 },
     .{ .tag = 272, .clean = ascii("Model\x00"), .corrupt = ascii("Mod\xe9l\x00"), .reason = 3, .seen = 57 },
-    .{ .tag = 273, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 169 },
-    .{ .tag = 274, .clean = short(&.{1}), .corrupt = short(&.{9}), .reason = 3, .seen = 125 },
-    .{ .tag = 277, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 176 },
-    .{ .tag = 278, .clean = long(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 160 },
-    .{ .tag = 279, .clean = long(&.{2}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .end_to_end = false, .seen = 168 },
+    .{ .tag = 273, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 269 },
+    .{ .tag = 274, .clean = short(&.{1}), .corrupt = short(&.{9}), .reason = 3, .seen = 127 },
+    .{ .tag = 277, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 298 },
+    .{ .tag = 278, .clean = long(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 260 },
+    .{ .tag = 279, .clean = long(&.{2}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .end_to_end = false, .seen = 268 },
     .{ .tag = 280, .clean = short(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 27 },
     .{ .tag = 281, .clean = short(&.{255}), .corrupt = short(&.{ 255, 255 }), .reason = 2, .seen = 3 },
-    .{ .tag = 282, .clean = rational(1), .corrupt = long(&.{72}), .reason = 1, .seen = 167 },
-    .{ .tag = 283, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 167 },
-    .{ .tag = 284, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 159 },
+    .{ .tag = 282, .clean = rational(1), .corrupt = long(&.{72}), .reason = 1, .seen = 170 },
+    .{ .tag = 283, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 170 },
+    .{ .tag = 284, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 281 },
     .{ .tag = 285, .clean = ascii("page\x00"), .corrupt = ascii("page"), .reason = 3, .seen = 0 },
     .{ .tag = 286, .clean = rational(1), .corrupt = .{ .typ = 10, .count = 1, .raw = ones(1) }, .reason = 1, .seen = 3 },
     .{ .tag = 287, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 3 },
@@ -2719,39 +2727,39 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 291, .clean = short(ramp16(256)), .corrupt = short(ramp16(255)), .reason = 2, .seen = 3 },
     .{ .tag = 292, .clean = long(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 2 },
     .{ .tag = 293, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 0 },
-    .{ .tag = 296, .clean = short(&.{2}), .corrupt = short(&.{0}), .reason = 3, .seen = 160 },
+    .{ .tag = 296, .clean = short(&.{2}), .corrupt = short(&.{0}), .reason = 3, .seen = 163 },
     .{ .tag = 297, .clean = short(&.{ 0, 1 }), .corrupt = short(&.{0}), .reason = 2, .seen = 16 },
     .{ .tag = 301, .clean = short(ramp16(256)), .corrupt = short(ramp16(255)), .reason = 2, .seen = 2 },
-    .{ .tag = 305, .clean = ascii("tiffz\x00"), .corrupt = ascii("tiffz"), .reason = 3, .seen = 94 },
-    .{ .tag = 306, .clean = ascii("2017:07:13 16:58:28\x00"), .corrupt = ascii("2017-07-13 16:58:28\x00"), .reason = 3, .seen = 53 },
+    .{ .tag = 305, .clean = ascii("tiffz\x00"), .corrupt = ascii("tiffz"), .reason = 3, .seen = 96 },
+    .{ .tag = 306, .clean = ascii("2017:07:13 16:58:28\x00"), .corrupt = ascii("2017-07-13 16:58:28\x00"), .reason = 3, .seen = 55 },
     .{ .tag = 315, .clean = ascii("artist\x00"), .corrupt = ascii("art\xc3\xa9\x00"), .reason = 3, .seen = 16 },
     .{ .tag = 316, .clean = ascii("host\x00"), .corrupt = .{ .typ = 7, .count = 5, .raw = "host\x00" }, .reason = 1, .seen = 0 },
-    .{ .tag = 317, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .seen = 7 },
+    .{ .tag = 317, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .seen = 25 },
     .{ .tag = 318, .clean = rational(2), .corrupt = rational(1), .reason = 2, .seen = 16 },
     .{ .tag = 319, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 16 },
-    .{ .tag = 320, .clean = short(ramp16(768)), .corrupt = short(ramp16(767)), .reason = 2, .seen = 7 },
+    .{ .tag = 320, .clean = short(ramp16(768)), .corrupt = short(ramp16(767)), .reason = 2, .seen = 10 },
     .{ .tag = 321, .clean = short(&.{ 0, 255 }), .corrupt = short(&.{0}), .reason = 2, .seen = 2 },
-    .{ .tag = 322, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 11 },
-    .{ .tag = 323, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 13 },
-    .{ .tag = 324, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 9 },
-    .{ .tag = 325, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 9 },
+    .{ .tag = 322, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 33 },
+    .{ .tag = 323, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 35 },
+    .{ .tag = 324, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 31 },
+    .{ .tag = 325, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 31 },
     .{ .tag = 326, .clean = long(&.{3}), .corrupt = rational(1), .reason = 1, .seen = 2 },
     .{ .tag = 327, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 2 },
     .{ .tag = 328, .clean = short(&.{2}), .corrupt = short(&.{ 2, 2 }), .reason = 2, .seen = 2 },
-    .{ .tag = 330, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 37 },
+    .{ .tag = 330, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 39 },
     .{ .tag = 332, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 5 },
     .{ .tag = 333, .clean = ascii("Cyan\x00Magenta\x00"), .corrupt = ascii("Cyan\x00\x00Magenta\x00"), .reason = 3, .seen = 0 },
     .{ .tag = 334, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
     .{ .tag = 336, .clean = short(&.{ 0, 255 }), .corrupt = short(&.{ 0, 128, 255 }), .reason = 2, .seen = 0 },
     .{ .tag = 337, .clean = ascii("printer\x00"), .corrupt = ascii("printer"), .reason = 3, .seen = 0 },
-    .{ .tag = 338, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .end_to_end = false, .seen = 1 }, // the gray builder has one sample; strike.tif covers it end to end
-    .{ .tag = 339, .clean = short(&.{1}), .corrupt = short(&.{5}), .reason = 3, .seen = 21 },
+    .{ .tag = 338, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .end_to_end = false, .seen = 11 }, // the gray builder has one sample; strike.tif covers it end to end
+    .{ .tag = 339, .clean = short(&.{1}), .corrupt = short(&.{5}), .reason = 3, .seen = 142 },
     .{ .tag = 342, .clean = short(&.{ 0, 255, 0, 255, 0, 255 }), .corrupt = short(&.{ 0, 255, 0, 255, 0 }), .reason = 2, .seen = 0 },
     .{ .tag = 343, .clean = .{ .typ = 1, .count = 4, .raw = "\x00\x00\x00\x00" }, .corrupt = .{ .typ = 7, .count = 4, .raw = "\x00\x00\x00\x00" }, .reason = 1, .seen = 0 },
     .{ .tag = 344, .clean = long(&.{1000}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .seen = 0 },
     .{ .tag = 345, .clean = .{ .typ = 9, .count = 1, .raw = le32(&.{1000}) }, .corrupt = long(&.{ 1000, 1000 }), .reason = 2, .seen = 0 },
     .{ .tag = 346, .clean = short(&.{1}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 },
-    .{ .tag = 347, .clean = .{ .typ = 7, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .corrupt = .{ .typ = 1, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .reason = 1, .seen = 4 },
+    .{ .tag = 347, .clean = .{ .typ = 7, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .corrupt = .{ .typ = 1, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .reason = 1, .seen = 16 },
     .{ .tag = 351, .clean = short(&.{0}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 },
     .{ .tag = 400, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 0 },
     .{ .tag = 401, .clean = long(&.{1}), .corrupt = long(&.{2}), .reason = 3, .seen = 0 },
@@ -2772,13 +2780,20 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 520, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 2 },
     .{ .tag = 521, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 2 },
     .{ .tag = 529, .clean = rational(3), .corrupt = rational(2), .reason = 2, .seen = 15 },
-    .{ .tag = 530, .clean = short(&.{ 2, 2 }), .corrupt = short(&.{ 1, 2 }), .reason = 3, .seen = 18 },
+    .{ .tag = 530, .clean = short(&.{ 2, 2 }), .corrupt = short(&.{ 1, 2 }), .reason = 3, .seen = 19 },
     .{ .tag = 531, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 43 },
-    .{ .tag = 532, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 16 },
+    .{ .tag = 532, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 17 },
     .{ .tag = 559, .clean = long(&.{1}), .corrupt = .{ .typ = 4, .count = 0, .raw = "" }, .reason = 2, .end_to_end = false, .seen = 1 },
     .{ .tag = 32781, .clean = ascii("hires.tif\x00"), .corrupt = ascii("hires.tif"), .reason = 3, .seen = 0 },
-    .{ .tag = 33432, .clean = ascii("(c) 2026\x00"), .corrupt = ascii("(c) 2026"), .reason = 3, .seen = 19 },
+    .{ .tag = 33432, .clean = ascii("(c) 2026\x00"), .corrupt = ascii("(c) 2026"), .reason = 3, .seen = 20 },
+    // GeoTIFF 1.1 (OGC 19-008r4): DOUBLE only for the model and parameter tags.
+    .{ .tag = 33550, .clean = dbl(&.{ 0.5, 0.5, 0 }), .corrupt = rational(3), .reason = 1, .seen = 105 },
+    .{ .tag = 33922, .clean = dbl(&.{ 0, 0, 0, -80.5, 40.5, 0 }), .corrupt = dbl(&.{ 0, 0, 0, -80.5, 40.5, 0, 1 }), .reason = 2, .seen = 108 },
+    .{ .tag = 34264, .clean = dbl(&.{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }), .corrupt = dbl(&.{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 }), .reason = 2, .seen = 1 },
     .{ .tag = 34732, .clean = long(&.{ 2, 1 }), .corrupt = long(&.{ 4, 1 }), .reason = 3, .seen = 0 },
+    .{ .tag = 34735, .clean = short(&.{ 1, 1, 0, 0 }), .corrupt = short(&.{ 1, 1, 0 }), .reason = 2, .seen = 110 },
+    .{ .tag = 34736, .clean = dbl(&.{6378137}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0x4ac2_7c52}) }, .reason = 1, .seen = 25 },
+    .{ .tag = 34737, .clean = ascii("WGS 84|\x00"), .corrupt = ascii("WGS 84|"), .reason = 3, .seen = 99 },
     .{ .tag = 37724, .clean = .{ .typ = 7, .count = 2, .raw = "8B" }, .corrupt = ascii("8B\x00"), .reason = 1, .seen = 0 },
 };
 
