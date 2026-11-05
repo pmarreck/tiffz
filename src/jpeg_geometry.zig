@@ -19,9 +19,14 @@
 //!    B.1 names only SOF0 baseline DCT, so SOF1 is a fault even at 8 bits;
 //!    lossless Huffman JPEG is the lossless mode of Annex H (SOF3), so SOF7,
 //!    a differential frame of the hierarchical mode (Annex J), is a fault,
-//!    and so are the arithmetic-coded SOF11 and SOF15. A hierarchical stream
-//!    (DHP, then frames) is a fault even when its first frame is SOF3; that
-//!    case waits on jpegz reporting the DHP marker.
+//!    and so are the arithmetic-coded SOF11 and SOF15.
+//! 7. In a DNG of known version, as for rule 6: a hierarchical stream (T.81
+//!    Annex J: a DHP marker before the first frame), where DNG 1.6.0.0 p. 19
+//!    names the baseline sequential or lossless process of the
+//!    non-hierarchical modes (validate, 2026-11-05). Orthogonal to rule 6,
+//!    which judges the first frame's SOF type: the record's SOF offset is
+//!    the DHP marker's, its SOF type the first frame's, and its required
+//!    value rule 6's required type. jpegz reports the DHP (`dhp_offset`).
 //!
 //! Lossless SOFs (3, 7, 11, 15) are exempt from rules 1 to 3. Every segment
 //! is examined; one record per IFD per violated rule carries the first
@@ -44,6 +49,7 @@ pub const Rule = enum(u16) {
     sampling_factors = 4,
     planar_factors = 5,
     dng_variant = 6,
+    dng_hierarchical = 7,
 };
 const rule_count = @typeInfo(Rule).@"enum".fields.len;
 
@@ -118,6 +124,11 @@ pub const Accumulator = struct {
             const want: u4 = if (baseline) baseline_sof else lossless_huffman_sof;
             if (header.sof_type != want)
                 self.note(.dng_variant, segment, sof_host_offset, header.sof_type, f.compression_entry, f.photometric orelse 0, want);
+            if (header.dhp_offset) |dhp| {
+                // The DHP precedes the frame in the same segment.
+                const dhp_host_offset = sof_host_offset - header.sof_offset + dhp;
+                self.note(.dng_hierarchical, segment, dhp_host_offset, header.sof_type, f.compression_entry, f.photometric orelse 0, want);
+            }
         }
         const comps = header.components();
         if (comps.len == 0) return;
@@ -254,6 +265,7 @@ test "SOF classes are exactly DCT 0, 1, 2, 5, 6, 9, 10, 13, 14 and lossless 3, 7
 fn frameOf(sof_type: u4, factors: []const [2]u4) jpegz.FrameHeader {
     var h: jpegz.FrameHeader = .{
         .sof_offset = 2,
+        .dhp_offset = null,
         .sof_type = sof_type,
         .kind = jpegz.frameKind(sof_type).?,
         .precision = 8,
@@ -412,6 +424,46 @@ test "rule 6: DNG requires baseline DCT or lossless Huffman JPEG, by photometric
             try testing.expectEqual(@as(u32, 2), r.examined);
         } else try testing.expectEqual(@as(?Record, null), acc.record(.dng_variant));
     }
+}
+
+test "rule 7: a hierarchical stream in a DNG, orthogonal to rule 6" {
+    const Case = struct { baseline: ?bool, sof: u4, factors: []const [2]u4, photometric: u16, rule6: bool, rule7: bool };
+    const cases = [_]Case{
+        // SOF3-first hierarchical where lossless is required: rule 7 only.
+        .{ .baseline = false, .sof = 3, .factors = &.{.{ 1, 1 }}, .photometric = 32803, .rule6 = false, .rule7 = true },
+        // SOF1-first hierarchical where baseline is required: both.
+        .{ .baseline = true, .sof = 1, .factors = &.{ .{ 2, 2 }, .{ 1, 1 }, .{ 1, 1 } }, .photometric = ycbcr, .rule6 = true, .rule7 = true },
+        // Not a DNG of known version: neither.
+        .{ .baseline = null, .sof = 3, .factors = &.{.{ 1, 1 }}, .photometric = 32803, .rule6 = false, .rule7 = false },
+    };
+    for (cases) |c| {
+        var f = stripFields(16);
+        f.photometric = c.photometric;
+        f.dng_baseline = c.baseline;
+        f.compression_entry = 400;
+        var acc = Accumulator{ .fields = f };
+        var h = frameOf(c.sof, c.factors);
+        h.sof_offset = 20;
+        h.dhp_offset = 4;
+        // The segment starts at 1000, so its SOF is at 1020 and its DHP at 1004.
+        acc.add(0, 1020, &h);
+        try testing.expectEqual(c.rule6, acc.record(.dng_variant) != null);
+        if (c.rule7) {
+            const r = acc.record(.dng_hierarchical).?;
+            try testing.expectEqual(@as(u64, 1004), r.sof_offset);
+            try testing.expectEqual(@as(u4, c.sof), r.sof_type);
+            try testing.expectEqual(@as(u32, if (c.baseline.?) 0 else 3), r.required);
+            try testing.expectEqual(@as(u64, 400), r.entry_offset);
+            try testing.expectEqual(@as(u32, c.photometric), r.tiff_value);
+        } else try testing.expectEqual(@as(?Record, null), acc.record(.dng_hierarchical));
+    }
+    // No DHP: no rule 7.
+    var f = stripFields(16);
+    f.dng_baseline = false;
+    f.photometric = 32803;
+    var acc = Accumulator{ .fields = f };
+    acc.add(0, 7, &frameOf(3, &.{.{ 1, 1 }}));
+    try testing.expectEqual(@as(?Record, null), acc.record(.dng_hierarchical));
 }
 
 test "payload layout" {

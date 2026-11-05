@@ -158,3 +158,28 @@ my $cfa = {
     50706 => [1, [1, 2, 0, 0]],
 };
 put('dng-cfa-sof0-cut.tif', tiff($cfa, [substr(slurp('s16x16_gray.jpg'), 0, 165)], 0));
+
+# Rule 7 (validate, 2026-11-05): a hierarchical stream in a DNG. No encoder
+# here writes one, so `hier` makes it: a DHP segment (same layout as the frame
+# header, T.81 B.3.2) inserted before the SOF, which is re-marked SOF`n`. The
+# rules read markers only, so the entropy data need not decode.
+sub hier {
+    my ($b, $n) = @_;
+    my $i = index($b, "\xFF\xC0"); die "no SOF0" if $i < 0;
+    my $len = unpack("n", substr($b, $i + 2, 2));
+    my $frame = substr($b, $i + 2, $len);
+    substr($b, $i + 1, 1) = chr(0xC0 + $n);
+    substr($b, $i, 0) = "\xFF\xDE" . $frame;
+    return $b;
+}
+# Lossless required (CFA raw, DNG 1.6.0.0) with a SOF3-first hierarchical
+# stream: the process is right, the mode is not, so rule 7 only.
+my $cfa16 = { %$cfa, 50706 => [1, [1, 6, 0, 0]] };
+put('dng-cfa-hier-sof3.tif', tiff($cfa16, [hier(slurp('s16x16_gray.jpg'), 3)], 0));
+# Baseline required (YCbCr 8/8/8 preview) with a SOF1-first hierarchical
+# stream: rules 6 and 7.
+put('dng-ycbcr-hier-sof1.tif', tiff(dng(ycbcr(width => 16, length => 16, rows => 16, sub => [2, 2])),
+    [hier(slurp('s16x16_22.jpg'), 1)], 0));
+# Control: the same stream in a TIFF that is not a DNG gets neither rule.
+put('ycbcr-hier-sof1.tif', tiff(ycbcr(width => 16, length => 16, rows => 16, sub => [2, 2]),
+    [hier(slurp('s16x16_22.jpg'), 1)], 0));

@@ -3616,3 +3616,56 @@ test "finding 19 reads markers only: records do not wait for the entropy data to
     }
     try std.testing.expectEqual(@as(usize, 0), silent);
 }
+
+test "finding 19 rule 7: a hierarchical stream in a DNG, orthogonal to rule 6" {
+    // Validate, 2026-11-05: T.81 Annex J hierarchical mode against the
+    // non-hierarchical processes DNG 1.6.0.0 p. 19 names. The record's SOF
+    // offset is the DHP marker's; its SOF type is the first frame's and its
+    // required value rule 6's required type.
+    const allocator = std.testing.allocator;
+    const Case = struct { path: []const u8, sof_type: u8, photometric: u32, required: u32, rule6: bool, rule7: bool };
+    const cases = [_]Case{
+        // Lossless required, SOF3-first hierarchical: the process is right, the mode is not.
+        .{ .path = "tests/fixtures/jpeg_geometry/dng-cfa-hier-sof3.tif", .sof_type = 3, .photometric = 32803, .required = 3, .rule6 = false, .rule7 = true },
+        // Baseline required, SOF1-first hierarchical: two faults.
+        .{ .path = "tests/fixtures/jpeg_geometry/dng-ycbcr-hier-sof1.tif", .sof_type = 1, .photometric = 6, .required = 0, .rule6 = true, .rule7 = true },
+        // Not a DNG: neither rule.
+        .{ .path = "tests/fixtures/jpeg_geometry/ycbcr-hier-sof1.tif", .sof_type = 1, .photometric = 6, .required = 0, .rule6 = false, .rule7 = false },
+    };
+    var wrong: usize = 0;
+    for (cases) |case| {
+        const bytes = try loadFile(allocator, case.path);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        validateRecording(allocator, bytes, &recorder) catch {};
+        const dhp = std.mem.indexOf(u8, bytes, "\xFF\xDE") orelse return error.TestUnexpectedResult;
+        const sof = std.mem.indexOf(u8, bytes, &.{ 0xFF, 0xC0 + case.sof_type }) orelse return error.TestUnexpectedResult;
+        const entry = chainEntryOffset(bytes, 0, 259) orelse return error.TestUnexpectedResult;
+        var seen6 = false;
+        var seen7 = false;
+        for (recorder.findings.items) |f| {
+            if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.jpeg_segment_geometry_invalid)) continue;
+            const p = f.payload_bytes;
+            const rule = std.mem.readInt(u16, p[24..26], .little);
+            if (rule == 6) seen6 = true else if (rule == 7) seen7 = true else {
+                std.debug.print("{s}: unexpected rule {d}\n", .{ case.path, rule });
+                wrong += 1;
+                continue;
+            }
+            try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[0..4], .little));
+            try std.testing.expectEqual(@as(u64, entry), std.mem.readInt(u64, p[8..16], .little));
+            try std.testing.expectEqual(@as(u64, if (rule == 7) dhp else sof), std.mem.readInt(u64, p[16..24], .little));
+            try std.testing.expectEqual(@as(u16, case.sof_type), std.mem.readInt(u16, p[26..28], .little));
+            try std.testing.expectEqual(case.photometric, std.mem.readInt(u32, p[28..32], .little));
+            try std.testing.expectEqual(case.required, std.mem.readInt(u32, p[32..36], .little));
+            try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, p[36..40], .little));
+            try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, p[40..44], .little));
+        }
+        if (seen6 != case.rule6 or seen7 != case.rule7) {
+            std.debug.print("{s}: rule 6 {}, rule 7 {}; want {}, {}\n", .{ case.path, seen6, seen7, case.rule6, case.rule7 });
+            wrong += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), wrong);
+}

@@ -191,3 +191,43 @@ predicts:
 - Ricoh GR: IFD 2, rule 4.
 
 **Controlled red.** Reinstating the decode gate silenced all three fixtures.
+
+## Rule 7: hierarchical streams in a DNG (validate, 2026-11-05)
+
+**What it is.** A DNG names the baseline sequential or lossless process
+(DNG 1.6.0.0 p. 19), and with it the non-hierarchical mode. A
+hierarchical stream (T.81 Annex J: a DHP marker before the first frame) is
+therefore its own fault, rule 7 `dng_hierarchical`.
+- **Why separate (option C, chosen over a marker code in the SOF-type
+  field):** the rule value states the meaning, and the SOF-type field
+  keeps its 0-15 domain.
+- **Orthogonal to rule 6:** rule 6 still judges the first frame's SOF
+  type. A SOF3-first hierarchical stream where lossless is required gives
+  rule 7 only. A SOF1-first one where baseline is required gives both.
+
+**Gating and record:**
+- Gated like rule 6: a DNG of known version, Compression 7.
+- One record per IFD with counts.
+- The record's SOF offset is the DHP marker's.
+- Its SOF type is the first frame's.
+- Its required value is rule 6's required type (0 or 3).
+
+**Source.** jpegz reports the DHP as `FrameHeader.dhp_offset`, from jpegz
+b59139b (tiffz repinned from 38a348b), so tiffz does not walk the markers
+twice.
+
+**Fixtures (gen.pl `hier`).** No encoder at hand writes hierarchical
+streams, so `hier` inserts a DHP segment, a copy of the frame header,
+before a re-marked SOF. The rules read markers only, so the entropy data
+need not decode.
+- dng-cfa-hier-sof3.tif: rule 7 only.
+- dng-ycbcr-hier-sof1.tif: rules 6 and 7.
+- ycbcr-hier-sof1.tif: not a DNG, so neither rule.
+
+**Corpus (263 files, 00d3fdde against this change).** No status or
+finding 17-19 changes. The finding 19 oracle, extended with a DHP walk,
+predicts no rule 7 record and leaves its rules 1-6 predictions unchanged.
+
+**Controlled red.** With the DHP check dropped, both DNG fixtures lost rule
+7: the CFA one gave no record, and the YCbCr one gave rule 6 only. The rule
+7 unit test aborted on its missing record.
