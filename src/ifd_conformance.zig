@@ -10,15 +10,14 @@
 //!   then stands in for its value.
 //! - Each tag in `rules` has an allowed type, count and value set.
 //!
-//! Two boundaries from the same ruling. BYTE, SHORT and LONG are all
-//! acceptable for any unsigned-integer field, scalar or array: "TIFF
-//! readers should accept BYTE, SHORT, or LONG values for any unsigned
-//! integer field", and "all fields are actually one-dimensional arrays"
-//! (TIFF 6.0 p. 16; validate, corrected 2026-11-04). Each value must still
-//! be in range, and a field defined as SHORT holds 16-bit values however
-//! it is stored. Values from 32768 up to 65535 are reserved for private
-//! use (TIFF 6.0 p. 8), so they are not violations. Tags without a rule,
-//! including every private tag, are skipped.
+//! Types are read strictly (owner, 2026-11-04): a writer must use one of a
+//! field's defined types. TIFF 6.0 p. 16, "TIFF readers should accept BYTE,
+//! SHORT, or LONG values for any unsigned integer field", is guidance for
+//! readers, not permission for writers, so a BYTE or LONG in a SHORT-only
+//! field is a type fault. Each value must be in range. Values from 32768 up
+//! to 65535 are reserved for private use (TIFF 6.0 p. 8), so they are not
+//! violations. Tags without a rule, including every private tag, are
+//! skipped.
 //!
 //! DNG rows (Digital Negative Specification 1.6.0.0) apply only when IFD 0
 //! carries DNGVersion, then to every IFD of the file, and are gated by the
@@ -94,15 +93,20 @@ pub const Fault = union(enum) {
 
 /// The field type a rule's tag is defined with.
 const Kind = enum {
-    /// Defined as SHORT. Stored as BYTE, SHORT or LONG, scalar or array
-    /// (TIFF 6.0 p. 16); every value must fit in 16 bits.
+    /// Defined as SHORT: SHORT only.
     unsigned_short,
-    /// Defined as LONG, or as SHORT or LONG. Stored as BYTE, SHORT or LONG.
+    /// Defined as SHORT or LONG: either.
     unsigned_long,
-    /// StripOffsets, StripByteCounts, TileOffsets and TileByteCounts: as
-    /// `unsigned_long`, and in BigTIFF also LONG8 ("allowed to have the
-    /// datatype TIFF_LONG8 in BigTIFF", BigTIFF design, libtiff docs).
+    /// Defined as LONG: LONG only.
+    long_only,
+    /// Defined as BYTE or SHORT (DotRange).
+    byte_or_short,
+    /// StripOffsets, StripByteCounts and TileByteCounts, defined as SHORT or
+    /// LONG, and in BigTIFF also LONG8 ("allowed to have the datatype
+    /// TIFF_LONG8 in BigTIFF", BigTIFF design, libtiff docs).
     offsets_or_counts,
+    /// TileOffsets, defined as LONG, and LONG8 in BigTIFF.
+    long_offsets,
     /// RATIONAL only.
     rational,
     /// SRATIONAL only.
@@ -110,14 +114,12 @@ const Kind = enum {
     /// DOUBLE only (IEEE 754 binary64): GeoTIFF's model and parameter tags
     /// (OGC GeoTIFF 1.1 Requirements 5.1, 9.2, 10.2, 11.2). No value check.
     double,
-    /// Defined as BYTE. Stored as BYTE, SHORT or LONG (TIFF 6.0 p. 16); every
-    /// value must fit in 8 bits.
+    /// Defined as BYTE, holding a number: BYTE only.
     unsigned_byte,
     /// ASCII only.
     ascii,
-    /// "DWORD" (PageMaker 6.0 notes): a 32-bit integer of either sign, so
-    /// BYTE, SHORT, LONG or SLONG; no value or sign check (validate,
-    /// 2026-11-04).
+    /// "DWORD" (PageMaker 6.0 notes): an unsigned 32-bit quantity, so LONG
+    /// only (validate, 2026-11-05, superseding BYTE, SHORT, LONG or SLONG).
     integer32,
     /// BYTE only: an opaque byte sequence, not an integer field.
     bytes,
@@ -275,7 +277,7 @@ const Rule = struct {
 /// NewSubfileType wait for the batch that claims their other defining
 /// specifications; see `pending`.
 pub const rules = [_]Rule{
-    .{ .tag = tags.new_subfile_type, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 36" },
+    .{ .tag = tags.new_subfile_type, .kind = .long_only, .count = .one, .citation = "TIFF 6.0 p. 36" },
     .{ .tag = tags.subfile_type, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 pp. 40-41" },
     .{ .tag = tags.image_width, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
     .{ .tag = tags.image_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
@@ -303,12 +305,12 @@ pub const rules = [_]Rule{
     .{ .tag = tags.page_name, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 55" },
     .{ .tag = tags.x_position, .kind = .rational, .count = .one, .citation = "TIFF 6.0 p. 55" },
     .{ .tag = tags.y_position, .kind = .rational, .count = .one, .citation = "TIFF 6.0 p. 56" },
-    .{ .tag = tags.free_offsets, .kind = .unsigned_long, .count = .any, .citation = "TIFF 6.0 p. 33" },
-    .{ .tag = tags.free_byte_counts, .kind = .unsigned_long, .count = .any, .citation = "TIFF 6.0 p. 33" },
+    .{ .tag = tags.free_offsets, .kind = .long_only, .count = .any, .citation = "TIFF 6.0 p. 33" },
+    .{ .tag = tags.free_byte_counts, .kind = .long_only, .count = .any, .citation = "TIFF 6.0 p. 33" },
     .{ .tag = tags.gray_response_unit, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 5 }}, .citation = "TIFF 6.0 pp. 33-34" },
     .{ .tag = tags.gray_response_curve, .kind = .unsigned_short, .count = .per_level, .citation = "TIFF 6.0 p. 33" },
-    .{ .tag = tags.t4_options, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 51" },
-    .{ .tag = tags.t6_options, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 52" },
+    .{ .tag = tags.t4_options, .kind = .long_only, .count = .one, .citation = "TIFF 6.0 p. 51" },
+    .{ .tag = tags.t6_options, .kind = .long_only, .count = .one, .citation = "TIFF 6.0 p. 52" },
     .{ .tag = tags.resolution_unit, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 38" },
     .{ .tag = tags.page_number, .kind = .unsigned_short, .count = .two, .citation = "TIFF 6.0 p. 55" },
     .{ .tag = tags.transfer_function, .kind = .unsigned_short, .count = .transfer_function, .citation = "TIFF 6.0 p. 84" },
@@ -323,7 +325,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.halftone_hints, .kind = .unsigned_short, .count = .two, .citation = "TIFF 6.0 p. 72" },
     .{ .tag = tags.tile_width, .kind = .unsigned_long, .count = .one, .extras = &.{.multiple_of_16}, .citation = "TIFF 6.0 p. 67 (a multiple of 16 is a multiple of any subsampling factor, as TIFF Technical Note 2 Section 21 requires)" },
     .{ .tag = tags.tile_length, .kind = .unsigned_long, .count = .one, .extras = &.{.multiple_of_16}, .citation = "TIFF 6.0 pp. 67-68 (a multiple of 16 is a multiple of any subsampling factor, as TIFF Technical Note 2 Section 21 requires)" },
-    .{ .tag = tags.tile_offsets, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 68; BigTIFF" },
+    .{ .tag = tags.tile_offsets, .kind = .long_offsets, .count = .any, .citation = "TIFF 6.0 p. 68; BigTIFF" },
     .{ .tag = tags.tile_byte_counts, .kind = .offsets_or_counts, .count = .any, .citation = "TIFF 6.0 p. 68; BigTIFF" },
     .{ .tag = tags.bad_fax_lines, .kind = .unsigned_long, .count = .one, .citation = "RFC 3949 p. 33 (RFC 2301 agrees)" },
     .{ .tag = tags.clean_fax_data, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 2 }}, .citation = "RFC 3949 p. 33 (RFC 2301 agrees)" },
@@ -332,46 +334,46 @@ pub const rules = [_]Rule{
     .{ .tag = tags.ink_set, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 70" },
     .{ .tag = tags.ink_names, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 70" },
     .{ .tag = tags.number_of_inks, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 70" },
-    .{ .tag = tags.dot_range, .kind = .unsigned_short, .count = .dot_range, .citation = "TIFF 6.0 p. 71" },
+    .{ .tag = tags.dot_range, .kind = .byte_or_short, .count = .dot_range, .citation = "TIFF 6.0 p. 71" },
     .{ .tag = tags.target_printer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 71" },
     .{ .tag = tags.extra_samples, .kind = .unsigned_short, .count = .any, .values = &.{.{ 0, 2 }}, .extras = &.{.channels_plus_extra_samples}, .citation = "TIFF 6.0 pp. 31-32, 77" },
     .{ .tag = tags.sample_format, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 4 }}, .citation = "TIFF 6.0 p. 80" },
     .{ .tag = tags.transfer_range, .kind = .unsigned_short, .count = .six, .citation = "TIFF 6.0 p. 86" },
     .{ .tag = tags.clip_path, .kind = .bytes, .count = .any, .citation = "PageMaker 6.0 TIFF Technical Notes p. 6" },
-    .{ .tag = tags.x_clip_path_units, .kind = .integer32, .count = .one, .citation = "PageMaker 6.0 TIFF Technical Notes p. 9 (\"Type = DWORD\"; libtiff registers LONG)" },
-    .{ .tag = tags.y_clip_path_units, .kind = .integer32, .count = .one, .citation = "PageMaker 6.0 TIFF Technical Notes p. 10 (\"Type = DWORD\"; libtiff registers LONG)" },
+    .{ .tag = tags.x_clip_path_units, .kind = .integer32, .count = .one, .citation = "PageMaker 6.0 TIFF Technical Notes p. 9 (\"Type = DWORD\": unsigned 32-bit, so LONG; validate, 2026-11-05)" },
+    .{ .tag = tags.y_clip_path_units, .kind = .integer32, .count = .one, .citation = "PageMaker 6.0 TIFF Technical Notes p. 10 (\"Type = DWORD\": unsigned 32-bit, so LONG; validate, 2026-11-05)" },
     .{ .tag = tags.indexed, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .citation = "PageMaker 6.0 TIFF Technical Notes p. 11" },
     .{ .tag = tags.jpeg_tables, .kind = .undefined, .count = .any, .citation = "TIFF Technical Note 2" },
     .{ .tag = tags.opi_proxy, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .citation = "PageMaker 6.0 TIFF Technical Notes p. 15" },
     .{ .tag = tags.global_parameters_ifd, .kind = .ifd_offsets, .count = .one, .citation = "RFC 3949 p. 18 (IFD or LONG; RFC 2301 says IFD)" },
-    .{ .tag = tags.profile_type, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 1 }}, .citation = "RFC 3949 p. 19 (RFC 2301 agrees)" },
+    .{ .tag = tags.profile_type, .kind = .long_only, .count = .one, .values = &.{.{ 0, 1 }}, .citation = "RFC 3949 p. 19 (RFC 2301 agrees)" },
     .{ .tag = tags.fax_profile, .kind = .unsigned_byte, .count = .one, .values = &.{.{ 0, 6 }}, .citation = "RFC 3949 p. 19 (RFC 2301 agrees)" },
-    .{ .tag = tags.coding_methods, .kind = .unsigned_long, .count = .one, .citation = "RFC 3949 p. 19 (bits 7-31 reserved, not checked; RFC 2301 agrees)" },
+    .{ .tag = tags.coding_methods, .kind = .long_only, .count = .one, .citation = "RFC 3949 p. 19 (bits 7-31 reserved, not checked; RFC 2301 agrees)" },
     .{ .tag = tags.version_year, .kind = .bytes, .count = .four, .citation = "RFC 3949 p. 20 (RFC 2301 agrees)" },
     .{ .tag = tags.mode_number, .kind = .unsigned_byte, .count = .one, .citation = "RFC 3949 p. 20 (RFC 2301 agrees)" },
     .{ .tag = tags.decode, .kind = .srational, .count = .two_per_sample, .citation = "RFC 3949 p. 50 (RFC 2301 agrees)" },
     .{ .tag = tags.image_base_color, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "RFC 3949 p. 67 (RFC 2301 calls it DefaultImageColor)" },
-    .{ .tag = tags.t82_options, .kind = .unsigned_long, .count = .one, .citation = "RFC 3949 p. 44 (not in RFC 2301)" },
+    .{ .tag = tags.t82_options, .kind = .long_only, .count = .one, .citation = "RFC 3949 p. 44 (not in RFC 2301)" },
     .{ .tag = tags.jpeg_proc, .kind = .unsigned_short, .count = .one, .values = &.{ .{ 1, 1 }, .{ 14, 14 } }, .citation = "TIFF 6.0 p. 104" },
-    .{ .tag = tags.jpeg_interchange_format, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 105" },
-    .{ .tag = tags.jpeg_interchange_format_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 105" },
+    .{ .tag = tags.jpeg_interchange_format, .kind = .long_only, .count = .one, .citation = "TIFF 6.0 p. 105" },
+    .{ .tag = tags.jpeg_interchange_format_length, .kind = .long_only, .count = .one, .citation = "TIFF 6.0 p. 105" },
     .{ .tag = tags.jpeg_restart_interval, .kind = .unsigned_short, .count = .one, .citation = "TIFF 6.0 p. 105" },
     .{ .tag = tags.jpeg_lossless_predictors, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 7 }}, .citation = "TIFF 6.0 p. 106" },
     .{ .tag = tags.jpeg_point_transforms, .kind = .unsigned_short, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 106" },
-    .{ .tag = tags.jpeg_q_tables, .kind = .unsigned_long, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
-    .{ .tag = tags.jpeg_dc_tables, .kind = .unsigned_long, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
-    .{ .tag = tags.jpeg_ac_tables, .kind = .unsigned_long, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
+    .{ .tag = tags.jpeg_q_tables, .kind = .long_only, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
+    .{ .tag = tags.jpeg_dc_tables, .kind = .long_only, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
+    .{ .tag = tags.jpeg_ac_tables, .kind = .long_only, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 107" },
     .{ .tag = tags.ycbcr_coefficients, .kind = .rational, .count = .three, .citation = "TIFF 6.0 p. 90" },
     .{ .tag = tags.ycbcr_subsampling, .kind = .unsigned_short, .count = .two, .values = &.{ .{ 1, 2 }, .{ 4, 4 } }, .extras = &.{.vertical_at_most_horizontal}, .citation = "TIFF 6.0 pp. 91-92" },
     .{ .tag = tags.ycbcr_positioning, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 2 }}, .citation = "TIFF 6.0 p. 92" },
     .{ .tag = tags.reference_black_white, .kind = .rational, .count = .six, .citation = "TIFF 6.0 p. 86" },
-    .{ .tag = tags.strip_row_counts, .kind = .unsigned_long, .count = .strips, .extras = &.{.not_with_rows_per_strip}, .citation = "RFC 3949 p. 68 (RFC 2301 agrees)" },
+    .{ .tag = tags.strip_row_counts, .kind = .long_only, .count = .strips, .extras = &.{.not_with_rows_per_strip}, .citation = "RFC 3949 p. 68 (RFC 2301 agrees)" },
     .{ .tag = tags.image_id, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16; PageMaker 6.0 TIFF Technical Notes p. 15" },
     .{ .tag = tags.copyright, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 31" },
     .{ .tag = tags.model_pixel_scale, .kind = .double, .count = .three, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 10.2, 10.3" },
     .{ .tag = tags.model_tiepoint, .kind = .double, .count = .multiple_of_six, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 9.2, 9.3" },
     .{ .tag = tags.model_transformation, .kind = .double, .count = .sixteen, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 11.2, 11.3" },
-    .{ .tag = tags.image_layer, .kind = .unsigned_long, .count = .two, .extras = &.{.image_layer}, .citation = "RFC 3949 p. 68 (RFC 2301: SHORT or LONG, which p. 16 widening also allows)" },
+    .{ .tag = tags.image_layer, .kind = .long_only, .count = .two, .extras = &.{.image_layer}, .citation = "RFC 3949 p. 68 (RFC 3949 governs: LONG; RFC 2301 said SHORT or LONG)" },
     .{ .tag = tags.geo_key_directory, .kind = .unsigned_short, .count = .at_least_four, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 2.2, 2.3 (the exact count waits for the GeoKeyDirectory batch)" },
     .{ .tag = tags.geo_double_params, .kind = .double, .count = .any, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 5.1, 5.2" },
     .{ .tag = tags.geo_ascii_params, .kind = .ascii, .count = .any, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirement 6.5; TIFF 6.0 p. 15" },
@@ -406,7 +408,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.baseline_exposure, .kind = .srational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BaselineExposure (SRATIONAL)" },
     .{ .tag = tags.baseline_noise, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BaselineNoise (RATIONAL)" },
     .{ .tag = tags.baseline_sharpness, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BaselineSharpness (RATIONAL)" },
-    .{ .tag = tags.bayer_green_split, .kind = .unsigned_long, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BayerGreenSplit (LONG)" },
+    .{ .tag = tags.bayer_green_split, .kind = .long_only, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BayerGreenSplit (LONG)" },
     .{ .tag = tags.linear_response_limit, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, LinearResponseLimit (RATIONAL)" },
     .{ .tag = tags.camera_serial_number, .kind = .ascii, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CameraSerialNumber (ASCII)" },
     .{ .tag = tags.lens_info, .kind = .rational, .count = .four, .since = 0x01000000, .citation = "DNG 1.6.0.0, LensInfo (RATIONAL)" },
@@ -434,11 +436,11 @@ pub const rules = [_]Rule{
     .{ .tag = tags.as_shot_profile_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, AsShotProfileName (ASCII or BYTE)" },
     .{ .tag = tags.noise_reduction_applied, .kind = .rational, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, NoiseReductionApplied (RATIONAL)" },
     .{ .tag = tags.profile_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileName (ASCII or BYTE)" },
-    .{ .tag = tags.profile_hue_sat_map_dims, .kind = .unsigned_long, .count = .three, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileHueSatMapDims (LONG)" },
+    .{ .tag = tags.profile_hue_sat_map_dims, .kind = .long_only, .count = .three, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileHueSatMapDims (LONG)" },
     .{ .tag = tags.profile_hue_sat_map_data_1, .kind = .float, .count = .hue_sat_map, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileHueSatMapData1 (FLOAT)" },
     .{ .tag = tags.profile_hue_sat_map_data_2, .kind = .float, .count = .hue_sat_map, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileHueSatMapData2 (FLOAT)" },
     .{ .tag = tags.profile_tone_curve, .kind = .float, .count = .even_at_least_four, .extras = &.{.tone_curve_endpoints}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileToneCurve (FLOAT)" },
-    .{ .tag = tags.profile_embed_policy, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 3 }}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileEmbedPolicy (LONG)" },
+    .{ .tag = tags.profile_embed_policy, .kind = .long_only, .count = .one, .values = &.{.{ 0, 3 }}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileEmbedPolicy (LONG)" },
     .{ .tag = tags.profile_copyright, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileCopyright (ASCII or BYTE)" },
     .{ .tag = tags.forward_matrix_1, .kind = .srational, .count = .color_planes_times_3, .since = 0x01020000, .citation = "DNG 1.6.0.0, ForwardMatrix1 (SRATIONAL)" },
     .{ .tag = tags.forward_matrix_2, .kind = .srational, .count = .color_planes_times_3, .since = 0x01020000, .citation = "DNG 1.6.0.0, ForwardMatrix2 (SRATIONAL)" },
@@ -446,13 +448,13 @@ pub const rules = [_]Rule{
     .{ .tag = tags.preview_application_version, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewApplicationVersion (ASCII or BYTE)" },
     .{ .tag = tags.preview_settings_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewSettingsName (ASCII or BYTE)" },
     .{ .tag = tags.preview_settings_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewSettingsDigest (BYTE)" },
-    .{ .tag = tags.preview_color_space, .kind = .unsigned_long, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewColorSpace (LONG)" },
+    .{ .tag = tags.preview_color_space, .kind = .long_only, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewColorSpace (LONG)" },
     .{ .tag = tags.preview_date_time, .kind = .ascii, .count = .any, .extras = &.{.iso8601}, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewDateTime (ASCII)" },
     .{ .tag = tags.raw_image_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, RawImageDigest (BYTE)" },
     .{ .tag = tags.original_raw_file_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, OriginalRawFileDigest (BYTE)" },
     .{ .tag = tags.sub_tile_block_size, .kind = .unsigned_long, .count = .two, .since = 0x01020000, .citation = "DNG 1.6.0.0, SubTileBlockSize (SHORT or LONG)" },
     .{ .tag = tags.row_interleave_factor, .kind = .unsigned_long, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, RowInterleaveFactor (SHORT or LONG)" },
-    .{ .tag = tags.profile_look_table_dims, .kind = .unsigned_long, .count = .three, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileLookTableDims (LONG)" },
+    .{ .tag = tags.profile_look_table_dims, .kind = .long_only, .count = .three, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileLookTableDims (LONG)" },
     .{ .tag = tags.profile_look_table_data, .kind = .float, .count = .look_table, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileLookTableData (FLOAT)" },
     .{ .tag = tags.opcode_list_1, .kind = .undefined, .count = .any, .since = 0x01030000, .citation = "DNG 1.6.0.0, OpcodeList1 (UNDEFINED)" },
     .{ .tag = tags.opcode_list_2, .kind = .undefined, .count = .any, .since = 0x01030000, .citation = "DNG 1.6.0.0, OpcodeList2 (UNDEFINED)" },
@@ -461,10 +463,10 @@ pub const rules = [_]Rule{
     .{ .tag = tags.original_default_final_size, .kind = .unsigned_long, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalDefaultFinalSize (SHORT or LONG)" },
     .{ .tag = tags.original_best_quality_final_size, .kind = .unsigned_long, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalBestQualityFinalSize (SHORT or LONG)" },
     .{ .tag = tags.original_default_crop_size, .kind = .long_or_rational, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalDefaultCropSize (SHORT or LONG or RATIONAL)" },
-    .{ .tag = tags.profile_hue_sat_map_encoding, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, ProfileHueSatMapEncoding (LONG)" },
-    .{ .tag = tags.profile_look_table_encoding, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, ProfileLookTableEncoding (LONG)" },
+    .{ .tag = tags.profile_hue_sat_map_encoding, .kind = .long_only, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, ProfileHueSatMapEncoding (LONG)" },
+    .{ .tag = tags.profile_look_table_encoding, .kind = .long_only, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, ProfileLookTableEncoding (LONG)" },
     .{ .tag = tags.baseline_exposure_offset, .kind = .rational, .count = .one, .since = 0x01040000, .citation = "DNG 1.6.0.0, BaselineExposureOffset (RATIONAL)" },
-    .{ .tag = tags.default_black_render, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, DefaultBlackRender (LONG)" },
+    .{ .tag = tags.default_black_render, .kind = .long_only, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, DefaultBlackRender (LONG)" },
     .{ .tag = tags.new_raw_image_digest, .kind = .bytes, .count = .sixteen, .since = 0x01040000, .citation = "DNG 1.6.0.0, NewRawImageDigest (BYTE)" },
     .{ .tag = tags.raw_to_preview_gain, .kind = .double, .count = .one, .since = 0x01040000, .citation = "DNG 1.6.0.0, RawToPreviewGain (DOUBLE)" },
     .{ .tag = tags.default_user_crop, .kind = .rational, .count = .four, .extras = &.{.user_crop}, .since = 0x01040000, .citation = "DNG 1.6.0.0, DefaultUserCrop (RATIONAL)" },
@@ -484,7 +486,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.illuminant_data_1, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData1 (UNDEFINED)" },
     .{ .tag = tags.illuminant_data_2, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData2 (UNDEFINED)" },
     .{ .tag = tags.illuminant_data_3, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData3 (UNDEFINED)" },
-    .{ .tag = tags.mask_sub_area, .kind = .unsigned_long, .count = .four, .extras = &.{.mask_sub_area_bounds}, .since = 0x01060000, .citation = "DNG 1.6.0.0, MaskSubArea (LONG)" },
+    .{ .tag = tags.mask_sub_area, .kind = .long_only, .count = .four, .extras = &.{.mask_sub_area_bounds}, .since = 0x01060000, .citation = "DNG 1.6.0.0, MaskSubArea (LONG)" },
     .{ .tag = tags.profile_hue_sat_map_data_3, .kind = .float, .count = .hue_sat_map, .since = 0x01060000, .citation = "DNG 1.6.0.0, ProfileHueSatMapData3 (FLOAT)" },
     .{ .tag = tags.reduction_matrix_3, .kind = .srational, .count = .color_planes_times_3, .since = 0x01060000, .citation = "DNG 1.6.0.0, ReductionMatrix3 (SRATIONAL)" },
     .{ .tag = tags.rgb_tables, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, RGBTables (UNDEFINED)" },
@@ -654,22 +656,27 @@ const Values = enum { all, no_closed_lists, none };
 fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values: Values, color_planes: ?u64) ?Reason {
     const entry = dir.entries[index];
     const type_ok = switch (rule.kind) {
-        .unsigned_short, .unsigned_long => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long,
-        .offsets_or_counts => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long or
+        // Strict: only the defined types (owner, 2026-11-04).
+        .unsigned_short => entry.field_type == .short,
+        .unsigned_long => entry.field_type == .short or entry.field_type == .long,
+        .long_only => entry.field_type == .long,
+        .byte_or_short => entry.field_type == .byte or entry.field_type == .short,
+        .offsets_or_counts => entry.field_type == .short or entry.field_type == .long or
             (entry.field_type == .long8 and dir.offset_width == .big),
+        .long_offsets => entry.field_type == .long or (entry.field_type == .long8 and dir.offset_width == .big),
         .rational => entry.field_type == .rational,
         .double => entry.field_type == .double,
         .srational => entry.field_type == .srational,
-        .unsigned_byte => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long,
-        .integer32 => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long or entry.field_type == .slong,
+        .unsigned_byte => entry.field_type == .byte,
+        .integer32 => entry.field_type == .long,
         .bytes => entry.field_type == .byte,
         .undefined => entry.field_type == .undefined,
         .ifd_offsets => entry.field_type == .long or entry.raw_type == 13 or
             (entry.field_type == .ifd8 and dir.offset_width == .big),
         .ascii => entry.field_type == .ascii,
         .float => entry.field_type == .float,
-        .long_or_rational, .short_or_rational => entry.field_type == .byte or entry.field_type == .short or
-            entry.field_type == .long or entry.field_type == .rational,
+        .long_or_rational => entry.field_type == .short or entry.field_type == .long or entry.field_type == .rational,
+        .short_or_rational => entry.field_type == .short or entry.field_type == .rational,
         .utf8_string => entry.field_type == .ascii or entry.field_type == .byte,
     };
     if (!type_ok) return .type;
@@ -740,13 +747,14 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
             return null;
         },
         .long_or_rational, .short_or_rational => if (entry.field_type == .rational) return null,
-        .unsigned_byte, .unsigned_short, .unsigned_long, .offsets_or_counts => {},
+        .unsigned_byte, .unsigned_short, .unsigned_long, .long_only, .byte_or_short, .offsets_or_counts, .long_offsets => {},
     }
     const max: u64 = switch (rule.kind) {
         .unsigned_byte => std.math.maxInt(u8),
         .unsigned_short, .short_or_rational => std.math.maxInt(u16),
         .long_or_rational => std.math.maxInt(u32),
-        .unsigned_long => std.math.maxInt(u32),
+        .unsigned_long, .long_only => std.math.maxInt(u32),
+        .byte_or_short => std.math.maxInt(u16),
         else => std.math.maxInt(u64),
     };
     var i: usize = 0;
@@ -1513,14 +1521,37 @@ test "a tag not larger than its predecessor is unsorted, duplicates included" {
     });
 }
 
-test "BYTE, SHORT and LONG are all acceptable for an unsigned scalar, other types are not" {
-    for ([_]FieldType{ .byte, .short, .long }) |t| {
-        var entries = [_]Entry{inline16(tags.fill_order, t, 1, 1)};
-        try expectFaults(&entries, &.{});
-    }
-    for ([_]FieldType{ .float, .sshort, .slong, .rational, .ascii, .undefined, .sbyte }) |t| {
-        var entries = [_]Entry{inline16(tags.fill_order, t, 1, 1)};
-        try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.fill_order, .reason = .type, .raw_type = @intFromEnum(t), .raw_count = 1, .raw_slot = 1 } }});
+test "strict types: an unsigned field takes only its defined types" {
+    // TIFF 6.0 p. 16, "TIFF readers should accept BYTE, SHORT, or LONG", is
+    // reader guidance, not permission for writers (owner, 2026-11-04).
+    const typeFault = struct {
+        fn of(tag: u16, t: FieldType, count: u64, slot: u32) Fault {
+            return .{ .field_invalid = .{ .entry_index = 0, .tag = tag, .reason = .type, .raw_type = @intFromEnum(t), .raw_count = count, .raw_slot = slot } };
+        }
+    };
+    const cases = [_]struct { tag: u16, count: u64, slot: u32, ok: []const FieldType, bad: []const FieldType }{
+        // SHORT (FillOrder, p. 32).
+        .{ .tag = tags.fill_order, .count = 1, .slot = 1, .ok = &.{.short}, .bad = &.{ .byte, .long, .float, .sshort, .slong, .rational, .ascii, .undefined, .sbyte } },
+        // SHORT or LONG (ImageWidth, p. 34).
+        .{ .tag = tags.image_width, .count = 1, .slot = 1, .ok = &.{ .short, .long }, .bad = &.{ .byte, .slong } },
+        // LONG (NewSubfileType, p. 36).
+        .{ .tag = tags.new_subfile_type, .count = 1, .slot = 0, .ok = &.{.long}, .bad = &.{ .byte, .short } },
+        // BYTE (FaxProfile, RFC 3949 p. 19).
+        .{ .tag = tags.fax_profile, .count = 1, .slot = 0, .ok = &.{.byte}, .bad = &.{ .short, .long } },
+        // BYTE or SHORT (DotRange, p. 71), two values for one sample.
+        .{ .tag = tags.dot_range, .count = 2, .slot = 0xff00, .ok = &.{ .byte, .short }, .bad = &.{.long} },
+        // DWORD (PageMaker 6.0 notes): unsigned 32-bit, so LONG.
+        .{ .tag = tags.x_clip_path_units, .count = 1, .slot = 1000, .ok = &.{.long}, .bad = &.{ .byte, .short, .slong } },
+    };
+    for (cases) |case| {
+        for (case.ok) |t| {
+            var ok = [_]Entry{inline16(case.tag, t, case.count, case.slot)};
+            try expectFaults(&ok, &.{});
+        }
+        for (case.bad) |t| {
+            var bad = [_]Entry{inline16(case.tag, t, case.count, case.slot)};
+            try expectFaults(&bad, &.{typeFault.of(case.tag, t, case.count, case.slot)});
+        }
     }
 }
 
@@ -1531,14 +1562,20 @@ test "every single-value rule accepts its range ends and rejects the values just
         const ranges = rule.values orelse continue;
         // A DNG row is checked in a DNG 1.6.0.0 file, and has no private range.
         const dng: ?Dng = if (rule.since != null) v1_6 else null;
+        // Stored as the type the row defines.
+        const t: FieldType = switch (rule.kind) {
+            .unsigned_byte => .byte,
+            .long_only => .long,
+            else => .short,
+        };
         for (ranges) |range| {
             for ([_]u16{ range[0], range[1] }) |v| {
                 if (rule.tag == tags.photometric) {
                     // With the SamplesPerPixel the photometric implies.
-                    var ok = [_]Entry{ inline16(rule.tag, .short, 1, v), inline16(tags.samples_per_pixel, .short, 1, impliedChannels(v)) };
+                    var ok = [_]Entry{ inline16(rule.tag, t, 1, v), inline16(tags.samples_per_pixel, .short, 1, impliedChannels(v)) };
                     try expectFaultsDng(dng, &ok, &.{});
                 } else {
-                    var ok = [_]Entry{inline16(rule.tag, .short, 1, v)};
+                    var ok = [_]Entry{inline16(rule.tag, t, 1, v)};
                     try expectFaultsDng(dng, &ok, &.{});
                 }
             }
@@ -1547,13 +1584,14 @@ test "every single-value rule accepts its range ends and rejects the values just
                 var inside = false;
                 for (ranges) |other| inside = inside or (v >= other[0] and v <= other[1]);
                 if (inside) continue;
-                var bad = [_]Entry{inline16(rule.tag, .short, 1, v)};
-                try expectFaultsDng(dng, &bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = v } }});
+                if (t == .byte and v > 255) continue; // not storable in a BYTE
+                var bad = [_]Entry{inline16(rule.tag, t, 1, v)};
+                try expectFaultsDng(dng, &bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .value, .raw_type = @intFromEnum(t), .raw_count = 1, .raw_slot = v } }});
             }
             checked += 1;
         }
-        var two = [_]Entry{inline16(rule.tag, .short, 2, ranges[0][0] | (@as(u32, ranges[0][0]) << 16))};
-        try expectFaultsDng(dng, &two, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .count, .raw_type = 3, .raw_count = 2, .raw_slot = ranges[0][0] | (@as(u32, ranges[0][0]) << 16) } }});
+        var two = [_]Entry{inline16(rule.tag, t, 2, ranges[0][0] | (@as(u32, ranges[0][0]) << 16))};
+        try expectFaultsDng(dng, &two, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .count, .raw_type = @intFromEnum(t), .raw_count = 2, .raw_slot = ranges[0][0] | (@as(u32, ranges[0][0]) << 16) } }});
     }
     try testing.expect(checked >= 8);
 }
@@ -1565,9 +1603,10 @@ test "out-of-range public values are invalid; private-range values are not" {
     try expectFaults(&zero, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.fill_order, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 0 } }});
     var private = [_]Entry{inline16(tags.orientation, .short, 1, 40000)};
     try expectFaults(&private, &.{});
-    // A LONG above the SHORT range is a value fault, not a private value.
+    // A LONG is a type fault (SHORT only), so a value above the SHORT range
+    // cannot be stored at all.
     var wide = [_]Entry{inline16(tags.orientation, .long, 1, 65537)};
-    try expectFaults(&wide, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.orientation, .reason = .value, .raw_type = 4, .raw_count = 1, .raw_slot = 65537 } }});
+    try expectFaults(&wide, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.orientation, .reason = .type, .raw_type = 4, .raw_count = 1, .raw_slot = 65537 } }});
 }
 
 test "SampleFormat needs one value per sample, each 1 to 4" {
@@ -1595,43 +1634,30 @@ test "TransferFunction count is one or three tables of 2**BitsPerSample" {
     try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.transfer_function, .reason = .count, .raw_type = 3, .raw_count = 272, .raw_slot = 0x40 } }});
 }
 
-test "an unsigned-integer array may be BYTE, SHORT or LONG, but holds 16-bit values" {
-    // SampleFormat for two samples, widened and narrowed (TIFF 6.0 p. 16).
-    var byte = [_]Entry{ inline16(tags.samples_per_pixel, .short, 1, 2), inline16(tags.sample_format, .byte, 2, 0x0301) };
-    try expectFaults(&byte, &.{});
-    var long_values = [_]u8{ 1, 0, 0, 0, 3, 0, 0, 0 };
-    var long = [_]Entry{ inline16(tags.samples_per_pixel, .short, 1, 2), inline16(tags.sample_format, .long, 2, 0x200) };
-    var cached = [_]?[]u8{ null, &long_values };
-    var out = try faultsOf(&long, &cached);
-    try testing.expectEqual(@as(usize, 0), out.items.len);
-    out.deinit(testing.allocator);
-    // A LONG above 65535 is a value fault even where the low half is valid.
-    var wide = [_]Entry{inline16(tags.sample_format, .long, 1, 0x1_0001)};
-    try expectFaults(&wide, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.sample_format, .reason = .value, .raw_type = 4, .raw_count = 1, .raw_slot = 0x1_0001 } }});
-    // Other types stay type faults for an array.
-    for ([_]FieldType{ .sshort, .slong, .float, .rational, .ascii, .undefined }) |t| {
-        var bad = [_]Entry{inline16(tags.sample_format, t, 1, 1)};
-        try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.sample_format, .reason = .type, .raw_type = @intFromEnum(t), .raw_count = 1, .raw_slot = 1 } }});
+test "an unsigned-integer array takes its defined type only" {
+    // SampleFormat for two samples: SHORT passes; BYTE and LONG are type
+    // faults under the strict reading (owner, 2026-11-04).
+    var short = [_]Entry{ inline16(tags.samples_per_pixel, .short, 1, 2), inline16(tags.sample_format, .short, 2, 0x0003_0001) };
+    try expectFaults(&short, &.{});
+    for ([_]FieldType{ .byte, .long, .sshort, .slong, .float, .rational, .ascii, .undefined }) |t| {
+        var bad = [_]Entry{ inline16(tags.samples_per_pixel, .short, 1, 2), inline16(tags.sample_format, t, 2, 0x0301) };
+        try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.sample_format, .reason = .type, .raw_type = @intFromEnum(t), .raw_count = 2, .raw_slot = 0x0301 } }});
     }
 }
 
-test "TransferFunction may be BYTE or LONG, and a LONG entry above 65535 is a value fault" {
+test "TransferFunction is SHORT: BYTE and LONG tables are type faults" {
     // BitsPerSample 2 gives tables of 4 entries.
-    var byte = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 2), inline16(tags.transfer_function, .byte, 4, 0x0302_0100) };
-    try expectFaults(&byte, &.{});
-
-    var long_table = [_]u8{0} ** 16;
-    for (0..4) |k| std.mem.writeInt(u32, long_table[4 * k ..][0..4], @intCast(k * 21845), .little);
-    var long = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 2), inline16(tags.transfer_function, .long, 4, 0x100) };
-    var cached = [_]?[]u8{ null, &long_table };
-    var out = try faultsOf(&long, &cached);
+    var table = [_]u8{0} ** 8;
+    for (0..4) |k| std.mem.writeInt(u16, table[2 * k ..][0..2], @intCast(k * 21845), .little);
+    var short = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 2), inline16(tags.transfer_function, .short, 4, 0x100) };
+    var cached = [_]?[]u8{ null, &table };
+    var out = try faultsOf(&short, &cached);
     try testing.expectEqual(@as(usize, 0), out.items.len);
     out.deinit(testing.allocator);
-
-    std.mem.writeInt(u32, long_table[12..16], 65536, .little);
-    out = try faultsOf(&long, &cached);
-    defer out.deinit(testing.allocator);
-    try testing.expectEqualDeep(&[_]Fault{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.transfer_function, .reason = .value, .raw_type = 4, .raw_count = 4, .raw_slot = 0x100 } }}, out.items);
+    for ([_]FieldType{ .byte, .long }) |t| {
+        var bad = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 2), inline16(tags.transfer_function, t, 4, 0x0302_0100) };
+        try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.transfer_function, .reason = .type, .raw_type = @intFromEnum(t), .raw_count = 4, .raw_slot = 0x0302_0100 } }});
+    }
 }
 
 /// Faults for one entry `tag` of `field_type` and `count`, whose value bytes
@@ -1846,7 +1872,7 @@ test "a palette image needs a ColorMap, and a transparency mask one bit per samp
     try expectFaults(&mask_default, &.{});
     var mask1 = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 1), inline16(tags.photometric, .short, 1, 4) };
     try expectFaults(&mask1, &.{});
-    for ([_]FieldType{ .short, .byte }) |t| {
+    for ([_]FieldType{.short}) |t| {
         var mask8 = [_]Entry{ inline16(tags.bits_per_sample, t, 1, 8), inline16(tags.photometric, .short, 1, 4) };
         try expectFaults(&mask8, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.bits_per_sample, .reason = .value, .raw_type = @intFromEnum(t), .raw_count = 1, .raw_slot = 8 } }});
     }
@@ -1882,11 +1908,10 @@ test "Technical Notes kinds: BYTE-only, UNDEFINED-only, DWORD and IFD offsets" {
     try expectBytesReason(none, tags.jpeg_tables, .undefined, 4, four[0..4], null);
     try expectBytesReason(none, tags.jpeg_tables, .byte, 4, four[0..4], .type);
     try expectBytesReason(none, tags.image_source_data, .undefined, 4, four[0..4], null);
-    for ([_]FieldType{ .byte, .short, .long, .slong }) |t| {
-        var ok = [_]Entry{inline16(tags.x_clip_path_units, t, 1, 1000)};
-        try expectFaults(&ok, &.{});
-    }
-    for ([_]FieldType{ .ascii, .float, .rational, .undefined }) |t| {
+    // DWORD: unsigned 32-bit, so LONG only (validate, 2026-11-05).
+    var dword = [_]Entry{inline16(tags.x_clip_path_units, .long, 1, 1000)};
+    try expectFaults(&dword, &.{});
+    for ([_]FieldType{ .byte, .short, .slong, .ascii, .float, .rational, .undefined }) |t| {
         var bad = [_]Entry{inline16(tags.y_clip_path_units, t, 1, 1000)};
         try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.y_clip_path_units, .reason = .type, .raw_type = @intFromEnum(t), .raw_count = 1, .raw_slot = 1000 } }});
     }
@@ -1921,11 +1946,11 @@ test "Compression is 1 to 10 and PhotometricInterpretation 0 to 6 or 8 to 10; pr
 }
 
 test "TIFF-FX kinds and rules" {
-    // FaxProfile is defined as BYTE: SHORT is accepted, but not above 255.
-    var byte_ok = [_]Entry{inline16(tags.fax_profile, .short, 1, 6)};
+    // FaxProfile and ModeNumber are defined as BYTE: SHORT is a type fault.
+    var byte_ok = [_]Entry{inline16(tags.fax_profile, .byte, 1, 6)};
     try expectFaults(&byte_ok, &.{});
-    var byte_wide = [_]Entry{inline16(tags.mode_number, .short, 1, 256)};
-    try expectFaults(&byte_wide, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.mode_number, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 256 } }});
+    var as_short = [_]Entry{inline16(tags.mode_number, .short, 1, 1)};
+    try expectFaults(&as_short, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.mode_number, .reason = .type, .raw_type = 3, .raw_count = 1, .raw_slot = 1 } }});
     // Decode is SRATIONAL[2 * SamplesPerPixel].
     const spp3 = [_]Entry{inline16(tags.samples_per_pixel, .short, 1, 3)};
     var six = [_]u8{0} ** 48;
@@ -1939,12 +1964,12 @@ test "TIFF-FX kinds and rules" {
     try expectBytesReason(&one_strip, tags.strip_row_counts, .long, 2, rows[0..8], .count);
     const with_rows = [_]Entry{ inline16(tags.strip_offsets, .long, 1, 0), inline16(tags.rows_per_strip, .long, 1, 8) };
     try expectBytesReason(&with_rows, tags.strip_row_counts, .long, 1, rows[0..4], .value);
-    // ImageLayer: [0] is 1-3, [1] at least 1.
-    var layer_ok = [_]Entry{inline16(tags.image_layer, .short, 2, 0x0001_0003)};
-    try expectFaults(&layer_ok, &.{});
-    for ([_]u32{ 0x0001_0000, 0x0001_0004, 0x0000_0002 }) |slot| {
-        var bad = [_]Entry{inline16(tags.image_layer, .short, 2, slot)};
-        try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.image_layer, .reason = .value, .raw_type = 3, .raw_count = 2, .raw_slot = slot } }});
+    // ImageLayer is LONG[2] (RFC 3949): [0] is 1-3, [1] at least 1.
+    const none: []const Entry = &.{};
+    try expectBytesReason(none, tags.image_layer, .long, 2, "\x03\x00\x00\x00\x01\x00\x00\x00", null);
+    try expectBytesReason(none, tags.image_layer, .short, 2, "\x03\x00\x01\x00", .type);
+    for ([_][]const u8{ "\x00\x00\x00\x00\x01\x00\x00\x00", "\x04\x00\x00\x00\x01\x00\x00\x00", "\x02\x00\x00\x00\x00\x00\x00\x00" }) |bad| {
+        try expectBytesReason(none, tags.image_layer, .long, 2, bad, .value);
     }
 }
 
@@ -2179,9 +2204,9 @@ test "DNG kinds: FLOAT, SHORT or LONG or RATIONAL, SHORT or RATIONAL, and UTF-8 
     try expectDngOne(v1_6, inline16(tags.black_level, .rational, 1, 0), &rational, null);
     try expectDngOne(v1_6, inline16(tags.black_level, .srational, 1, 0), &rational, .type);
     try expectDngOne(v1_6, inline16(tags.black_level, .long, 1, 70000), null, null);
-    // AsShotNeutral: SHORT or RATIONAL, so integers hold 16 bits.
+    // AsShotNeutral: SHORT or RATIONAL, so LONG is a type fault.
     var three_longs = [_]u8{ 1, 0, 0, 0, 1, 0, 0, 0, 0x70, 0x11, 1, 0 };
-    try expectDngOne(v1_6, inline16(tags.as_shot_neutral, .long, 3, 0), &three_longs, .value);
+    try expectDngOne(v1_6, inline16(tags.as_shot_neutral, .long, 3, 0), &three_longs, .type);
     // UTF-8 strings, ASCII or BYTE: NUL last, valid UTF-8 before it; inner
     // NULs are not checked (D4).
     const utf8 = struct {
@@ -2416,8 +2441,7 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
         // only the role list is under test.
         fn of(nst: u32, photometric: u32) [4]Entry {
             const ch = impliedChannels(photometric);
-            const eights: u32 = @as(u32, 0x0808_0808) >> @intCast(8 * (4 - ch));
-            return .{ inline16(tags.new_subfile_type, .long, 1, nst), inline16(tags.bits_per_sample, .byte, ch, eights), inline16(tags.photometric, .short, 1, photometric), inline16(tags.samples_per_pixel, .short, 1, ch) };
+            return .{ inline16(tags.new_subfile_type, .long, 1, nst), inline16(tags.bits_per_sample, .short, ch, 0x0008_0008), inline16(tags.photometric, .short, 1, photometric), inline16(tags.samples_per_pixel, .short, 1, ch) };
         }
     };
     var c = [_]?[]u8{null} ** 4;
@@ -2441,8 +2465,11 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
         .{ .nst = 7, .photometric = tags.photometric_mask, .ok = true },
         .{ .nst = 7, .photometric = 5, .ok = false },
     };
+    var eights = [_]u8{ 8, 0, 8, 0, 8, 0, 8, 0 };
     for (cases) |case| {
         var e = pair.of(case.nst, case.photometric);
+        const ch = impliedChannels(case.photometric);
+        c[1] = if (ch > 2) eights[0 .. 2 * ch] else null;
         expectDng(&e, &c, v1_6, tags.photometric, if (case.ok) null else .value) catch |err| {
             std.debug.print("NewSubFileType 0x{x}, photometric {d}\n", .{ case.nst, case.photometric });
             return err;
@@ -2450,6 +2477,7 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
     }
     // No role list without a DNG claim, above 1.6.0.0, or for an unknown version.
     var e = pair.of(0, 2);
+    c[1] = eights[0..6];
     try expectDng(&e, &c, null, tags.photometric, null);
     try expectDng(&e, &c, v1_7, tags.photometric, null);
     try expectDng(&e, &c, unknown_version, tags.photometric, null);

@@ -2487,30 +2487,47 @@ fn grayWithRaw(allocator: std.mem.Allocator, tag: u16, typ: u16, count: u32, raw
     return buf;
 }
 
-test "IFD-entry rules: SampleFormat and TransferFunction stored as BYTE or LONG validate clean" {
-    // TIFF 6.0 p. 16: BYTE, SHORT or LONG for any unsigned-integer field,
-    // arrays included (validate, 2026-11-04).
+test "IFD-entry rules: SampleFormat and TransferFunction are SHORT: SHORT validates clean, BYTE and LONG are type faults" {
+    // Strict type reading (owner, 2026-11-04): TIFF 6.0 p. 16's "readers
+    // should accept BYTE, SHORT, or LONG" does not let a writer store them.
     const allocator = std.testing.allocator;
     var table: [256]u32 = undefined;
-    for (&table, 0..) |*v, i| v.* = @intCast(i);
-    var long_table: [256]u32 = undefined;
-    for (&long_table, 0..) |*v, i| v.* = @intCast(i * 257);
-    const cases = [_]struct { tag: u16, typ: u16, values: []const u32 }{
-        .{ .tag = 339, .typ = 1, .values = &.{1} },
-        .{ .tag = 339, .typ = 4, .values = &.{1} },
-        .{ .tag = 301, .typ = 1, .values = &table },
-        .{ .tag = 301, .typ = 4, .values = &long_table },
+    for (&table, 0..) |*v, i| v.* = @intCast(i * 257);
+    var small: [256]u32 = undefined;
+    for (&small, 0..) |*v, i| v.* = @intCast(i);
+    const cases = [_]struct { tag: u16, typ: u16, values: []const u32, corrupt: bool }{
+        .{ .tag = 339, .typ = 3, .values = &.{1}, .corrupt = false },
+        .{ .tag = 301, .typ = 3, .values = &table, .corrupt = false },
+        .{ .tag = 339, .typ = 1, .values = &.{1}, .corrupt = true },
+        .{ .tag = 339, .typ = 4, .values = &.{1}, .corrupt = true },
+        .{ .tag = 301, .typ = 1, .values = &small, .corrupt = true },
+        .{ .tag = 301, .typ = 4, .values = &table, .corrupt = true },
     };
     for (cases) |case| {
         const bytes = try grayWithField(allocator, case.tag, case.typ, case.values);
         defer allocator.free(bytes);
         var recorder = FindingRecorder.init(allocator);
         defer recorder.deinit();
-        validateRecording(allocator, bytes, &recorder) catch |err| {
-            std.debug.print("tag {d} type {d}: {s}\n", .{ case.tag, case.typ, @errorName(err) });
-            return err;
-        };
-        try std.testing.expectEqual(@as(usize, 0), countConformance(&recorder));
+        const result = validateRecording(allocator, bytes, &recorder);
+        if (!case.corrupt) {
+            result catch |err| {
+                std.debug.print("tag {d} type {d}: {s}\n", .{ case.tag, case.typ, @errorName(err) });
+                return err;
+            };
+            try std.testing.expectEqual(@as(usize, 0), countConformance(&recorder));
+            continue;
+        }
+        try std.testing.expectError(error.Malformed, result);
+        var matched: usize = 0;
+        for (recorder.findings.items) |f| {
+            if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+            const p = f.payload_bytes;
+            try std.testing.expectEqual(case.tag, std.mem.readInt(u16, p[16..18], .little));
+            try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, p[18..20], .little)); // type
+            try std.testing.expectEqual(case.typ, std.mem.readInt(u16, p[20..22], .little));
+            matched += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), matched);
     }
 }
 
@@ -2553,8 +2570,20 @@ const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: 
     .{ .tag = 51181, .ranges = &.{.{ 0, 2 }}, .citation = "DepthMeasureType, DNG 1.6.0.0", .seen = 0, .dng = true },
 };
 
+/// The TIFF type a row's tag is defined with, for writing a valid entry:
+/// BYTE for a BYTE field, LONG for a LONG-only field, otherwise SHORT.
+fn definedTyp(tag: u16) u16 {
+    for (tiffz.ifd_conformance.rules) |r| {
+        if (r.tag != tag) continue;
+        if (r.kind == .unsigned_byte) return 1;
+        if (r.kind == .long_only) return 4;
+        return 3;
+    }
+    return 3;
+}
+
 fn expectFieldVerdict(allocator: std.mem.Allocator, tag: u16, value: u32, corrupt: bool) !void {
-    const bytes = try grayWithField(allocator, tag, 3, &.{value});
+    const bytes = try grayWithField(allocator, tag, definedTyp(tag), &.{value});
     defer allocator.free(bytes);
     var recorder = FindingRecorder.init(allocator);
     defer recorder.deinit();
@@ -2601,7 +2630,7 @@ test "IFD-entry rules: each enumerated row validates its range ends and rejects 
     }
 }
 
-/// A SHORT value of `tag` checked end to end in a built file, or at rule
+/// A value of `tag`, stored as its defined type, checked end to end in a built file, or at rule
 /// level for a field that drives decoding: the decoder rejects a value it
 /// cannot use (Predictor 3 on 8-bit integer data, a private
 /// PlanarConfiguration) whatever the rule says.
@@ -2773,7 +2802,7 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 289, .clean = long(&.{0}), .corrupt = .{ .typ = 4, .count = 0, .raw = "" }, .reason = 2, .seen = 0 },
     .{ .tag = 290, .clean = short(&.{2}), .corrupt = short(&.{6}), .reason = 3, .seen = 0 },
     .{ .tag = 291, .clean = short(ramp16(256)), .corrupt = short(ramp16(255)), .reason = 2, .seen = 3 },
-    .{ .tag = 292, .clean = long(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 2 },
+    .{ .tag = 292, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 2 },
     .{ .tag = 293, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 0 },
     .{ .tag = 296, .clean = short(&.{2}), .corrupt = short(&.{0}), .reason = 3, .seen = 166 },
     .{ .tag = 297, .clean = short(&.{ 0, 1 }), .corrupt = short(&.{0}), .reason = 2, .seen = 16 },
@@ -2805,13 +2834,13 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 342, .clean = short(&.{ 0, 255, 0, 255, 0, 255 }), .corrupt = short(&.{ 0, 255, 0, 255, 0 }), .reason = 2, .seen = 0 },
     .{ .tag = 343, .clean = .{ .typ = 1, .count = 4, .raw = "\x00\x00\x00\x00" }, .corrupt = .{ .typ = 7, .count = 4, .raw = "\x00\x00\x00\x00" }, .reason = 1, .seen = 0 },
     .{ .tag = 344, .clean = long(&.{1000}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .seen = 0 },
-    .{ .tag = 345, .clean = .{ .typ = 9, .count = 1, .raw = le32(&.{1000}) }, .corrupt = long(&.{ 1000, 1000 }), .reason = 2, .seen = 0 },
+    .{ .tag = 345, .clean = .{ .typ = 4, .count = 1, .raw = le32(&.{1000}) }, .corrupt = long(&.{ 1000, 1000 }), .reason = 2, .seen = 0 },
     .{ .tag = 346, .clean = short(&.{1}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 },
     .{ .tag = 347, .clean = .{ .typ = 7, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .corrupt = .{ .typ = 1, .count = 4, .raw = "\xff\xd8\xff\xd9" }, .reason = 1, .seen = 16 },
     .{ .tag = 351, .clean = short(&.{0}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 },
     .{ .tag = 400, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 0 },
     .{ .tag = 401, .clean = long(&.{1}), .corrupt = long(&.{2}), .reason = 3, .seen = 0 },
-    .{ .tag = 402, .clean = .{ .typ = 1, .count = 1, .raw = "\x06" }, .corrupt = short(&.{256}), .reason = 3, .seen = 0 },
+    .{ .tag = 402, .clean = .{ .typ = 1, .count = 1, .raw = "\x06" }, .corrupt = byteField(&.{7}), .reason = 3, .seen = 0 },
     .{ .tag = 403, .clean = long(&.{2}), .corrupt = long(&.{ 2, 2 }), .reason = 2, .seen = 0 },
     .{ .tag = 404, .clean = .{ .typ = 1, .count = 4, .raw = "1997" }, .corrupt = .{ .typ = 1, .count = 2, .raw = "97" }, .reason = 2, .seen = 0 },
     .{ .tag = 405, .clean = .{ .typ = 1, .count = 1, .raw = "\x00" }, .corrupt = .{ .typ = 2, .count = 1, .raw = "\x00" }, .reason = 1, .seen = 0 },
@@ -3003,7 +3032,9 @@ fn rowFaults(allocator: std.mem.Allocator, tag: u16, field: RowField) !std.Array
         if (c.tag == tag or (c.tag == 258 and spp != 1)) continue;
         var slot = [_]u8{0} ** 8;
         std.mem.writeInt(u16, slot[0..2], c.value, .little);
-        entries[n] = .{ .tag = c.tag, .field_type = .short, .raw_type = 3, .count = 1, .raw_value_or_offset = slot };
+        // NewSubFileType is LONG; the other context fields are SHORT.
+        const long_field = c.tag == 254;
+        entries[n] = .{ .tag = c.tag, .field_type = if (long_field) .long else .short, .raw_type = if (long_field) 4 else 3, .count = 1, .raw_value_or_offset = slot };
         n += 1;
     }
     if (!placed) {
@@ -3199,35 +3230,6 @@ test "IFD-entry rules: after a limit stop, no directory rule runs for the IFDs n
     try std.testing.expectEqual(@as(usize, 0), conformanceHits(&recorder, 1, 274));
 }
 
-test "IFD-entry rules: a LONG SampleFormat or TransferFunction value above 65535 is corrupt" {
-    const allocator = std.testing.allocator;
-    var long_table: [256]u32 = undefined;
-    for (&long_table, 0..) |*v, i| v.* = @intCast(i * 257);
-    long_table[255] = 65536;
-    const cases = [_]struct { tag: u16, values: []const u32 }{
-        .{ .tag = 339, .values = &.{65537} },
-        .{ .tag = 301, .values = &long_table },
-    };
-    for (cases) |case| {
-        const bytes = try grayWithField(allocator, case.tag, 4, case.values);
-        defer allocator.free(bytes);
-        var recorder = FindingRecorder.init(allocator);
-        defer recorder.deinit();
-        try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
-        var matched: usize = 0;
-        for (recorder.findings.items) |f| {
-            if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
-            try std.testing.expectEqual(tiffz.findings.Verdict.corrupt, f.verdict);
-            const p = f.payload_bytes;
-            try std.testing.expectEqual(case.tag, std.mem.readInt(u16, p[16..18], .little));
-            try std.testing.expectEqual(@as(u16, 3), std.mem.readInt(u16, p[18..20], .little)); // value
-            try std.testing.expectEqual(@as(u16, 4), std.mem.readInt(u16, p[20..22], .little)); // LONG
-            try std.testing.expectEqual(@as(?u64, 8 + 2 + 9 * 12), f.byte_offset);
-            matched += 1;
-        }
-        try std.testing.expectEqual(@as(usize, 1), matched);
-    }
-}
 
 test "IFD-entry faults: every clean seed validates without a directory-rule finding" {
     const allocator = std.testing.allocator;
