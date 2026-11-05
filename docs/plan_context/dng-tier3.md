@@ -95,3 +95,36 @@ checked the Tier 3 counts:
    of its own.
 4. Is the ReductionMatrix "only if ColorPlanes > 3" condition a value fault
    on the ReductionMatrix entry?
+
+## Rulings (validate, 2026-11-04) and implementation
+
+The count rows are approved as designed.
+1. **Derivation confirmed.** CFAPlaneColor's own entry is the source of
+   ColorPlanes, so it is never checked against it. "This is a required tag
+   for non-RGB CFA images" is a presence rule and waits with the others.
+2. **Payload unchanged.** Each fault's expected count comes from the raw
+   IFD's ColorPlanes, which can be rederived from the file. The raw IFD is
+   NewSubFileType 0, and ColorPlanes is CFAPlaneColor's count (default 3)
+   for CFA, or SamplesPerPixel for LinearRaw.
+3. **Camera profile IFDs:** to be walked only through a separate design.
+   That design keeps image-structure rules out of them, takes ColorPlanes
+   from the main raw IFD, defines how a bad profile pointer is reported,
+   and includes the corpus and KNOWN_DEFECT comparison.
+4. **ReductionMatrix with ColorPlanes of 3 or fewer is not a value fault.**
+   "May only be used if" limits presence, so it waits for the presence
+   finding. Its 3 * ColorPlanes count row still applies.
+
+Implemented:
+- `ifd_conformance.colorPlanes` derives ColorPlanes from every parsed IFD.
+- The decoder computes it once with the DNGVersion context
+  (`dngContext`), so the walk and the post-stop pass see the same value.
+- Seventeen rows use the new counts; NoiseProfile is 2 or 2 * ColorPlanes,
+  and even and at least 2 when ColorPlanes is unknown.
+- Counts are count rules, so they apply with an unknown version too.
+
+Real-build comparison (0b07e271 against this commit, 249 corpus files, 10
+KNOWN_DEFECT fixtures and the patched controls): no change except the
+positive control. A Sigma fp copy with ColorMatrix1's count patched from 9
+to 6 gives exactly one finding 18 reason 2 (IFD 0, tag 50721), as validate
+asked. Controlled red: accepting any ColorMatrix count failed the Tier 3
+count test, and the control passed again.

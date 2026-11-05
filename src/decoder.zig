@@ -691,12 +691,21 @@ pub const Decoder = struct {
         };
     }
 
+    /// What the file declares about DNG (IFD 0's DNGVersion), with the raw
+    /// IFD's ColorPlanes from every parsed IFD; null when it is not DNG.
+    fn dngContext(self: *const Decoder) ?conformance.Dng {
+        if (self.ifds.items.len == 0) return null;
+        var d = conformance.Dng.fromIfd0(&self.ifds.items[0], self.endian) orelse return null;
+        d.color_planes = conformance.colorPlanes(self.ifds.items, self.endian);
+        return d;
+    }
+
     /// After a stopping error, check the directory rules of every parsed IFD
     /// the walk did not reach, in walk order. Best effort: running out of
     /// memory here ends the pass and keeps the original error.
     fn checkUnreachedConformance(self: *Decoder) void {
         if (self.ifds.items.len == 0) return;
-        const dng = conformance.Dng.fromIfd0(&self.ifds.items[0], self.endian);
+        const dng = self.dngContext();
         var i = self.rules_checked;
         while (i < self.ifds.items.len) : (i += 1) {
             _ = self.checkIfdConformance(&self.ifds.items[i], i, dng) catch return;
@@ -732,7 +741,7 @@ pub const Decoder = struct {
         var nonconforming = false;
         // DNG rows and restrictions apply to every IFD of a file whose IFD 0
         // declares DNGVersion.
-        const dng: ?conformance.Dng = if (self.ifdCount() > 0) conformance.Dng.fromIfd0(try self.ifd(0), self.endian) else null;
+        const dng = self.dngContext();
 
         var ifd_index: usize = 0;
         while (ifd_index < self.ifdCount()) : (ifd_index += 1) {

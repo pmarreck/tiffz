@@ -173,9 +173,17 @@ const Count = enum {
     at_least_four,
     /// A positive multiple of 4 (DNG MaskedAreas rectangles).
     multiple_of_four,
-    /// Even and at least 2 (DNG NoiseProfile pairs; the exact count needs
-    /// ColorPlanes, a later batch).
-    even_at_least_two,
+    /// DNG NoiseProfile: 2 or 2 * ColorPlanes; even and at least 2 when
+    /// ColorPlanes is unknown.
+    noise_profile,
+    /// DNG Tier 3 (docs/plan_context/dng-tier3.md): counts in terms of
+    /// ColorPlanes, the raw IFD's color planes (`colorPlanes`), which may
+    /// come from another IFD. Unconstrained when ColorPlanes is unknown.
+    color_planes,
+    color_planes_times_3,
+    color_planes_squared,
+    /// 3 * ColorPlanes or ColorPlanes * ColorPlanes (the PreProfileMatrix tags).
+    pre_profile_matrix,
     /// Even and at least 4 (DNG ProfileToneCurve: first and last samples).
     even_at_least_four,
     /// BlackLevelRepeatRows * BlackLevelRepeatCols * SamplesPerPixel (DNG
@@ -386,14 +394,14 @@ pub const rules = [_]Rule{
     .{ .tag = tags.default_scale, .kind = .rational, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, DefaultScale (RATIONAL)" },
     .{ .tag = tags.default_crop_origin, .kind = .long_or_rational, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, DefaultCropOrigin (SHORT or LONG or RATIONAL)" },
     .{ .tag = tags.default_crop_size, .kind = .long_or_rational, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, DefaultCropSize (SHORT or LONG or RATIONAL)" },
-    .{ .tag = tags.color_matrix_1, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, ColorMatrix1 (SRATIONAL)" },
-    .{ .tag = tags.color_matrix_2, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, ColorMatrix2 (SRATIONAL)" },
-    .{ .tag = tags.camera_calibration_1, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CameraCalibration1 (SRATIONAL)" },
-    .{ .tag = tags.camera_calibration_2, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CameraCalibration2 (SRATIONAL)" },
-    .{ .tag = tags.reduction_matrix_1, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, ReductionMatrix1 (SRATIONAL)" },
-    .{ .tag = tags.reduction_matrix_2, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, ReductionMatrix2 (SRATIONAL)" },
-    .{ .tag = tags.analog_balance, .kind = .rational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, AnalogBalance (RATIONAL)" },
-    .{ .tag = tags.as_shot_neutral, .kind = .short_or_rational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotNeutral (SHORT or RATIONAL)" },
+    .{ .tag = tags.color_matrix_1, .kind = .srational, .count = .color_planes_times_3, .since = 0x01000000, .citation = "DNG 1.6.0.0, ColorMatrix1 (SRATIONAL)" },
+    .{ .tag = tags.color_matrix_2, .kind = .srational, .count = .color_planes_times_3, .since = 0x01000000, .citation = "DNG 1.6.0.0, ColorMatrix2 (SRATIONAL)" },
+    .{ .tag = tags.camera_calibration_1, .kind = .srational, .count = .color_planes_squared, .since = 0x01000000, .citation = "DNG 1.6.0.0, CameraCalibration1 (SRATIONAL)" },
+    .{ .tag = tags.camera_calibration_2, .kind = .srational, .count = .color_planes_squared, .since = 0x01000000, .citation = "DNG 1.6.0.0, CameraCalibration2 (SRATIONAL)" },
+    .{ .tag = tags.reduction_matrix_1, .kind = .srational, .count = .color_planes_times_3, .since = 0x01000000, .citation = "DNG 1.6.0.0, ReductionMatrix1 (SRATIONAL)" },
+    .{ .tag = tags.reduction_matrix_2, .kind = .srational, .count = .color_planes_times_3, .since = 0x01000000, .citation = "DNG 1.6.0.0, ReductionMatrix2 (SRATIONAL)" },
+    .{ .tag = tags.analog_balance, .kind = .rational, .count = .color_planes, .since = 0x01000000, .citation = "DNG 1.6.0.0, AnalogBalance (RATIONAL)" },
+    .{ .tag = tags.as_shot_neutral, .kind = .short_or_rational, .count = .color_planes, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotNeutral (SHORT or RATIONAL)" },
     .{ .tag = tags.as_shot_white_xy, .kind = .rational, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotWhiteXY (RATIONAL)" },
     .{ .tag = tags.baseline_exposure, .kind = .srational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BaselineExposure (SRATIONAL)" },
     .{ .tag = tags.baseline_noise, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BaselineNoise (RATIONAL)" },
@@ -416,9 +424,9 @@ pub const rules = [_]Rule{
     .{ .tag = tags.active_area, .kind = .unsigned_long, .count = .four, .since = 0x01000000, .citation = "DNG 1.6.0.0, ActiveArea (SHORT or LONG)" },
     .{ .tag = tags.masked_areas, .kind = .unsigned_long, .count = .multiple_of_four, .since = 0x01000000, .citation = "DNG 1.6.0.0, MaskedAreas (SHORT or LONG)" },
     .{ .tag = tags.as_shot_icc_profile, .kind = .undefined, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotICCProfile (UNDEFINED)" },
-    .{ .tag = tags.as_shot_pre_profile_matrix, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotPreProfileMatrix (SRATIONAL)" },
+    .{ .tag = tags.as_shot_pre_profile_matrix, .kind = .srational, .count = .pre_profile_matrix, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotPreProfileMatrix (SRATIONAL)" },
     .{ .tag = tags.current_icc_profile, .kind = .undefined, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CurrentICCProfile (UNDEFINED)" },
-    .{ .tag = tags.current_pre_profile_matrix, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CurrentPreProfileMatrix (SRATIONAL)" },
+    .{ .tag = tags.current_pre_profile_matrix, .kind = .srational, .count = .pre_profile_matrix, .since = 0x01000000, .citation = "DNG 1.6.0.0, CurrentPreProfileMatrix (SRATIONAL)" },
     .{ .tag = tags.colorimetric_reference, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ColorimetricReference (SHORT)" },
     .{ .tag = tags.camera_calibration_signature, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, CameraCalibrationSignature (ASCII or BYTE)" },
     .{ .tag = tags.profile_calibration_signature, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileCalibrationSignature (ASCII or BYTE)" },
@@ -432,8 +440,8 @@ pub const rules = [_]Rule{
     .{ .tag = tags.profile_tone_curve, .kind = .float, .count = .even_at_least_four, .extras = &.{.tone_curve_endpoints}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileToneCurve (FLOAT)" },
     .{ .tag = tags.profile_embed_policy, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 3 }}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileEmbedPolicy (LONG)" },
     .{ .tag = tags.profile_copyright, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileCopyright (ASCII or BYTE)" },
-    .{ .tag = tags.forward_matrix_1, .kind = .srational, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ForwardMatrix1 (SRATIONAL)" },
-    .{ .tag = tags.forward_matrix_2, .kind = .srational, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ForwardMatrix2 (SRATIONAL)" },
+    .{ .tag = tags.forward_matrix_1, .kind = .srational, .count = .color_planes_times_3, .since = 0x01020000, .citation = "DNG 1.6.0.0, ForwardMatrix1 (SRATIONAL)" },
+    .{ .tag = tags.forward_matrix_2, .kind = .srational, .count = .color_planes_times_3, .since = 0x01020000, .citation = "DNG 1.6.0.0, ForwardMatrix2 (SRATIONAL)" },
     .{ .tag = tags.preview_application_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewApplicationName (ASCII or BYTE)" },
     .{ .tag = tags.preview_application_version, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewApplicationVersion (ASCII or BYTE)" },
     .{ .tag = tags.preview_settings_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewSettingsName (ASCII or BYTE)" },
@@ -449,7 +457,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.opcode_list_1, .kind = .undefined, .count = .any, .since = 0x01030000, .citation = "DNG 1.6.0.0, OpcodeList1 (UNDEFINED)" },
     .{ .tag = tags.opcode_list_2, .kind = .undefined, .count = .any, .since = 0x01030000, .citation = "DNG 1.6.0.0, OpcodeList2 (UNDEFINED)" },
     .{ .tag = tags.opcode_list_3, .kind = .undefined, .count = .any, .since = 0x01030000, .citation = "DNG 1.6.0.0, OpcodeList3 (UNDEFINED)" },
-    .{ .tag = tags.noise_profile, .kind = .double, .count = .even_at_least_two, .extras = &.{.noise_profile_signs}, .since = 0x01030000, .citation = "DNG 1.6.0.0, NoiseProfile (DOUBLE)" },
+    .{ .tag = tags.noise_profile, .kind = .double, .count = .noise_profile, .extras = &.{.noise_profile_signs}, .since = 0x01030000, .citation = "DNG 1.6.0.0, NoiseProfile (DOUBLE)" },
     .{ .tag = tags.original_default_final_size, .kind = .unsigned_long, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalDefaultFinalSize (SHORT or LONG)" },
     .{ .tag = tags.original_best_quality_final_size, .kind = .unsigned_long, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalBestQualityFinalSize (SHORT or LONG)" },
     .{ .tag = tags.original_default_crop_size, .kind = .long_or_rational, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalDefaultCropSize (SHORT or LONG or RATIONAL)" },
@@ -470,15 +478,15 @@ pub const rules = [_]Rule{
     .{ .tag = tags.semantic_name, .kind = .ascii, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, SemanticName (ASCII)" },
     .{ .tag = tags.semantic_instance_id, .kind = .ascii, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, SemanticInstanceID (ASCII)" },
     .{ .tag = tags.calibration_illuminant_3, .kind = .unsigned_short, .count = .one, .since = 0x01060000, .citation = "DNG 1.6.0.0, CalibrationIlluminant3 (SHORT)" },
-    .{ .tag = tags.camera_calibration_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, CameraCalibration3 (SRATIONAL)" },
-    .{ .tag = tags.color_matrix_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, ColorMatrix3 (SRATIONAL)" },
-    .{ .tag = tags.forward_matrix_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, ForwardMatrix3 (SRATIONAL)" },
+    .{ .tag = tags.camera_calibration_3, .kind = .srational, .count = .color_planes_squared, .since = 0x01060000, .citation = "DNG 1.6.0.0, CameraCalibration3 (SRATIONAL)" },
+    .{ .tag = tags.color_matrix_3, .kind = .srational, .count = .color_planes_times_3, .since = 0x01060000, .citation = "DNG 1.6.0.0, ColorMatrix3 (SRATIONAL)" },
+    .{ .tag = tags.forward_matrix_3, .kind = .srational, .count = .color_planes_times_3, .since = 0x01060000, .citation = "DNG 1.6.0.0, ForwardMatrix3 (SRATIONAL)" },
     .{ .tag = tags.illuminant_data_1, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData1 (UNDEFINED)" },
     .{ .tag = tags.illuminant_data_2, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData2 (UNDEFINED)" },
     .{ .tag = tags.illuminant_data_3, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData3 (UNDEFINED)" },
     .{ .tag = tags.mask_sub_area, .kind = .unsigned_long, .count = .four, .extras = &.{.mask_sub_area_bounds}, .since = 0x01060000, .citation = "DNG 1.6.0.0, MaskSubArea (LONG)" },
     .{ .tag = tags.profile_hue_sat_map_data_3, .kind = .float, .count = .hue_sat_map, .since = 0x01060000, .citation = "DNG 1.6.0.0, ProfileHueSatMapData3 (FLOAT)" },
-    .{ .tag = tags.reduction_matrix_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, ReductionMatrix3 (SRATIONAL)" },
+    .{ .tag = tags.reduction_matrix_3, .kind = .srational, .count = .color_planes_times_3, .since = 0x01060000, .citation = "DNG 1.6.0.0, ReductionMatrix3 (SRATIONAL)" },
     .{ .tag = tags.rgb_tables, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, RGBTables (UNDEFINED)" },
 };
 
@@ -516,6 +524,9 @@ pub const Dng = struct {
     /// or null when the entry is malformed, which leaves the version unknown
     /// (validate D2, 2026-11-04).
     version: ?u32,
+    /// The raw IFD's ColorPlanes (`colorPlanes`), for the Tier 3 counts; null
+    /// when it cannot be derived, which leaves them unconstrained.
+    color_planes: ?u32 = null,
 
     /// The cited edition, 1.6.0.0.
     pub const cited: u32 = 0x01060000;
@@ -555,6 +566,34 @@ pub const Dng = struct {
     }
 };
 
+/// ColorPlanes of a DNG's raw image (DNG 1.6.0.0; validate, 2026-11-04;
+/// docs/plan_context/dng-tier3.md), from every IFD of the walk. The raw IFD
+/// has NewSubFileType 0 (the default). For CFA (32803) it is CFAPlaneColor's
+/// count, or 3 when absent (default "0, 1, 2"); for LinearRaw (34892),
+/// SamplesPerPixel (default 1). Null when there is no raw IFD, raw IFDs
+/// disagree, the raw photometric is anything else, or a field it needs is
+/// malformed (its own fault).
+pub fn colorPlanes(ifds: []const Ifd, endian: Endian) ?u32 {
+    var found: ?u32 = null;
+    for (ifds) |*dir| {
+        if (role(dir, endian) != .raw) continue;
+        const photometric = scalar(dir, tags.photometric, endian) orelse return null;
+        const planes: u64 = switch (photometric) {
+            tags.photometric_color_filter_array => if (indexOf(dir, tags.cfa_plane_color)) |k| blk: {
+                const entry = dir.entries[k];
+                if (entry.field_type != .byte or entry.count == 0) return null;
+                break :blk entry.count;
+            } else 3,
+            tags.photometric_linear_raw => if (indexOf(dir, tags.samples_per_pixel) != null) scalar(dir, tags.samples_per_pixel, endian) orelse return null else 1,
+            else => return null,
+        };
+        const p = std.math.cast(u32, planes) orelse return null;
+        if (found) |f| if (f != p) return null;
+        found = p;
+    }
+    return found;
+}
+
 /// Append every fault in `dir` to `out`, in entry order. `dng` is what IFD 0
 /// of the same file declares (`Dng.fromIfd0`), or null.
 pub fn check(
@@ -582,7 +621,8 @@ pub fn check(
             if (d.version) |v| if (v < since) continue;
         }
         const values: Values = if (rule.since == null) .all else if (dng.?.version == null) .none else if (dng.?.valueLists()) .all else .no_closed_lists;
-        const found = fieldReason(dir, i, rule.*, endian, values) orelse
+        const color_planes: ?u64 = if (dng) |d| (if (d.color_planes) |cp| @as(u64, cp) else null) else null;
+        const found = fieldReason(dir, i, rule.*, endian, values, color_planes) orelse
             if (dng) |d| dngRestriction(dir, i, endian, d) else null;
         if (found) |reason| {
             try out.append(allocator, .{ .field_invalid = .{
@@ -610,7 +650,8 @@ fn rawSlot(entry: Entry, width: ifd_mod.OffsetWidth, endian: Endian) u64 {
 /// (D1); for an unknown version, none, leaving type and count (D2).
 const Values = enum { all, no_closed_lists, none };
 
-fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values: Values) ?Reason {
+/// `color_planes` is the DNG raw IFD's ColorPlanes, or null.
+fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values: Values, color_planes: ?u64) ?Reason {
     const entry = dir.entries[index];
     const type_ok = switch (rule.kind) {
         .unsigned_short, .unsigned_long => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long,
@@ -668,7 +709,12 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
         .multiple_of_six => entry.count >= 6 and entry.count % 6 == 0,
         .at_least_four => entry.count >= 4,
         .multiple_of_four => entry.count >= 4 and entry.count % 4 == 0,
-        .even_at_least_two => entry.count >= 2 and entry.count % 2 == 0,
+        .noise_profile => entry.count >= 2 and entry.count % 2 == 0 and
+            (if (color_planes) |cp| entry.count == 2 or entry.count == 2 * cp else true),
+        .color_planes => if (color_planes) |cp| entry.count == cp else true,
+        .color_planes_times_3 => if (color_planes) |cp| entry.count == 3 * cp else true,
+        .color_planes_squared => if (color_planes) |cp| entry.count == cp * cp else true,
+        .pre_profile_matrix => if (color_planes) |cp| entry.count == 3 * cp or entry.count == cp * cp else true,
         .even_at_least_four => entry.count >= 4 and entry.count % 2 == 0,
         // A dependency that is absent where it is needed, or malformed (its
         // own fault), leaves the count unconstrained.
@@ -2546,6 +2592,65 @@ test "DNG depth maps and semantic masks: single channel of the stated pixel type
         var nc = [_]?[]u8{null} ** 2;
         try expectDng(&n, &nc, v1_6, tags.new_subfile_type, .value);
     }
+}
+
+test "DNG Tier 3: ColorPlanes from the raw IFD" {
+    const raw = struct {
+        var none = [_]?[]u8{null} ** 4;
+        fn ifd(entries: []Entry) Ifd {
+            return .{ .entries = entries, .next_offset = 0, .offset_width = .classic, .allocator = testing.allocator, .cached_values = none[0..entries.len] };
+        }
+    };
+    const cfa = tags.photometric_color_filter_array;
+    // A preview in IFD 0 and a CFA raw SubIFD with no CFAPlaneColor: 3.
+    var preview = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 1), inline16(tags.photometric, .short, 1, 6) };
+    var cfa_raw = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 0), inline16(tags.photometric, .short, 1, cfa) };
+    try testing.expectEqual(@as(?u32, 3), colorPlanes(&.{ raw.ifd(&preview), raw.ifd(&cfa_raw) }, .little));
+    // CFAPlaneColor's count, and NewSubFileType absent means raw.
+    var four = [_]Entry{ inline16(tags.photometric, .short, 1, cfa), inline16(tags.cfa_plane_color, .byte, 4, 0x0302_0100) };
+    try testing.expectEqual(@as(?u32, 4), colorPlanes(&.{raw.ifd(&four)}, .little));
+    // LinearRaw: SamplesPerPixel.
+    var linear = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 0), inline16(tags.photometric, .short, 1, tags.photometric_linear_raw), inline16(tags.samples_per_pixel, .short, 1, 3) };
+    try testing.expectEqual(@as(?u32, 3), colorPlanes(&.{raw.ifd(&linear)}, .little));
+    // No raw IFD, disagreeing raw IFDs, another photometric, a malformed
+    // CFAPlaneColor: unknown.
+    try testing.expectEqual(@as(?u32, null), colorPlanes(&.{raw.ifd(&preview)}, .little));
+    try testing.expectEqual(@as(?u32, null), colorPlanes(&.{ raw.ifd(&cfa_raw), raw.ifd(&four) }, .little));
+    var rgb_raw = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 0), inline16(tags.photometric, .short, 1, 2) };
+    try testing.expectEqual(@as(?u32, null), colorPlanes(&.{raw.ifd(&rgb_raw)}, .little));
+    var short_planes = [_]Entry{ inline16(tags.photometric, .short, 1, cfa), inline16(tags.cfa_plane_color, .short, 2, 0x0001_0000) };
+    try testing.expectEqual(@as(?u32, null), colorPlanes(&.{raw.ifd(&short_planes)}, .little));
+}
+
+test "DNG Tier 3: counts in terms of ColorPlanes, unconstrained when it is unknown" {
+    var zeros = [_]u8{0} ** (16 * 8);
+    const three: Dng = .{ .version = Dng.cited, .color_planes = 3 };
+    const four: Dng = .{ .version = Dng.cited, .color_planes = 4 };
+    const cases = [_]struct { tag: u16, kind: FieldType, ok: []const u32, bad: []const u32, planes: Dng }{
+        .{ .tag = tags.color_matrix_1, .kind = .srational, .ok = &.{9}, .bad = &.{ 6, 12 }, .planes = three },
+        .{ .tag = tags.forward_matrix_2, .kind = .srational, .ok = &.{12}, .bad = &.{9}, .planes = four },
+        .{ .tag = tags.reduction_matrix_1, .kind = .srational, .ok = &.{12}, .bad = &.{16}, .planes = four },
+        .{ .tag = tags.camera_calibration_1, .kind = .srational, .ok = &.{9}, .bad = &.{3}, .planes = three },
+        .{ .tag = tags.analog_balance, .kind = .rational, .ok = &.{3}, .bad = &.{4}, .planes = three },
+        .{ .tag = tags.as_shot_neutral, .kind = .rational, .ok = &.{4}, .bad = &.{3}, .planes = four },
+        .{ .tag = tags.as_shot_pre_profile_matrix, .kind = .srational, .ok = &.{ 12, 16 }, .bad = &.{9}, .planes = four },
+    };
+    for (cases) |case| {
+        for (case.ok) |n| try expectDngOne(case.planes, inline16(case.tag, case.kind, n, 0), zeros[0 .. 8 * n], null);
+        for (case.bad) |n| try expectDngOne(case.planes, inline16(case.tag, case.kind, n, 0), zeros[0 .. 8 * n], .count);
+        // ColorPlanes unknown: any count.
+        for (case.bad) |n| try expectDngOne(v1_6, inline16(case.tag, case.kind, n, 0), zeros[0 .. 8 * n], null);
+    }
+    // NoiseProfile: 2 or 2 * ColorPlanes, with each S positive.
+    var noise = [_]u8{0} ** 64;
+    var k: usize = 0;
+    while (k < 8) : (k += 2) std.mem.writeInt(u64, noise[8 * k ..][0..8], @bitCast(@as(f64, 1e-5)), .little);
+    try expectDngOne(three, inline16(tags.noise_profile, .double, 2, 0), noise[0..16], null);
+    try expectDngOne(three, inline16(tags.noise_profile, .double, 6, 0), noise[0..48], null);
+    try expectDngOne(three, inline16(tags.noise_profile, .double, 4, 0), noise[0..32], .count);
+    try expectDngOne(v1_6, inline16(tags.noise_profile, .double, 4, 0), noise[0..32], null);
+    // Counts apply with an unknown version too (D2: type and count rows).
+    try expectDngOne(.{ .version = null, .color_planes = 3 }, inline16(tags.color_matrix_1, .srational, 6, 0), zeros[0..48], .count);
 }
 
 test "the pending constraints are pinned" {
