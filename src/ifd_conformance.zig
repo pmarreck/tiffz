@@ -237,6 +237,14 @@ const Extra = enum {
     tone_curve_endpoints,
     /// DNG EnhanceParams: "required to be non-null".
     non_empty,
+    /// DNG MaskSubArea (T_crop, L_crop, W_full, H_full): "the tag is invalid"
+    /// when out of bounds. The printed conditions pair the top offset with
+    /// ImageWidth, which looks transposed, so a fault needs both the literal
+    /// and the dimensionally consistent reading to fail (validate, 2026-11-04).
+    mask_sub_area_bounds,
+    /// DNG PreviewDateTime: "encoded using ISO 8601 format" (validate,
+    /// 2026-11-04: definitional, so a fault).
+    iso8601,
 };
 
 const Rule = struct {
@@ -431,7 +439,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.preview_settings_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewSettingsName (ASCII or BYTE)" },
     .{ .tag = tags.preview_settings_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewSettingsDigest (BYTE)" },
     .{ .tag = tags.preview_color_space, .kind = .unsigned_long, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewColorSpace (LONG)" },
-    .{ .tag = tags.preview_date_time, .kind = .ascii, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewDateTime (ASCII)" },
+    .{ .tag = tags.preview_date_time, .kind = .ascii, .count = .any, .extras = &.{.iso8601}, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewDateTime (ASCII)" },
     .{ .tag = tags.raw_image_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, RawImageDigest (BYTE)" },
     .{ .tag = tags.original_raw_file_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, OriginalRawFileDigest (BYTE)" },
     .{ .tag = tags.sub_tile_block_size, .kind = .unsigned_long, .count = .two, .since = 0x01020000, .citation = "DNG 1.6.0.0, SubTileBlockSize (SHORT or LONG)" },
@@ -468,7 +476,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.illuminant_data_1, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData1 (UNDEFINED)" },
     .{ .tag = tags.illuminant_data_2, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData2 (UNDEFINED)" },
     .{ .tag = tags.illuminant_data_3, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData3 (UNDEFINED)" },
-    .{ .tag = tags.mask_sub_area, .kind = .unsigned_long, .count = .four, .since = 0x01060000, .citation = "DNG 1.6.0.0, MaskSubArea (LONG)" },
+    .{ .tag = tags.mask_sub_area, .kind = .unsigned_long, .count = .four, .extras = &.{.mask_sub_area_bounds}, .since = 0x01060000, .citation = "DNG 1.6.0.0, MaskSubArea (LONG)" },
     .{ .tag = tags.profile_hue_sat_map_data_3, .kind = .float, .count = .hue_sat_map, .since = 0x01060000, .citation = "DNG 1.6.0.0, ProfileHueSatMapData3 (FLOAT)" },
     .{ .tag = tags.reduction_matrix_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, ReductionMatrix3 (SRATIONAL)" },
     .{ .tag = tags.rgb_tables, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, RGBTables (UNDEFINED)" },
@@ -573,8 +581,8 @@ pub fn check(
             const d = dng orelse continue;
             if (d.version) |v| if (v < since) continue;
         }
-        const lists = if (rule.since != null) dng.?.valueLists() else true;
-        const found = fieldReason(dir, i, rule.*, endian, lists) orelse
+        const values: Values = if (rule.since == null) .all else if (dng.?.version == null) .none else if (dng.?.valueLists()) .all else .no_closed_lists;
+        const found = fieldReason(dir, i, rule.*, endian, values) orelse
             if (dng) |d| dngRestriction(dir, i, endian, d) else null;
         if (found) |reason| {
             try out.append(allocator, .{ .field_invalid = .{
@@ -597,8 +605,12 @@ fn rawSlot(entry: Entry, width: ifd_mod.OffsetWidth, endian: Endian) u64 {
     };
 }
 
-/// `lists` is false where a DNG row's closed value list does not apply (D1, D2).
-fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, lists: bool) ?Reason {
+/// Which value rules of a row apply. Every non-DNG row: all. A DNG row: all
+/// for a known version up to 1.6.0.0; above it, all but closed value lists
+/// (D1); for an unknown version, none, leaving type and count (D2).
+const Values = enum { all, no_closed_lists, none };
+
+fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values: Values) ?Reason {
     const entry = dir.entries[index];
     const type_ok = switch (rule.kind) {
         .unsigned_short, .unsigned_long => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long,
@@ -663,6 +675,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, lists:
         .black_level, .active_area_width, .active_area_length, .hue_sat_map, .look_table => if (derivedCount(dir, rule.count, endian)) |n| entry.count == n else true,
     };
     if (!count_ok) return .count;
+    if (values == .none) return null;
 
     const bytes = dir.entryValueSlice(index);
     switch (rule.kind) {
@@ -672,6 +685,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, lists:
             if (!isAscii(bytes)) return .value;
             if (hasExtra(rule, .date_time) and !isDateTime(bytes)) return .value;
             if (hasExtra(rule, .non_empty) and (bytes.len < 2 or bytes[0] == 0)) return .value;
+            if (hasExtra(rule, .iso8601) and !isIso8601(bytes)) return .value;
             return null;
         },
         .utf8_string => {
@@ -697,7 +711,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, lists:
         const ranges = rule.values orelse continue;
         if (rule.since == null) {
             if (value >= 32768) continue; // private range, not a violation
-        } else if (!lists) continue; // D1, D2
+        } else if (values == .no_closed_lists) continue; // D1
         if (value > std.math.maxInt(u16) or !inRanges(@intCast(value), ranges)) return .value;
     }
     for (rule.extras) |extra| switch (extra) {
@@ -761,7 +775,18 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, lists:
                 if (bits != 1) return .value;
             }
         },
-        .multiple_of_16, .date_time, .user_crop, .noise_profile_signs, .tone_curve_endpoints, .non_empty => {},
+        .mask_sub_area_bounds => {
+            const top = element(bytes, entry.field_type, 0, endian) orelse return .count;
+            const left = element(bytes, entry.field_type, 1, endian) orelse return .count;
+            const full_width = element(bytes, entry.field_type, 2, endian) orelse return .count;
+            const full_height = element(bytes, entry.field_type, 3, endian) orelse return .count;
+            const width = scalar(dir, tags.image_width, endian) orelse continue;
+            const length = scalar(dir, tags.image_length, endian) orelse continue;
+            const literal = top + width > full_height or left + length > full_width;
+            const consistent = top + length > full_height or left + width > full_width;
+            if (literal and consistent) return .value;
+        },
+        .multiple_of_16, .date_time, .user_crop, .noise_profile_signs, .tone_curve_endpoints, .non_empty, .iso8601 => {},
     };
     return null;
 }
@@ -882,9 +907,11 @@ fn role(dir: *const Ifd, endian: Endian) Role {
 }
 
 /// PhotometricInterpretation values DNG 1.6.0.0 Chapter 3 allows by role:
-/// previews 1, 2, 6; raw 32803 (CFA) and 34892 (LinearRaw), which "can be
-/// used in reduced resolution IFDs and enhanced IFDs"; depth maps 51177 and
-/// semantic masks 52527 ("required"). NewSubFileType 1 marks previews and
+/// previews 1, 2, 6; raw 32803 (CFA) and 34892 (LinearRaw); depth maps 51177
+/// and semantic masks 52527 ("required"). Enhanced IFDs take the raw list:
+/// "The LinearRaw value can be used in reduced resolution IFDs and enhanced
+/// IFDs" (p. 20) is permissive, and "should always use" LinearRaw is a
+/// should-row (validate, 2026-11-04). NewSubFileType 1 marks previews and
 /// reduced-resolution raw images alike, so it takes both lists. The text
 /// gives transparency masks no list, so they take the union, as an unknown
 /// role does (validate D6).
@@ -896,7 +923,7 @@ fn photometricAllowed(r: Role, value: u64) bool {
         .raw => &.{ cfa, linear },
         .preview_or_reduced => &.{ 1, 2, 6, cfa, linear },
         .alternative_preview => &.{ 1, 2, 6 },
-        .enhanced => &.{linear},
+        .enhanced => &.{ cfa, linear },
         .depth => &.{tags.photometric_depth},
         .semantic_mask => &.{tags.photometric_mask},
         .transparency, .unknown => &any_role,
@@ -925,6 +952,11 @@ fn dngRestriction(dir: *const Ifd, index: usize, endian: Endian, dng: Dng) ?Reas
                 if (lists and (bits < 8 or bits > 32)) return .value;
             }
             if (lists and floatingPoint(dir, endian) and first != 16 and first != 24 and first != 32) return .value;
+            // With SampleFormat absent (integer), a depth only floating point
+            // allows is reported here.
+            if (pixelRule(dir, endian, dng)) |p| {
+                if (!p.bitsAllowed(first) or (indexOf(dir, tags.sample_format) == null and !p.fits(first, false))) return .value;
+            }
         },
         // "If BitsPerSample is not equal to 8 or 16 or 32, then the bits must
         // be packed into bytes using the TIFF default FillOrder of 1".
@@ -940,6 +972,12 @@ fn dngRestriction(dir: *const Ifd, index: usize, endian: Endian, dng: Dng) ?Reas
             while (k < entry.count) : (k += 1) {
                 const format = element(bytes, entry.field_type, k, endian) orelse return null;
                 if (format != 1 and !(format == 3 and dng.from(Dng.v1_4))) return .value;
+            }
+            // A depth map or semantic mask whose bit depth is allowed but whose
+            // sample format does not match it.
+            if (pixelRule(dir, endian, dng)) |p| {
+                const bits = firstElement(dir, tags.bits_per_sample, endian) orelse 1;
+                if (p.bitsAllowed(bits) and !p.fits(bits, floatingPoint(dir, endian))) return .value;
             }
         },
         // 1 and 7 before 1.4.0.0; 8 (Deflate) and 34892 (lossy JPEG) from it.
@@ -973,6 +1011,18 @@ fn dngRestriction(dir: *const Ifd, index: usize, endian: Endian, dng: Dng) ?Reas
             const p = element(bytes, entry.field_type, 0, endian) orelse return null;
             if (!(p >= 1 and p <= 3) and !(p >= 34892 and p <= 34895)) return .value;
         },
+        // Depth maps and semantic masks are single channel.
+        tags.samples_per_pixel => {
+            if (pixelRule(dir, endian, dng) == null) return null;
+            const samples = element(bytes, entry.field_type, 0, endian) orelse return null;
+            if (samples != 1) return .value;
+        },
+        // An absent BitsPerSample is 1 bit, which no depth map or semantic
+        // mask allows; reported on the NewSubFileType that gives the role.
+        tags.new_subfile_type => {
+            if (pixelRule(dir, endian, dng) == null) return null;
+            if (indexOf(dir, tags.bits_per_sample) == null) return .value;
+        },
         tags.photometric => {
             if (!lists) return null;
             const p = element(bytes, entry.field_type, 0, endian) orelse return null;
@@ -981,6 +1031,32 @@ fn dngRestriction(dir: *const Ifd, index: usize, endian: Endian, dng: Dng) ?Reas
         else => {},
     }
     return null;
+}
+
+/// The pixel types DNG fixes for two roles. Depth maps, from 1.5.0.0:
+/// "stored as an 8 or 16-bit single channel unsigned integer image" (p. 15).
+/// Semantic masks, from 1.6.0.0: "a single channel image" of 8 or 16-bit
+/// unsigned integers or 32-bit floating point (p. 16). Closed lists, so
+/// subject to D1 and D2 (validate, 2026-11-04).
+const PixelRule = struct {
+    float32: bool,
+
+    fn bitsAllowed(self: PixelRule, bits: u64) bool {
+        return bits == 8 or bits == 16 or (self.float32 and bits == 32);
+    }
+
+    fn fits(self: PixelRule, bits: u64, float: bool) bool {
+        return if (float) self.float32 and bits == 32 else bits == 8 or bits == 16;
+    }
+};
+
+fn pixelRule(dir: *const Ifd, endian: Endian, dng: Dng) ?PixelRule {
+    if (!dng.valueLists()) return null;
+    return switch (role(dir, endian)) {
+        .depth => if (dng.from(0x01050000)) .{ .float32 = false } else null,
+        .semantic_mask => if (dng.from(Dng.cited)) .{ .float32 = true } else null,
+        else => null,
+    };
 }
 
 /// Whether any SampleFormat value is 3 (IEEE floating point).
@@ -1113,6 +1189,75 @@ fn isDateTime(bytes: []const u8) bool {
         if (!ok) return false;
     }
     return true;
+}
+
+/// An ISO 8601 complete date-time, before the NUL (DNG PreviewDateTime;
+/// validate, 2026-11-04: strict but complete). Extended
+/// "YYYY-MM-DDThh:mm:ss" or basic "YYYYMMDDThhmmss", one form throughout;
+/// an optional fraction after "." or ","; then nothing (local time), "Z",
+/// or an offset "+hh:mm" (basic "+hhmm") or with "-". Fields are range
+/// checked against the calendar; 24:00:00 is allowed with a zero fraction,
+/// and second 60 for a leap second.
+fn isIso8601(bytes: []const u8) bool {
+    const end = std.mem.indexOfScalar(u8, bytes, 0) orelse bytes.len;
+    const s = bytes[0..end];
+    const extended = s.len >= 5 and s[4] == '-';
+    var at: usize = 0;
+    const Reader = struct {
+        fn digits(text: []const u8, pos: *usize, n: usize) ?u32 {
+            if (pos.* + n > text.len) return null;
+            var v: u32 = 0;
+            for (text[pos.* .. pos.* + n]) |c| {
+                if (!std.ascii.isDigit(c)) return null;
+                v = v * 10 + (c - '0');
+            }
+            pos.* += n;
+            return v;
+        }
+        fn char(text: []const u8, pos: *usize, c: u8) bool {
+            if (pos.* >= text.len or text[pos.*] != c) return false;
+            pos.* += 1;
+            return true;
+        }
+    };
+    const year = Reader.digits(s, &at, 4) orelse return false;
+    if (extended and !Reader.char(s, &at, '-')) return false;
+    const month = Reader.digits(s, &at, 2) orelse return false;
+    if (extended and !Reader.char(s, &at, '-')) return false;
+    const day = Reader.digits(s, &at, 2) orelse return false;
+    if (!Reader.char(s, &at, 'T')) return false;
+    const hour = Reader.digits(s, &at, 2) orelse return false;
+    if (extended and !Reader.char(s, &at, ':')) return false;
+    const minute = Reader.digits(s, &at, 2) orelse return false;
+    if (extended and !Reader.char(s, &at, ':')) return false;
+    const second = Reader.digits(s, &at, 2) orelse return false;
+    var zero_fraction = true;
+    if (at < s.len and (s[at] == '.' or s[at] == ',')) {
+        at += 1;
+        const start = at;
+        while (at < s.len and std.ascii.isDigit(s[at])) : (at += 1) {
+            if (s[at] != '0') zero_fraction = false;
+        }
+        if (at == start) return false;
+    }
+    if (at < s.len) {
+        if (s[at] == 'Z') {
+            at += 1;
+        } else if (s[at] == '+' or s[at] == '-') {
+            at += 1;
+            const offset_hour = Reader.digits(s, &at, 2) orelse return false;
+            if (extended and !Reader.char(s, &at, ':')) return false;
+            const offset_minute = Reader.digits(s, &at, 2) orelse return false;
+            if (offset_hour > 23 or offset_minute > 59) return false;
+        } else return false;
+    }
+    if (at != s.len) return false;
+    if (month < 1 or month > 12) return false;
+    const leap = (year % 4 == 0 and year % 100 != 0) or year % 400 == 0;
+    const month_days = [_]u32{ 31, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    if (day < 1 or day > month_days[month - 1]) return false;
+    if (hour == 24) return minute == 0 and second == 0 and zero_fraction;
+    return hour <= 23 and minute <= 59 and second <= 60;
 }
 
 fn inRanges(value: u16, ranges: []const [2]u16) bool {
@@ -2209,13 +2354,15 @@ test "DNG Chapter 3: Compression and Predictor, gated by edition" {
 
 test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
     const pair = struct {
-        // With the SamplesPerPixel the photometric implies, so that only the
-        // role list is under test.
-        fn of(nst: u32, photometric: u32) [3]Entry {
-            return .{ inline16(tags.new_subfile_type, .long, 1, nst), inline16(tags.photometric, .short, 1, photometric), inline16(tags.samples_per_pixel, .short, 1, impliedChannels(photometric)) };
+        // 8 bits, with the SamplesPerPixel the photometric implies, so that
+        // only the role list is under test.
+        fn of(nst: u32, photometric: u32) [4]Entry {
+            const ch = impliedChannels(photometric);
+            const eights: u32 = @as(u32, 0x0808_0808) >> @intCast(8 * (4 - ch));
+            return .{ inline16(tags.new_subfile_type, .long, 1, nst), inline16(tags.bits_per_sample, .byte, ch, eights), inline16(tags.photometric, .short, 1, photometric), inline16(tags.samples_per_pixel, .short, 1, ch) };
         }
     };
-    var c = [_]?[]u8{null} ** 3;
+    var c = [_]?[]u8{null} ** 4;
     const cases = [_]struct { nst: u32, photometric: u32, ok: bool }{
         .{ .nst = 0, .photometric = tags.photometric_color_filter_array, .ok = true },
         .{ .nst = 0, .photometric = tags.photometric_linear_raw, .ok = true },
@@ -2225,6 +2372,7 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
         .{ .nst = 1, .photometric = 5, .ok = false },
         .{ .nst = 0x10001, .photometric = tags.photometric_color_filter_array, .ok = false },
         .{ .nst = 16, .photometric = tags.photometric_linear_raw, .ok = true },
+        .{ .nst = 16, .photometric = tags.photometric_color_filter_array, .ok = true },
         .{ .nst = 16, .photometric = 2, .ok = false },
         .{ .nst = 8, .photometric = tags.photometric_depth, .ok = true },
         .{ .nst = 9, .photometric = 1, .ok = false },
@@ -2247,6 +2395,141 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
     try expectDng(&e, &c, null, tags.photometric, null);
     try expectDng(&e, &c, v1_7, tags.photometric, null);
     try expectDng(&e, &c, unknown_version, tags.photometric, null);
+}
+
+test "DNG with an unknown version: type and count only, no value rules (D2)" {
+    var empty = [_]u8{ 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
+    const crop = inline16(tags.default_user_crop, .rational, 4, 0);
+    try expectDngOne(v1_6, crop, &empty, .value);
+    try expectDngOne(v1_7, crop, &empty, .value);
+    try expectDngOne(unknown_version, crop, &empty, null);
+    try expectDngOne(unknown_version, inline16(tags.default_user_crop, .rational, 3, 0), &empty, .count);
+}
+
+test "DNG MaskSubArea: invalid only when out of bounds under both readings" {
+    const area = struct {
+        fn bytes(t: u32, l: u32, w: u32, h: u32) [16]u8 {
+            var out: [16]u8 = undefined;
+            for ([_]u32{ t, l, w, h }, 0..) |v, k| std.mem.writeInt(u32, out[4 * k ..][0..4], v, .little);
+            return out;
+        }
+    };
+    // A 200 x 100 cropped mask.
+    const cases = [_]struct { t: u32, l: u32, w: u32, h: u32, ok: bool }{
+        // Fits the consistent reading (T + length <= H, L + width <= W),
+        // not the literal one (T + width > H): no fault.
+        .{ .t = 0, .l = 0, .w = 200, .h = 100, .ok = true },
+        .{ .t = 0, .l = 0, .w = 300, .h = 300, .ok = true },
+        // Out of bounds both ways.
+        .{ .t = 50, .l = 50, .w = 200, .h = 100, .ok = false },
+        .{ .t = 0, .l = 0, .w = 50, .h = 50, .ok = false },
+    };
+    for (cases) |case| {
+        var b = area.bytes(case.t, case.l, case.w, case.h);
+        var e = [_]Entry{ inline16(tags.image_width, .long, 1, 200), inline16(tags.image_length, .long, 1, 100), inline16(tags.mask_sub_area, .long, 4, 0) };
+        var c = [_]?[]u8{ null, null, &b };
+        try expectDng(&e, &c, v1_6, tags.mask_sub_area, if (case.ok) null else .value);
+    }
+}
+
+test "ISO 8601 complete date-time for PreviewDateTime" {
+    for ([_][]const u8{
+        "2017-01-31T19:30:23Z\x00",
+        "20170131T193023Z\x00",
+        "2017-01-31T19:30:23+01:00\x00",
+        "20170131T193023-0500\x00",
+        "2016-02-29T23:59:60.5-05:00\x00",
+        "2017-01-31T19:30:23,25Z\x00",
+        "2017-01-31T19:30:23\x00",
+        "2017-01-31T24:00:00Z\x00",
+        "2000-02-29T00:00:00Z\x00",
+    }) |text| {
+        if (!isIso8601(text)) {
+            std.debug.print("rejected {s}\n", .{text});
+            return error.TestExpectedEqual;
+        }
+    }
+    for ([_][]const u8{
+        "2017:01:31 19:30:23\x00", // TIFF DateTime
+        "2017-01-31 19:30:23Z\x00",
+        "2017-01-31T193023Z\x00", // mixed forms
+        "2017-01-31T19:30Z\x00", // reduced precision
+        "2017-02-29T00:00:00Z\x00",
+        "1900-02-29T00:00:00Z\x00",
+        "2017-13-01T00:00:00Z\x00",
+        "2017-01-31T24:00:01Z\x00",
+        "2017-01-31T24:00:00.5Z\x00",
+        "2017-01-31T19:30:23+01\x00",
+        "2017-01-31T19:30:23+0100\x00", // basic offset in the extended form
+        "2017-01-31T19:30:23.Z\x00",
+        "2017-01-31T19:30:23Zx\x00",
+        "\x00",
+    }) |text| {
+        if (isIso8601(text)) {
+            std.debug.print("accepted {s}\n", .{text});
+            return error.TestExpectedEqual;
+        }
+    }
+    var good = "2017-01-31T19:30:23Z\x00".*;
+    try expectDngOne(v1_6, inline16(tags.preview_date_time, .ascii, good.len, 0), &good, null);
+    var tiff_style = "2017:01:31 19:30:23\x00".*;
+    try expectDngOne(v1_6, inline16(tags.preview_date_time, .ascii, tiff_style.len, 0), &tiff_style, .value);
+}
+
+test "DNG depth maps and semantic masks: single channel of the stated pixel types" {
+    const mask = struct {
+        fn of(nst: u32, bits: u32, photometric: u32) [3]Entry {
+            return .{ inline16(tags.new_subfile_type, .long, 1, nst), inline16(tags.bits_per_sample, .short, 1, bits), inline16(tags.photometric, .short, 1, photometric) };
+        }
+    };
+    var c3 = [_]?[]u8{null} ** 3;
+    const m = tags.photometric_mask;
+    const d = tags.photometric_depth;
+    var e = mask.of(0x10004, 8, m);
+    try expectDng(&e, &c3, v1_6, tags.photometric, null);
+    e = mask.of(0x10004, 16, m);
+    try expectDng(&e, &c3, v1_6, tags.photometric, null);
+    e = mask.of(0x10004, 12, m);
+    try expectDng(&e, &c3, v1_6, tags.bits_per_sample, .value);
+    // A 32-bit integer mask: only floating point allows 32 bits.
+    e = mask.of(0x10004, 32, m);
+    try expectDng(&e, &c3, v1_6, tags.bits_per_sample, .value);
+    // Gated: masks from 1.6.0.0, closed lists up to 1.6.0.0.
+    e = mask.of(0x10004, 12, m);
+    try expectDng(&e, &c3, v1_5, tags.bits_per_sample, null);
+    try expectDng(&e, &c3, v1_7, tags.bits_per_sample, null);
+    // Depth maps from 1.5.0.0: 8 or 16-bit unsigned.
+    e = mask.of(8, 16, d);
+    try expectDng(&e, &c3, v1_5, tags.photometric, null);
+    e = mask.of(9, 12, d);
+    try expectDng(&e, &c3, v1_5, tags.bits_per_sample, .value);
+    try expectDng(&e, &c3, v1_4, tags.bits_per_sample, null);
+    {
+        // A 32-bit floating point mask is allowed; a floating point depth map
+        // or a 16-bit floating point mask is not.
+        var f = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 0x10004), inline16(tags.bits_per_sample, .short, 1, 32), inline16(tags.photometric, .short, 1, m), inline16(tags.sample_format, .short, 1, 3) };
+        var c4 = [_]?[]u8{null} ** 4;
+        try expectDng(&f, &c4, v1_6, tags.photometric, null);
+        f[1] = inline16(tags.bits_per_sample, .short, 1, 16);
+        try expectDng(&f, &c4, v1_6, tags.sample_format, .value);
+        f[0] = inline16(tags.new_subfile_type, .long, 1, 8);
+        f[1] = inline16(tags.bits_per_sample, .short, 1, 32);
+        f[2] = inline16(tags.photometric, .short, 1, d);
+        try expectDng(&f, &c4, v1_6, tags.bits_per_sample, .value);
+    }
+    {
+        // Single channel.
+        var two = [_]u8{ 8, 0, 8, 0 };
+        var s = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 0x10004), inline16(tags.bits_per_sample, .short, 2, 0), inline16(tags.photometric, .short, 1, m), inline16(tags.samples_per_pixel, .short, 1, 2) };
+        var sc = [_]?[]u8{ null, &two, null, null };
+        try expectDng(&s, &sc, v1_6, tags.samples_per_pixel, .value);
+    }
+    {
+        // BitsPerSample absent is 1 bit: reported on NewSubFileType.
+        var n = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 0x10004), inline16(tags.photometric, .short, 1, m) };
+        var nc = [_]?[]u8{null} ** 2;
+        try expectDng(&n, &nc, v1_6, tags.new_subfile_type, .value);
+    }
 }
 
 test "the pending constraints are pinned" {

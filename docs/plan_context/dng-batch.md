@@ -286,3 +286,80 @@ Reach: tiffz stops at the first IFD it cannot decode.
 Positive controls on a real file (Sigma fp, DNG 1.4.0.0, valid): CFALayout
 patched to 10, and MakerNoteSafety patched to 2. Each gives one finding 18
 reason 3 on the patched tag in the new build; the old build passes both.
+
+## Rulings on f8ca6ee1 (validate, 2026-11-04)
+
+Choices 1, 3, 4 and 5 confirmed. Choice 2 overruled: enhanced IFDs take
+the raw list (32803, 34892), because "The LinearRaw value can be used in
+reduced resolution IFDs and enhanced IFDs" (p. 20) is permissive.
+LinearRaw-only is should-row 10.
+
+Three should-rows become faults (finding 18 reason 3), as definitional
+statements in the D3 sense:
+
+- MaskSubArea (from 1.6.0.0). The text says "the tag is invalid" when
+  "T_crop + ImageWidth > H_full" or "L_crop + ImageLength > W_full".
+  - Apparent erratum: those conditions pair the top offset with the width
+    and the left offset with the length. The dimensionally consistent form
+    is T_crop + ImageLength > H_full or L_crop + ImageWidth > W_full.
+  - A fault is reported only when the entry is out of bounds under both
+    readings. Without ImageWidth and ImageLength there is no check.
+- PreviewDateTime (from 1.2.0.0) "is encoded using ISO 8601 format". The
+  grammar is a complete date-time:
+  - extended YYYY-MM-DDThh:mm:ss or basic YYYYMMDDThhmmss, one form
+    throughout;
+  - an optional fraction after "." or ",";
+  - then no designator (local time), Z, or an offset ±hh:mm (basic
+    ±hhmm);
+  - calendar-checked fields, with 24:00:00 allowed only with a zero
+    fraction and second 60 allowed for a leap second.
+  - Reduced precision (no seconds) and a date alone are rejected.
+  - Corpus check before landing: the only value in the 249 files,
+    "2017-01-31T19:30:23Z" (Adobe DNG Converter, three IFDs), passes.
+- Pixel types:
+  - depth maps (NewSubFileType 8 or 9, from 1.5.0.0): single channel, 8
+    or 16-bit unsigned integer;
+  - semantic masks (10004.H, from 1.6.0.0): single channel, 8 or 16-bit
+    unsigned integer or 32-bit floating point;
+  - anchoring: closed lists, so D1 and D2 apply. A bad depth is reported on
+    BitsPerSample, a format that does not match an allowed depth on
+    SampleFormat, more than one sample on SamplesPerPixel, and an absent
+    BitsPerSample (1 bit) on NewSubFileType.
+
+D2 tightened with these: a DNG row in a file whose version is unknown gets
+type and count only, with no value rule of any kind, not only no closed
+list.
+
+## Should-row queue
+
+None of these is a fault. Whether a "should" deviation becomes an
+informational record waits on the owner's INFO-severity decision (validate's
+finding-retention design). Numbers follow the list sent to validate.
+
+1. NewSubFileType values per role and edition (Chapter 3 "should use").
+2. DNGVersion "should contain" 1, 6, 0, 0 for 1.6 files.
+3. UniqueCameraModel "should include the manufacturer's name", "should not
+   be localized".
+4. Orientation: writers "should not use" mirrored values (TIFF-EP
+   compatibility).
+5. LensInfo: unknown f-stops "should be encoded as 0/0".
+6. DefaultScale for CFALayout 2 to 5 "should usually differ by a factor of
+   2.0".
+7. MaskedAreas "should not be used" after black subtraction.
+8. ExtraCameraProfiles "should only be used" with more than one profile.
+10. Enhanced IFD: "should always use" LinearRaw; 16-bit unsigned or 16, 24
+    or 32-bit float; a non-null EnhanceParams.
+11. Depth and semantic-mask IFDs "should use" 51177 and 52527 (Chapter 3's
+    "required" form is already a fault).
+13. Inner NULs in the UTF-8 strings (D4).
+14. A tag outside its Usage IFD (D7).
+16. A file that uses constructs newer than its DNGVersion or
+    DNGBackwardVersion.
+    - Producer note: Apple iPhone 12 Pro ProRAW, sha256
+      e91e77a4533ed7cce551d83330676ea5c47dd5e55fb38adda7819366afdbdfc2.
+    - The file declares 1.4.0.0 but carries a semantic-mask IFD
+      (NewSubFileType 10004.H, PhotometricInterpretation 52527),
+      SemanticName and ProfileGainTableMap, all introduced in 1.6.0.0.
+
+Rows 9, 12 and 15 became faults (above). The held-back musts are a later
+batch with layout reading; ReductionMatrix goes in Tier 3.

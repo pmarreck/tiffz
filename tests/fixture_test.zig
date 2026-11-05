@@ -2912,7 +2912,7 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 50968, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 0 }, // PreviewSettingsName
     .{ .tag = 50969, .clean = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .corrupt = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .reason = 2, .seen = 3 }, // PreviewSettingsDigest
     .{ .tag = 50970, .clean = long(&.{2}), .corrupt = long(&.{ 2, 2 }), .reason = 2, .seen = 3 }, // PreviewColorSpace
-    .{ .tag = 50971, .clean = ascii("Acme\x00"), .corrupt = byteField(&.{ 65, 0 }), .reason = 1, .seen = 3 }, // PreviewDateTime
+    .{ .tag = 50971, .clean = ascii("2017-01-31T19:30:23Z\x00"), .corrupt = ascii("2017:01:31 19:30:23\x00"), .reason = 3, .seen = 3 }, // PreviewDateTime
     .{ .tag = 50972, .clean = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .corrupt = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .reason = 2, .seen = 0 }, // RawImageDigest
     .{ .tag = 50973, .clean = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .corrupt = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .reason = 2, .seen = 0 }, // OriginalRawFileDigest
     .{ .tag = 50974, .clean = long(&.{ 1, 1 }), .corrupt = long(&.{ 1, 1, 1 }), .reason = 2, .seen = 0 }, // SubTileBlockSize
