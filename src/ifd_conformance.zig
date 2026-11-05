@@ -432,7 +432,9 @@ pub const rules = [_]Rule{
     .{ .tag = tags.colorimetric_reference, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ColorimetricReference (SHORT)" },
     .{ .tag = tags.camera_calibration_signature, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, CameraCalibrationSignature (ASCII or BYTE)" },
     .{ .tag = tags.profile_calibration_signature, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileCalibrationSignature (ASCII or BYTE)" },
-    .{ .tag = tags.extra_camera_profiles, .kind = .ifd_offsets, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ExtraCameraProfiles (LONG)" },
+    // Offsets, but DNG defines them as LONG, not "LONG or IFD" as SubIFDs are
+    // (strict types, 2026-11-04; corrected 2026-11-05).
+    .{ .tag = tags.extra_camera_profiles, .kind = .long_only, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ExtraCameraProfiles (LONG)" },
     .{ .tag = tags.as_shot_profile_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, AsShotProfileName (ASCII or BYTE)" },
     .{ .tag = tags.noise_reduction_applied, .kind = .rational, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, NoiseReductionApplied (RATIONAL)" },
     .{ .tag = tags.profile_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileName (ASCII or BYTE)" },
@@ -2214,6 +2216,19 @@ test "finding 19 rule 6: which JPEG variant a DNG IFD requires" {
         const dir = Ifd{ .entries = entries[0..n], .next_offset = 0, .offset_width = .classic, .allocator = testing.allocator, .cached_values = cached[0..n] };
         try testing.expectEqual(c.want, dngBaselineJpeg(&dir, .little, c.dng));
     }
+}
+
+test "ExtraCameraProfiles is LONG only: SHORT and the IFD type are type faults" {
+    try expectDngOne(v1_6, inline16(tags.extra_camera_profiles, .long, 1, 64), null, null);
+    try expectDngOne(v1_6, inline16(tags.extra_camera_profiles, .short, 1, 64), null, .type);
+    // TIFF Technical Note 1's IFD type (13) parses as an unknown field type.
+    var ifd_typed = inline16(tags.extra_camera_profiles, .long, 1, 64);
+    ifd_typed.field_type = .unknown;
+    ifd_typed.raw_type = 13;
+    try expectDngOne(v1_6, ifd_typed, null, .type);
+    // The default empty list means the tag is absent; a present entry with
+    // count 0 is a count fault (count .any is one or more).
+    try expectDngOne(v1_6, inline16(tags.extra_camera_profiles, .long, 0, 0), null, .count);
 }
 
 test "DNG rows apply only in a DNG file, and only from the edition that added the tag" {
