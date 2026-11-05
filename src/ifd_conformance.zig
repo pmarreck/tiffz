@@ -237,6 +237,14 @@ const Extra = enum {
     /// BitsPerSample of a transparency mask (PhotometricInterpretation 4):
     /// "SamplesPerPixel and BitsPerSample must be 1" (TIFF 6.0 p. 37).
     one_bit_for_transparency_mask,
+    /// Predictor 3: "This predictor should only be applied to floating point
+    /// data that has BitsPerSample equal to a multiple of 8" (Adobe Photoshop
+    /// TIFF Technical Note 3, 2005, p. 2). The transform splits each sample
+    /// into bytes, so a sample that is not whole bytes has no defined decode:
+    /// a value fault on Predictor (validate, 2026-11-05). Every BitsPerSample
+    /// value counts, and an absent BitsPerSample is 1. The SampleFormat half
+    /// of the sentence is a should-row, not checked here.
+    floating_point_predictor_whole_bytes,
     /// DNG DefaultUserCrop: "0 <= Top < Bottom <= 1.0, 0 <= Left < Right <= 1.0".
     user_crop,
     /// DNG NoiseProfile: "each S term must be positive", "each O term must be
@@ -318,7 +326,7 @@ pub const rules = [_]Rule{
     .{ .tag = tags.date_time, .kind = .ascii, .count = .twenty, .extras = &.{.date_time}, .citation = "TIFF 6.0 pp. 15-16, 31" },
     .{ .tag = tags.artist, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 28" },
     .{ .tag = tags.host_computer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 34" },
-    .{ .tag = tags.predictor, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 p. 64; Adobe Photoshop TIFF Technical Note 3 (2005)" },
+    .{ .tag = tags.predictor, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .extras = &.{.floating_point_predictor_whole_bytes}, .citation = "TIFF 6.0 p. 64; Adobe Photoshop TIFF Technical Note 3 (2005), p. 2 (3 needs whole-byte samples)" },
     .{ .tag = tags.white_point, .kind = .rational, .count = .two, .citation = "TIFF 6.0 p. 83" },
     .{ .tag = tags.primary_chromaticities, .kind = .rational, .count = .six, .citation = "TIFF 6.0 p. 83" },
     .{ .tag = tags.colormap, .kind = .unsigned_short, .count = .color_map, .citation = "TIFF 6.0 p. 29" },
@@ -864,6 +872,11 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
                 if (bits != 1) return .value;
             }
         },
+        .floating_point_predictor_whole_bytes => {
+            const value = element(bytes, entry.field_type, 0, endian) orelse return .count;
+            if (value != 3) continue; // the floating-point predictor
+            if (!allBitsWholeBytes(dir, endian)) return .value;
+        },
         .mask_sub_area_bounds => {
             const top = element(bytes, entry.field_type, 0, endian) orelse return .count;
             const left = element(bytes, entry.field_type, 1, endian) orelse return .count;
@@ -1170,6 +1183,20 @@ fn allBitsIn(dir: *const Ifd, endian: Endian, allowed: []const u64) bool {
     while (i < entry.count) : (i += 1) {
         const bits = element(values, entry.field_type, i, endian) orelse return true;
         if (std.mem.indexOfScalar(u64, allowed, bits) == null) return false;
+    }
+    return true;
+}
+
+/// Whether every BitsPerSample value (default 1) is a multiple of 8; true
+/// when BitsPerSample is malformed (its own fault).
+fn allBitsWholeBytes(dir: *const Ifd, endian: Endian) bool {
+    const k = indexOf(dir, tags.bits_per_sample) orelse return false;
+    const entry = dir.entries[k];
+    const values = dir.entryValueSlice(k);
+    var i: usize = 0;
+    while (i < entry.count) : (i += 1) {
+        const bits = element(values, entry.field_type, i, endian) orelse return true;
+        if (bits % 8 != 0) return false;
     }
     return true;
 }
@@ -1609,6 +1636,10 @@ test "every single-value rule accepts its range ends and rejects the values just
                     // With the SamplesPerPixel the photometric implies.
                     var ok = [_]Entry{ inline16(rule.tag, t, 1, v), inline16(tags.samples_per_pixel, .short, 1, impliedChannels(v)) };
                     try expectFaultsDng(dng, &ok, &.{});
+                } else if (rule.tag == tags.predictor) {
+                    // With byte-sized samples, which Predictor 3 needs.
+                    var ok = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 8), inline16(rule.tag, t, 1, v) };
+                    try expectFaultsDng(dng, &ok, &.{});
                 } else {
                     var ok = [_]Entry{inline16(rule.tag, t, 1, v)};
                     try expectFaultsDng(dng, &ok, &.{});
@@ -1913,6 +1944,45 @@ test "a palette image needs a ColorMap, and a transparency mask one bit per samp
     }
     var gray8 = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 8), inline16(tags.photometric, .short, 1, 1) };
     try expectFaults(&gray8, &.{});
+}
+
+test "Predictor 3 needs whole-byte samples (Adobe Photoshop TIFF Technical Note 3 p. 2)" {
+    for ([_]struct { bits: u32, predictor: u32, fault: bool }{
+        .{ .bits = 32, .predictor = 3, .fault = false },
+        .{ .bits = 16, .predictor = 3, .fault = false },
+        .{ .bits = 8, .predictor = 3, .fault = false },
+        .{ .bits = 12, .predictor = 3, .fault = true },
+        .{ .bits = 1, .predictor = 3, .fault = true },
+        .{ .bits = 12, .predictor = 2, .fault = false },
+        .{ .bits = 12, .predictor = 1, .fault = false },
+    }) |case| {
+        var entries = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, case.bits), inline16(tags.predictor, .short, 1, case.predictor) };
+        if (case.fault) {
+            try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 1, .tag = tags.predictor, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 3 } }});
+        } else try expectFaults(&entries, &.{});
+    }
+    // An absent BitsPerSample is 1.
+    var absent = [_]Entry{inline16(tags.predictor, .short, 1, 3)};
+    try expectFaults(&absent, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = tags.predictor, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 3 } }});
+    // Every value counts: RGB 32,32,12 fails and 32,32,16 does not.
+    for ([_]struct { last: u16, fault: bool }{ .{ .last = 12, .fault = true }, .{ .last = 16, .fault = false } }) |case| {
+        var bits: [6]u8 = undefined;
+        std.mem.writeInt(u16, bits[0..2], 32, .little);
+        std.mem.writeInt(u16, bits[2..4], 32, .little);
+        std.mem.writeInt(u16, bits[4..6], case.last, .little);
+        var entries = [_]Entry{
+            inline16(tags.bits_per_sample, .short, 3, 0),
+            inline16(tags.photometric, .short, 1, 2),
+            inline16(tags.samples_per_pixel, .short, 1, 3),
+            inline16(tags.predictor, .short, 1, 3),
+        };
+        var cached = [_]?[]u8{ &bits, null, null, null };
+        var out = try faultsOf(&entries, &cached);
+        defer out.deinit(testing.allocator);
+        if (case.fault) {
+            try testing.expectEqualDeep(@as([]const Fault, &.{.{ .field_invalid = .{ .entry_index = 3, .tag = tags.predictor, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = 3 } }}), out.items);
+        } else try testing.expectEqual(@as(usize, 0), out.items.len);
+    }
 }
 
 test "a channel mismatch says what it compared, in its payload too" {

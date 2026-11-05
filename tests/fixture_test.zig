@@ -3669,3 +3669,78 @@ test "finding 19 rule 7: a hierarchical stream in a DNG, orthogonal to rule 6" {
     }
     try std.testing.expectEqual(@as(usize, 0), wrong);
 }
+
+// Predictor 3 needs whole-byte samples: "This predictor should only be
+// applied to floating point data that has BitsPerSample equal to a multiple
+// of 8" (Adobe Photoshop TIFF Technical Note 3, 2005, p. 2). The transform
+// splits each sample into bytes, so a width that is not whole bytes has no
+// defined decode, and that half of the sentence is a fault (validate,
+// 2026-11-05). The SampleFormat half is a should-row. Fixtures from
+// tests/fixtures/predictor/gen.pl; libtiff decodes the FP16 one to the same
+// half floats and refuses the 12-bit one ("not supported with 12-bit
+// samples").
+test "Predictor 3: whole-byte float samples are clean, and FP16 decodes to its half floats" {
+    const allocator = std.testing.allocator;
+    try expectFixtureValidates("tests/fixtures/predictor/predictor3_deflate_fp32.tif");
+    try expectFixtureValidates("tests/fixtures/predictor/predictor3_deflate_fp16.tif");
+    // Pixel k holds k/64, which binary16 represents exactly.
+    const got = try decodeAllStripsBytes(allocator, "tests/fixtures/predictor/predictor3_deflate_fp16.tif");
+    defer allocator.free(got);
+    try std.testing.expectEqual(@as(usize, 64 * 2), got.len);
+    for (0..64) |k| {
+        const want: u16 = @bitCast(@as(f16, @floatFromInt(k)) / 64.0);
+        try std.testing.expectEqual(want, std.mem.readInt(u16, got[k * 2 ..][0..2], .little));
+    }
+}
+
+test "Predictor 3: a 12-bit sample is a value fault on Predictor" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/predictor/predictor3_deflate_bps12.tif");
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    // The decoder refuses the strip too; the record is what names the fault.
+    try std.testing.expectError(error.UnsupportedBitDepth, validateRecording(allocator, bytes, &recorder));
+    const entry = ifd0EntryOffset(bytes, 317) orelse return error.TestUnexpectedResult;
+    var records: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz or f.verdict != .corrupt) continue;
+        const p = f.payload_bytes;
+        try std.testing.expectEqual(@intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid), @as(u32, @intCast(f.finding_code)));
+        try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[0..4], .little));
+        try std.testing.expectEqual(@as(u64, entry), std.mem.readInt(u64, p[8..16], .little));
+        try std.testing.expectEqual(@as(u16, 317), std.mem.readInt(u16, p[16..18], .little));
+        try std.testing.expectEqual(@as(u16, 3), std.mem.readInt(u16, p[18..20], .little));
+        records += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), records);
+}
+
+// An exploration case outside the pinned gate (validate, 2026-11-05):
+// corruption-reader bolter, master 0x20261105, round 389, XORs offset 143,
+// the high byte of SampleFormat's tag ID (0x0153 to 0xFE53, a private tag).
+// SampleFormat falls back to 1, leaving Predictor 3 on 32-bit integer data:
+// libtiff refuses it, but TN3's "should" makes it a should-row, not a fault.
+// It is accepted with only the seed's own records today; when the INFO
+// should-row lands, this replay gains exactly that record.
+test "corruption replay: predictor3_deflate_fp32.tif bolter master 0x20261105 round 389 is accepted (Predictor 3 on integer data is a should-row)" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/predictor/predictor3_deflate_fp32.tif");
+    defer allocator.free(bytes);
+    try std.testing.expectEqualSlices(u8, &.{ 0x53, 0x01, 0x03, 0x00 }, bytes[142..146]);
+    var seed = FindingRecorder.init(allocator);
+    defer seed.deinit();
+    try validateRecording(allocator, bytes, &seed);
+    bytes[143] ^= 0xFF;
+    var mutated = FindingRecorder.init(allocator);
+    defer mutated.deinit();
+    try validateRecording(allocator, bytes, &mutated);
+    try std.testing.expectEqual(seed.findings.items.len, mutated.findings.items.len);
+    for (seed.findings.items, mutated.findings.items) |a, b| {
+        try std.testing.expectEqual(a.source, b.source);
+        try std.testing.expectEqual(a.finding_code, b.finding_code);
+        try std.testing.expectEqual(a.verdict, b.verdict);
+        try std.testing.expectEqual(a.payload_len, b.payload_len);
+        try std.testing.expectEqualSlices(u8, &a.payload_bytes, &b.payload_bytes);
+    }
+}
