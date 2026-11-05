@@ -219,3 +219,70 @@ are not scanned yet; that happens with the implementation. The DNGs carry
 - Tier 3 is a later batch. Presence rules wait for the owner's
   reporting-form decision. The JPEG-variant "must" goes to the owner as a
   proposed finding 19 rule 6.
+
+## Implementation (Tiers 1 and 2)
+
+- Rows: 109 DNG rows in `ifd_conformance.rules`, one per Chapter 4 tag,
+  each with the edition that added it (`since`). Of those, 51 have fixed
+  counts and 10 have closed value lists; ten are Tier 2 derived counts
+  (BlackLevel, WhiteLevel, BlackLevelDeltaH/V, ProfileHueSatMapData1-3 and
+  ProfileLookTableData) and four carry value extras (DefaultUserCrop,
+  NoiseProfile, ProfileToneCurve, EnhanceParams).
+- Chapter 3: checked after an entry passes its TIFF row, for
+  BitsPerSample, FillOrder, SampleFormat, Compression, Predictor and
+  PhotometricInterpretation.
+- Gate: the decoder reads DNGVersion from IFD 0 once (`Dng.fromIfd0`) and
+  passes it to every IFD's check.
+- Kinds:
+  - BYTE fields that hold numbers (DNGVersion, DNGBackwardVersion,
+    CFAPlaneColor) use the shared unsigned-byte kind, so they follow the
+    p. 16 widening.
+  - Opaque BYTE blocks (digests, RawDataUniqueID, DNGPrivateData) are
+    BYTE only.
+  - ExtraCameraProfiles uses the IFD-offset kind.
+- Choices within the rulings, listed for validate:
+  - NewSubFileType 1 marks previews and reduced-resolution raw images
+    alike, so it takes both PhotometricInterpretation lists.
+  - Enhanced IFDs (16) take LinearRaw alone, from Chapter 3's "can be used
+    in ... enhanced IFDs".
+  - Transparency masks (4, 5) get no list in the text, so they take the
+    union, as an unknown role does.
+  - ProfileHueSatMapDims' "allowed values include" is read like D5's
+    "valid values include": open, so no fault.
+  - BitsPerSample "from 8 to 32" is a closed list. The "same for each
+    sample" must applies even with an unknown version.
+
+## Corpus report (249 distinct sha256), 2026-11-04
+
+Added under validate's D6 condition (raw.pixls.us, CC0 per its license
+field):
+
+| File | Size | DNGVersion | Note |
+|---|---|---|---|
+| Google Pixel 8 Pro | 45101750 | 1.6.0.0 | third calibration (CalibrationIlluminant3, ColorMatrix3, CameraCalibration3, ForwardMatrix3, IlluminantData3); ProfileGainTableMap |
+| Samsung Galaxy S21 Ultra | 37770480 | 1.6.0.0 | ProfileGainTableMap |
+| Samsung Galaxy S22 Ultra | 26798986 | 1.6.0.0 | |
+| Samsung Galaxy S23 (16:9) | 25412616 | 1.6.0.0 | |
+| Apple iPhone 12 Pro (ProRAW) | 29195592 | 1.4.0.0 | semantic mask IFD (NewSubFileType 10004.H, PhotometricMask 52527, lossy JPEG); also ProfileGainTableMap and SemanticName, both 1.6.0.0 tags, so under the edition gate their rows do not apply to this 1.4.0.0 file |
+
+Sha256s are in the manifest. The 16 CC0 DNGs surveyed (raw.pixls.us,
+makers Apple, DJI, Google, Hasselblad, Leica and Samsung) contain no depth
+map (NewSubFileType 8 or 9) and no enhanced IFD (16). Those roles are
+covered by unit tests only.
+
+Old (yolo be9de912) against new, over all 249 files: no verdict changes
+and no finding changes. An independent byte scan of every DNG tag entry in
+the 17 corpus DNGs agrees on the Tier 1 types and fixed counts and on the
+Chapter 3 lists.
+
+Reach: tiffz stops at the first IFD it cannot decode.
+- The four Samsung files stop at IFD 0 (lossless JPEG LinearRaw:
+  UnsupportedCompression), so only their IFD 0 is checked.
+- The iPhone stops at its raw SubIFD, so its semantic-mask IFD is not
+  reached.
+- A copy whose mask PhotometricInterpretation was patched to 1 confirms
+  this: nothing is reported.
+
+Positive controls on a real file (Sigma fp, DNG 1.4.0.0, valid): CFALayout
+patched to 10, and MakerNoteSafety patched to 2. Each gives one finding 18
+reason 3 on the patched tag in the new build; the old build passes both.

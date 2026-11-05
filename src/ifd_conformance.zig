@@ -20,6 +20,15 @@
 //! use (TIFF 6.0 p. 8), so they are not violations. Tags without a rule,
 //! including every private tag, are skipped.
 //!
+//! DNG rows (Digital Negative Specification 1.6.0.0) apply only when IFD 0
+//! carries DNGVersion, then to every IFD of the file, and are gated by the
+//! declared version (validate, 2026-11-04; docs/plan_context/dng-batch.md):
+//! a row whose tag a later edition added applies only from that edition; a
+//! closed value list applies only to a known version up to 1.6.0.0 (D1, D2);
+//! a malformed DNGVersion leaves type and count rows only. DNG defines no
+//! private value range, so DNG value lists check every value. Chapter 3
+//! restrictions on existing TIFF tags are checked after the TIFF row.
+//!
 //! Pure: reads only the parsed `Ifd`, whose out-of-line values are already
 //! cached.
 
@@ -117,6 +126,18 @@ const Kind = enum {
     /// Offsets of child IFDs: LONG or IFD (13), and in BigTIFF also IFD8
     /// (PageMaker 6.0 TIFF Technical Notes p. 4; BigTIFF design).
     ifd_offsets,
+    /// FLOAT only (IEEE 754 binary32). DNG profile tables.
+    float,
+    /// DNG "SHORT or LONG or RATIONAL": BYTE, SHORT or LONG holding 32-bit
+    /// values, or RATIONAL.
+    long_or_rational,
+    /// DNG "SHORT or RATIONAL": BYTE, SHORT or LONG holding 16-bit values,
+    /// or RATIONAL.
+    short_or_rational,
+    /// DNG "ASCII or BYTE", "Null-terminated UTF-8 encoded Unicode string":
+    /// the last byte is NUL and the bytes before it are valid UTF-8; the
+    /// 7-bit rule does not apply, and inner NULs are not checked (D4).
+    utf8_string,
 };
 
 const Count = enum {
@@ -150,6 +171,25 @@ const Count = enum {
     multiple_of_six,
     /// At least the four-value GeoKeyDirectory header.
     at_least_four,
+    /// A positive multiple of 4 (DNG MaskedAreas rectangles).
+    multiple_of_four,
+    /// Even and at least 2 (DNG NoiseProfile pairs; the exact count needs
+    /// ColorPlanes, a later batch).
+    even_at_least_two,
+    /// Even and at least 4 (DNG ProfileToneCurve: first and last samples).
+    even_at_least_four,
+    /// BlackLevelRepeatRows * BlackLevelRepeatCols * SamplesPerPixel (DNG
+    /// BlackLevel; the repeat dimensions default to 1, 1).
+    black_level,
+    /// The ActiveArea width, or ImageWidth when ActiveArea is absent.
+    active_area_width,
+    /// The ActiveArea length, or ImageLength when ActiveArea is absent.
+    active_area_length,
+    /// HueDivisions * SaturationDivisions * ValueDivisions * 3, from
+    /// ProfileHueSatMapDims.
+    hue_sat_map,
+    /// As `hue_sat_map`, from ProfileLookTableDims.
+    look_table,
 };
 
 /// A constraint beyond type, count and value set.
@@ -187,6 +227,16 @@ const Extra = enum {
     /// BitsPerSample of a transparency mask (PhotometricInterpretation 4):
     /// "SamplesPerPixel and BitsPerSample must be 1" (TIFF 6.0 p. 37).
     one_bit_for_transparency_mask,
+    /// DNG DefaultUserCrop: "0 <= Top < Bottom <= 1.0, 0 <= Left < Right <= 1.0".
+    user_crop,
+    /// DNG NoiseProfile: "each S term must be positive", "each O term must be
+    /// non-negative".
+    noise_profile_signs,
+    /// DNG ProfileToneCurve: "The first sample is required to be (0.0, 0.0),
+    /// and the last sample is required to be (1.0, 1.0)."
+    tone_curve_endpoints,
+    /// DNG EnhanceParams: "required to be non-null".
+    non_empty,
 };
 
 const Rule = struct {
@@ -196,6 +246,9 @@ const Rule = struct {
     /// Inclusive public-range value ranges, or null when unconstrained.
     values: ?[]const [2]u16 = null,
     extras: []const Extra = &.{},
+    /// DNG rows only: the packed DNGVersion (major << 24 | minor << 16 | ...)
+    /// of the edition that added the tag. Null for every non-DNG row.
+    since: ?u32 = null,
     /// Where the rule comes from, so an omission is auditable.
     citation: []const u8,
 };
@@ -307,6 +360,118 @@ pub const rules = [_]Rule{
     .{ .tag = tags.geo_double_params, .kind = .double, .count = .any, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirements 5.1, 5.2" },
     .{ .tag = tags.geo_ascii_params, .kind = .ascii, .count = .any, .citation = "OGC GeoTIFF 1.1 (19-008r4) Requirement 6.5; TIFF 6.0 p. 15" },
     .{ .tag = tags.image_source_data, .kind = .undefined, .count = .any, .citation = "Adobe Photoshop TIFF Technical Notes (2002)" },
+    // DNG 1.6.0.0, Chapter 4. Type and count come from each definition block,
+    // normative per DNGBackwardVersion (p. 21): "readers should, for all tags,
+    // check the types, counts, and values" (validate D3, 2026-11-04).
+    .{ .tag = tags.dng_version, .kind = .unsigned_byte, .count = .four, .since = 0x01000000, .citation = "DNG 1.6.0.0, DNGVersion (BYTE)" },
+    .{ .tag = tags.dng_backward_version, .kind = .unsigned_byte, .count = .four, .since = 0x01000000, .citation = "DNG 1.6.0.0, DNGBackwardVersion (BYTE)" },
+    .{ .tag = tags.unique_camera_model, .kind = .ascii, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, UniqueCameraModel (ASCII)" },
+    .{ .tag = tags.localized_camera_model, .kind = .utf8_string, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, LocalizedCameraModel (ASCII or BYTE)" },
+    .{ .tag = tags.cfa_plane_color, .kind = .unsigned_byte, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CFAPlaneColor (BYTE)" },
+    .{ .tag = tags.cfa_layout, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 9 }}, .since = 0x01000000, .citation = "DNG 1.6.0.0, CFALayout (SHORT)" },
+    .{ .tag = tags.linearization_table, .kind = .unsigned_short, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, LinearizationTable (SHORT)" },
+    .{ .tag = tags.black_level_repeat_dim, .kind = .unsigned_short, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, BlackLevelRepeatDim (SHORT)" },
+    .{ .tag = tags.black_level, .kind = .long_or_rational, .count = .black_level, .since = 0x01000000, .citation = "DNG 1.6.0.0, BlackLevel (SHORT or LONG or RATIONAL)" },
+    .{ .tag = tags.black_level_delta_h, .kind = .srational, .count = .active_area_width, .since = 0x01000000, .citation = "DNG 1.6.0.0, BlackLevelDeltaH (SRATIONAL)" },
+    .{ .tag = tags.black_level_delta_v, .kind = .srational, .count = .active_area_length, .since = 0x01000000, .citation = "DNG 1.6.0.0, BlackLevelDeltaV (SRATIONAL)" },
+    .{ .tag = tags.white_level, .kind = .unsigned_long, .count = .samples_per_pixel, .since = 0x01000000, .citation = "DNG 1.6.0.0, WhiteLevel (SHORT or LONG)" },
+    .{ .tag = tags.default_scale, .kind = .rational, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, DefaultScale (RATIONAL)" },
+    .{ .tag = tags.default_crop_origin, .kind = .long_or_rational, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, DefaultCropOrigin (SHORT or LONG or RATIONAL)" },
+    .{ .tag = tags.default_crop_size, .kind = .long_or_rational, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, DefaultCropSize (SHORT or LONG or RATIONAL)" },
+    .{ .tag = tags.color_matrix_1, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, ColorMatrix1 (SRATIONAL)" },
+    .{ .tag = tags.color_matrix_2, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, ColorMatrix2 (SRATIONAL)" },
+    .{ .tag = tags.camera_calibration_1, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CameraCalibration1 (SRATIONAL)" },
+    .{ .tag = tags.camera_calibration_2, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CameraCalibration2 (SRATIONAL)" },
+    .{ .tag = tags.reduction_matrix_1, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, ReductionMatrix1 (SRATIONAL)" },
+    .{ .tag = tags.reduction_matrix_2, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, ReductionMatrix2 (SRATIONAL)" },
+    .{ .tag = tags.analog_balance, .kind = .rational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, AnalogBalance (RATIONAL)" },
+    .{ .tag = tags.as_shot_neutral, .kind = .short_or_rational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotNeutral (SHORT or RATIONAL)" },
+    .{ .tag = tags.as_shot_white_xy, .kind = .rational, .count = .two, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotWhiteXY (RATIONAL)" },
+    .{ .tag = tags.baseline_exposure, .kind = .srational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BaselineExposure (SRATIONAL)" },
+    .{ .tag = tags.baseline_noise, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BaselineNoise (RATIONAL)" },
+    .{ .tag = tags.baseline_sharpness, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BaselineSharpness (RATIONAL)" },
+    .{ .tag = tags.bayer_green_split, .kind = .unsigned_long, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BayerGreenSplit (LONG)" },
+    .{ .tag = tags.linear_response_limit, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, LinearResponseLimit (RATIONAL)" },
+    .{ .tag = tags.camera_serial_number, .kind = .ascii, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CameraSerialNumber (ASCII)" },
+    .{ .tag = tags.lens_info, .kind = .rational, .count = .four, .since = 0x01000000, .citation = "DNG 1.6.0.0, LensInfo (RATIONAL)" },
+    .{ .tag = tags.chroma_blur_radius, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, ChromaBlurRadius (RATIONAL)" },
+    .{ .tag = tags.anti_alias_strength, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, AntiAliasStrength (RATIONAL)" },
+    .{ .tag = tags.shadow_scale, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, ShadowScale (RATIONAL)" },
+    .{ .tag = tags.dng_private_data, .kind = .bytes, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, DNGPrivateData (BYTE)" },
+    .{ .tag = tags.maker_note_safety, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01000000, .citation = "DNG 1.6.0.0, MakerNoteSafety (SHORT)" },
+    .{ .tag = tags.calibration_illuminant_1, .kind = .unsigned_short, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, CalibrationIlluminant1 (SHORT)" },
+    .{ .tag = tags.calibration_illuminant_2, .kind = .unsigned_short, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, CalibrationIlluminant2 (SHORT)" },
+    .{ .tag = tags.best_quality_scale, .kind = .rational, .count = .one, .since = 0x01000000, .citation = "DNG 1.6.0.0, BestQualityScale (RATIONAL)" },
+    .{ .tag = tags.raw_data_unique_id, .kind = .bytes, .count = .sixteen, .since = 0x01000000, .citation = "DNG 1.6.0.0, RawDataUniqueID (BYTE)" },
+    .{ .tag = tags.original_raw_file_name, .kind = .utf8_string, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, OriginalRawFileName (ASCII or BYTE)" },
+    .{ .tag = tags.original_raw_file_data, .kind = .undefined, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, OriginalRawFileData (UNDEFINED)" },
+    .{ .tag = tags.active_area, .kind = .unsigned_long, .count = .four, .since = 0x01000000, .citation = "DNG 1.6.0.0, ActiveArea (SHORT or LONG)" },
+    .{ .tag = tags.masked_areas, .kind = .unsigned_long, .count = .multiple_of_four, .since = 0x01000000, .citation = "DNG 1.6.0.0, MaskedAreas (SHORT or LONG)" },
+    .{ .tag = tags.as_shot_icc_profile, .kind = .undefined, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotICCProfile (UNDEFINED)" },
+    .{ .tag = tags.as_shot_pre_profile_matrix, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, AsShotPreProfileMatrix (SRATIONAL)" },
+    .{ .tag = tags.current_icc_profile, .kind = .undefined, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CurrentICCProfile (UNDEFINED)" },
+    .{ .tag = tags.current_pre_profile_matrix, .kind = .srational, .count = .any, .since = 0x01000000, .citation = "DNG 1.6.0.0, CurrentPreProfileMatrix (SRATIONAL)" },
+    .{ .tag = tags.colorimetric_reference, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ColorimetricReference (SHORT)" },
+    .{ .tag = tags.camera_calibration_signature, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, CameraCalibrationSignature (ASCII or BYTE)" },
+    .{ .tag = tags.profile_calibration_signature, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileCalibrationSignature (ASCII or BYTE)" },
+    .{ .tag = tags.extra_camera_profiles, .kind = .ifd_offsets, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ExtraCameraProfiles (LONG)" },
+    .{ .tag = tags.as_shot_profile_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, AsShotProfileName (ASCII or BYTE)" },
+    .{ .tag = tags.noise_reduction_applied, .kind = .rational, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, NoiseReductionApplied (RATIONAL)" },
+    .{ .tag = tags.profile_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileName (ASCII or BYTE)" },
+    .{ .tag = tags.profile_hue_sat_map_dims, .kind = .unsigned_long, .count = .three, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileHueSatMapDims (LONG)" },
+    .{ .tag = tags.profile_hue_sat_map_data_1, .kind = .float, .count = .hue_sat_map, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileHueSatMapData1 (FLOAT)" },
+    .{ .tag = tags.profile_hue_sat_map_data_2, .kind = .float, .count = .hue_sat_map, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileHueSatMapData2 (FLOAT)" },
+    .{ .tag = tags.profile_tone_curve, .kind = .float, .count = .even_at_least_four, .extras = &.{.tone_curve_endpoints}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileToneCurve (FLOAT)" },
+    .{ .tag = tags.profile_embed_policy, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 3 }}, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileEmbedPolicy (LONG)" },
+    .{ .tag = tags.profile_copyright, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileCopyright (ASCII or BYTE)" },
+    .{ .tag = tags.forward_matrix_1, .kind = .srational, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ForwardMatrix1 (SRATIONAL)" },
+    .{ .tag = tags.forward_matrix_2, .kind = .srational, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, ForwardMatrix2 (SRATIONAL)" },
+    .{ .tag = tags.preview_application_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewApplicationName (ASCII or BYTE)" },
+    .{ .tag = tags.preview_application_version, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewApplicationVersion (ASCII or BYTE)" },
+    .{ .tag = tags.preview_settings_name, .kind = .utf8_string, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewSettingsName (ASCII or BYTE)" },
+    .{ .tag = tags.preview_settings_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewSettingsDigest (BYTE)" },
+    .{ .tag = tags.preview_color_space, .kind = .unsigned_long, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewColorSpace (LONG)" },
+    .{ .tag = tags.preview_date_time, .kind = .ascii, .count = .any, .since = 0x01020000, .citation = "DNG 1.6.0.0, PreviewDateTime (ASCII)" },
+    .{ .tag = tags.raw_image_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, RawImageDigest (BYTE)" },
+    .{ .tag = tags.original_raw_file_digest, .kind = .bytes, .count = .sixteen, .since = 0x01020000, .citation = "DNG 1.6.0.0, OriginalRawFileDigest (BYTE)" },
+    .{ .tag = tags.sub_tile_block_size, .kind = .unsigned_long, .count = .two, .since = 0x01020000, .citation = "DNG 1.6.0.0, SubTileBlockSize (SHORT or LONG)" },
+    .{ .tag = tags.row_interleave_factor, .kind = .unsigned_long, .count = .one, .since = 0x01020000, .citation = "DNG 1.6.0.0, RowInterleaveFactor (SHORT or LONG)" },
+    .{ .tag = tags.profile_look_table_dims, .kind = .unsigned_long, .count = .three, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileLookTableDims (LONG)" },
+    .{ .tag = tags.profile_look_table_data, .kind = .float, .count = .look_table, .since = 0x01020000, .citation = "DNG 1.6.0.0, ProfileLookTableData (FLOAT)" },
+    .{ .tag = tags.opcode_list_1, .kind = .undefined, .count = .any, .since = 0x01030000, .citation = "DNG 1.6.0.0, OpcodeList1 (UNDEFINED)" },
+    .{ .tag = tags.opcode_list_2, .kind = .undefined, .count = .any, .since = 0x01030000, .citation = "DNG 1.6.0.0, OpcodeList2 (UNDEFINED)" },
+    .{ .tag = tags.opcode_list_3, .kind = .undefined, .count = .any, .since = 0x01030000, .citation = "DNG 1.6.0.0, OpcodeList3 (UNDEFINED)" },
+    .{ .tag = tags.noise_profile, .kind = .double, .count = .even_at_least_two, .extras = &.{.noise_profile_signs}, .since = 0x01030000, .citation = "DNG 1.6.0.0, NoiseProfile (DOUBLE)" },
+    .{ .tag = tags.original_default_final_size, .kind = .unsigned_long, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalDefaultFinalSize (SHORT or LONG)" },
+    .{ .tag = tags.original_best_quality_final_size, .kind = .unsigned_long, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalBestQualityFinalSize (SHORT or LONG)" },
+    .{ .tag = tags.original_default_crop_size, .kind = .long_or_rational, .count = .two, .since = 0x01040000, .citation = "DNG 1.6.0.0, OriginalDefaultCropSize (SHORT or LONG or RATIONAL)" },
+    .{ .tag = tags.profile_hue_sat_map_encoding, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, ProfileHueSatMapEncoding (LONG)" },
+    .{ .tag = tags.profile_look_table_encoding, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, ProfileLookTableEncoding (LONG)" },
+    .{ .tag = tags.baseline_exposure_offset, .kind = .rational, .count = .one, .since = 0x01040000, .citation = "DNG 1.6.0.0, BaselineExposureOffset (RATIONAL)" },
+    .{ .tag = tags.default_black_render, .kind = .unsigned_long, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01040000, .citation = "DNG 1.6.0.0, DefaultBlackRender (LONG)" },
+    .{ .tag = tags.new_raw_image_digest, .kind = .bytes, .count = .sixteen, .since = 0x01040000, .citation = "DNG 1.6.0.0, NewRawImageDigest (BYTE)" },
+    .{ .tag = tags.raw_to_preview_gain, .kind = .double, .count = .one, .since = 0x01040000, .citation = "DNG 1.6.0.0, RawToPreviewGain (DOUBLE)" },
+    .{ .tag = tags.default_user_crop, .kind = .rational, .count = .four, .extras = &.{.user_crop}, .since = 0x01040000, .citation = "DNG 1.6.0.0, DefaultUserCrop (RATIONAL)" },
+    .{ .tag = tags.depth_format, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 2 }}, .since = 0x01050000, .citation = "DNG 1.6.0.0, DepthFormat (SHORT)" },
+    .{ .tag = tags.depth_near, .kind = .rational, .count = .one, .since = 0x01050000, .citation = "DNG 1.6.0.0, DepthNear (RATIONAL)" },
+    .{ .tag = tags.depth_far, .kind = .rational, .count = .one, .since = 0x01050000, .citation = "DNG 1.6.0.0, DepthFar (RATIONAL)" },
+    .{ .tag = tags.depth_units, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 1 }}, .since = 0x01050000, .citation = "DNG 1.6.0.0, DepthUnits (SHORT)" },
+    .{ .tag = tags.depth_measure_type, .kind = .unsigned_short, .count = .one, .values = &.{.{ 0, 2 }}, .since = 0x01050000, .citation = "DNG 1.6.0.0, DepthMeasureType (SHORT)" },
+    .{ .tag = tags.enhance_params, .kind = .ascii, .count = .any, .extras = &.{.non_empty}, .since = 0x01050000, .citation = "DNG 1.6.0.0, EnhanceParams (ASCII)" },
+    .{ .tag = tags.profile_gain_table_map, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, ProfileGainTableMap (UNDEFINED)" },
+    .{ .tag = tags.semantic_name, .kind = .ascii, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, SemanticName (ASCII)" },
+    .{ .tag = tags.semantic_instance_id, .kind = .ascii, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, SemanticInstanceID (ASCII)" },
+    .{ .tag = tags.calibration_illuminant_3, .kind = .unsigned_short, .count = .one, .since = 0x01060000, .citation = "DNG 1.6.0.0, CalibrationIlluminant3 (SHORT)" },
+    .{ .tag = tags.camera_calibration_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, CameraCalibration3 (SRATIONAL)" },
+    .{ .tag = tags.color_matrix_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, ColorMatrix3 (SRATIONAL)" },
+    .{ .tag = tags.forward_matrix_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, ForwardMatrix3 (SRATIONAL)" },
+    .{ .tag = tags.illuminant_data_1, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData1 (UNDEFINED)" },
+    .{ .tag = tags.illuminant_data_2, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData2 (UNDEFINED)" },
+    .{ .tag = tags.illuminant_data_3, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, IlluminantData3 (UNDEFINED)" },
+    .{ .tag = tags.mask_sub_area, .kind = .unsigned_long, .count = .four, .since = 0x01060000, .citation = "DNG 1.6.0.0, MaskSubArea (LONG)" },
+    .{ .tag = tags.profile_hue_sat_map_data_3, .kind = .float, .count = .hue_sat_map, .since = 0x01060000, .citation = "DNG 1.6.0.0, ProfileHueSatMapData3 (FLOAT)" },
+    .{ .tag = tags.reduction_matrix_3, .kind = .srational, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, ReductionMatrix3 (SRATIONAL)" },
+    .{ .tag = tags.rgb_tables, .kind = .undefined, .count = .any, .since = 0x01060000, .citation = "DNG 1.6.0.0, RGBTables (UNDEFINED)" },
 };
 
 /// Constraints a claimed specification states that are not yet checked,
@@ -314,7 +479,7 @@ pub const rules = [_]Rule{
 /// disappears; a test pins this list.
 pub const Pending = struct { what: []const u8, citation: []const u8, waits_for: []const u8 };
 pub const pending = [_]Pending{
-    .{ .what = "NewSubfileType bits", .citation = "TIFF 6.0 p. 36", .waits_for = "DNG (TIFF-FX adds bit 4, MRC, RFC 3949 p. 64)" },
+    .{ .what = "NewSubfileType bits", .citation = "TIFF 6.0 p. 36; DNG 1.6.0.0 Chapter 3", .waits_for = "validate's ruling on the DNG should-rows (DNG says previews \"should use\" 1, raw 0, and so on; TIFF-FX adds bit 4, MRC, RFC 3949 p. 64)" },
 };
 
 comptime {
@@ -336,11 +501,59 @@ fn ruleFor(tag: u16) ?*const Rule {
     return null;
 }
 
-/// Append every fault in `dir` to `out`, in entry order.
+/// What IFD 0 declares about DNG. Null where IFD 0 has no DNGVersion: the
+/// file does not claim DNG, and no DNG row or restriction applies.
+pub const Dng = struct {
+    /// Packed DNGVersion, major << 24 | minor << 16 | revision << 8 | build,
+    /// or null when the entry is malformed, which leaves the version unknown
+    /// (validate D2, 2026-11-04).
+    version: ?u32,
+
+    /// The cited edition, 1.6.0.0.
+    pub const cited: u32 = 0x01060000;
+    pub const v1_4: u32 = 0x01040000;
+
+    /// From IFD 0, or null when it carries no DNGVersion. Any unsigned
+    /// storage of four 8-bit values gives a version; anything else is
+    /// malformed (its own fault).
+    pub fn fromIfd0(dir: *const Ifd, endian: Endian) ?Dng {
+        const index = indexOf(dir, tags.dng_version) orelse return null;
+        const entry = dir.entries[index];
+        if (entry.count != 4) return .{ .version = null };
+        const bytes = dir.entryValueSlice(index);
+        var packed_version: u32 = 0;
+        var i: usize = 0;
+        while (i < 4) : (i += 1) {
+            const b = element(bytes, entry.field_type, i, endian) orelse return .{ .version = null };
+            if (b > 255) return .{ .version = null };
+            packed_version = (packed_version << 8) | @as(u32, @intCast(b));
+        }
+        return .{ .version = packed_version };
+    }
+
+    /// Closed value lists apply to a known version up to the cited edition:
+    /// a later edition may extend any list (D1), and an unknown version
+    /// gets none (D2).
+    fn valueLists(self: Dng) bool {
+        const v = self.version orelse return false;
+        return v <= cited;
+    }
+
+    /// A constraint introduced in edition `since` applies to a known version
+    /// of at least `since`; none applies to an unknown version (D2).
+    fn from(self: Dng, since: u32) bool {
+        const v = self.version orelse return false;
+        return v >= since;
+    }
+};
+
+/// Append every fault in `dir` to `out`, in entry order. `dng` is what IFD 0
+/// of the same file declares (`Dng.fromIfd0`), or null.
 pub fn check(
     allocator: std.mem.Allocator,
     dir: *const Ifd,
     endian: Endian,
+    dng: ?Dng,
     out: *std.ArrayListUnmanaged(Fault),
 ) error{OutOfMemory}!void {
     for (dir.entries, 0..) |entry, i| {
@@ -353,7 +566,17 @@ pub fn check(
             } });
         }
         const rule = ruleFor(entry.tag) orelse continue;
-        if (fieldReason(dir, i, rule.*, endian)) |reason| {
+        // A DNG row applies only in a DNG file, and only from the edition
+        // that added its tag; with an unknown version, type and count rows
+        // still apply (D2).
+        if (rule.since) |since| {
+            const d = dng orelse continue;
+            if (d.version) |v| if (v < since) continue;
+        }
+        const lists = if (rule.since != null) dng.?.valueLists() else true;
+        const found = fieldReason(dir, i, rule.*, endian, lists) orelse
+            if (dng) |d| dngRestriction(dir, i, endian, d) else null;
+        if (found) |reason| {
             try out.append(allocator, .{ .field_invalid = .{
                 .entry_index = index,
                 .tag = entry.tag,
@@ -374,7 +597,8 @@ fn rawSlot(entry: Entry, width: ifd_mod.OffsetWidth, endian: Endian) u64 {
     };
 }
 
-fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reason {
+/// `lists` is false where a DNG row's closed value list does not apply (D1, D2).
+fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, lists: bool) ?Reason {
     const entry = dir.entries[index];
     const type_ok = switch (rule.kind) {
         .unsigned_short, .unsigned_long => entry.field_type == .byte or entry.field_type == .short or entry.field_type == .long,
@@ -390,6 +614,10 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
         .ifd_offsets => entry.field_type == .long or entry.raw_type == 13 or
             (entry.field_type == .ifd8 and dir.offset_width == .big),
         .ascii => entry.field_type == .ascii,
+        .float => entry.field_type == .float,
+        .long_or_rational, .short_or_rational => entry.field_type == .byte or entry.field_type == .short or
+            entry.field_type == .long or entry.field_type == .rational,
+        .utf8_string => entry.field_type == .ascii or entry.field_type == .byte,
     };
     if (!type_ok) return .type;
 
@@ -427,22 +655,37 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
         .sixteen => entry.count == 16,
         .multiple_of_six => entry.count >= 6 and entry.count % 6 == 0,
         .at_least_four => entry.count >= 4,
+        .multiple_of_four => entry.count >= 4 and entry.count % 4 == 0,
+        .even_at_least_two => entry.count >= 2 and entry.count % 2 == 0,
+        .even_at_least_four => entry.count >= 4 and entry.count % 2 == 0,
+        // A dependency that is absent where it is needed, or malformed (its
+        // own fault), leaves the count unconstrained.
+        .black_level, .active_area_width, .active_area_length, .hue_sat_map, .look_table => if (derivedCount(dir, rule.count, endian)) |n| entry.count == n else true,
     };
     if (!count_ok) return .count;
 
     const bytes = dir.entryValueSlice(index);
     switch (rule.kind) {
-        .rational, .srational, .double, .bytes, .undefined, .ifd_offsets, .integer32 => return null,
+        .bytes, .undefined, .ifd_offsets, .integer32 => return null,
+        .rational, .srational, .double, .float => return realReason(bytes, entry, rule, endian),
         .ascii => {
             if (!isAscii(bytes)) return .value;
             if (hasExtra(rule, .date_time) and !isDateTime(bytes)) return .value;
+            if (hasExtra(rule, .non_empty) and (bytes.len < 2 or bytes[0] == 0)) return .value;
             return null;
         },
+        .utf8_string => {
+            if (bytes.len == 0 or bytes[bytes.len - 1] != 0) return .value;
+            if (!std.unicode.utf8ValidateSlice(bytes[0 .. bytes.len - 1])) return .value;
+            return null;
+        },
+        .long_or_rational, .short_or_rational => if (entry.field_type == .rational) return null,
         .unsigned_byte, .unsigned_short, .unsigned_long, .offsets_or_counts => {},
     }
     const max: u64 = switch (rule.kind) {
         .unsigned_byte => std.math.maxInt(u8),
-        .unsigned_short => std.math.maxInt(u16),
+        .unsigned_short, .short_or_rational => std.math.maxInt(u16),
+        .long_or_rational => std.math.maxInt(u32),
         .unsigned_long => std.math.maxInt(u32),
         else => std.math.maxInt(u64),
     };
@@ -452,8 +695,10 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
         if (value > max) return .value;
         if (hasExtra(rule, .multiple_of_16) and value % 16 != 0) return .value;
         const ranges = rule.values orelse continue;
-        if (value >= 32768) continue; // private range, not a violation
-        if (!inRanges(@intCast(value), ranges)) return .value;
+        if (rule.since == null) {
+            if (value >= 32768) continue; // private range, not a violation
+        } else if (!lists) continue; // D1, D2
+        if (value > std.math.maxInt(u16) or !inRanges(@intCast(value), ranges)) return .value;
     }
     for (rule.extras) |extra| switch (extra) {
         .vertical_at_most_horizontal => {
@@ -516,9 +761,252 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian) ?Reaso
                 if (bits != 1) return .value;
             }
         },
-        .multiple_of_16, .date_time => {},
+        .multiple_of_16, .date_time, .user_crop, .noise_profile_signs, .tone_curve_endpoints, .non_empty => {},
     };
     return null;
+}
+
+/// Value checks of a RATIONAL, SRATIONAL, DOUBLE or FLOAT field, after its
+/// type and count.
+fn realReason(bytes: []const u8, entry: Entry, rule: Rule, endian: Endian) ?Reason {
+    for (rule.extras) |extra| switch (extra) {
+        // "0 <= Top < Bottom <= 1.0, 0 <= Left < Right <= 1.0". RATIONAL is
+        // unsigned, so only the order and the upper bound can fail; a zero
+        // denominator defines no value.
+        .user_crop => {
+            var r: [4][2]u64 = undefined;
+            for (&r, 0..) |*v, k| {
+                const q = rationalAt(bytes, k, endian) orelse return .count;
+                if (q[1] == 0) return .value;
+                v.* = q;
+            }
+            const top = r[0];
+            const left = r[1];
+            const bottom = r[2];
+            const right = r[3];
+            if (top[0] * bottom[1] >= bottom[0] * top[1] or bottom[0] > bottom[1]) return .value;
+            if (left[0] * right[1] >= right[0] * left[1] or right[0] > right[1]) return .value;
+        },
+        // Pairs (S, O): each S positive, each O non-negative; NaN fails both.
+        .noise_profile_signs => {
+            var k: usize = 0;
+            while (k < entry.count) : (k += 1) {
+                const v = doubleAt(bytes, k, endian) orelse return .count;
+                const ok = if (k % 2 == 0) v > 0 else v >= 0;
+                if (!ok) return .value;
+            }
+        },
+        // The first sample (0, 0) and the last (1, 1).
+        .tone_curve_endpoints => {
+            const n: usize = std.math.cast(usize, entry.count) orelse return .count;
+            const first_x = floatAt(bytes, 0, endian) orelse return .count;
+            const first_y = floatAt(bytes, 1, endian) orelse return .count;
+            const last_x = floatAt(bytes, n - 2, endian) orelse return .count;
+            const last_y = floatAt(bytes, n - 1, endian) orelse return .count;
+            if (first_x != 0 or first_y != 0 or last_x != 1 or last_y != 1) return .value;
+        },
+        else => {},
+    };
+    return null;
+}
+
+/// The count a DNG Tier 2 rule derives from other fields of `dir`, or null
+/// when a field it needs is malformed (its own fault) or absent with no
+/// default in the text.
+fn derivedCount(dir: *const Ifd, count: Count, endian: Endian) ?u64 {
+    switch (count) {
+        // BlackLevelRepeatDim defaults to 1, 1; SamplesPerPixel to 1.
+        .black_level => {
+            var rows: u64 = 1;
+            var cols: u64 = 1;
+            if (indexOf(dir, tags.black_level_repeat_dim)) |k| {
+                const entry = dir.entries[k];
+                if (entry.count != 2) return null;
+                const values = dir.entryValueSlice(k);
+                rows = element(values, entry.field_type, 0, endian) orelse return null;
+                cols = element(values, entry.field_type, 1, endian) orelse return null;
+            }
+            const samples = if (indexOf(dir, tags.samples_per_pixel) != null) scalar(dir, tags.samples_per_pixel, endian) orelse return null else 1;
+            const area = std.math.mul(u64, rows, cols) catch return null;
+            return std.math.mul(u64, area, samples) catch null;
+        },
+        // ActiveArea is top, left, bottom, right; absent, the whole image.
+        .active_area_width, .active_area_length => {
+            const width = count == .active_area_width;
+            if (indexOf(dir, tags.active_area)) |k| {
+                const entry = dir.entries[k];
+                if (entry.count != 4) return null;
+                const values = dir.entryValueSlice(k);
+                const top = element(values, entry.field_type, 0, endian) orelse return null;
+                const left = element(values, entry.field_type, 1, endian) orelse return null;
+                const bottom = element(values, entry.field_type, 2, endian) orelse return null;
+                const right = element(values, entry.field_type, 3, endian) orelse return null;
+                if (bottom < top or right < left) return null;
+                return if (width) right - left else bottom - top;
+            }
+            return scalar(dir, if (width) tags.image_width else tags.image_length, endian);
+        },
+        .hue_sat_map, .look_table => {
+            const k = indexOf(dir, if (count == .hue_sat_map) tags.profile_hue_sat_map_dims else tags.profile_look_table_dims) orelse return null;
+            const entry = dir.entries[k];
+            if (entry.count != 3) return null;
+            const values = dir.entryValueSlice(k);
+            var product: u64 = 3;
+            var i: usize = 0;
+            while (i < 3) : (i += 1) {
+                const d = element(values, entry.field_type, i, endian) orelse return null;
+                product = std.math.mul(u64, product, d) catch return null;
+            }
+            return product;
+        },
+        else => return null,
+    }
+}
+
+/// The role DNG gives an IFD by its NewSubFileType, default 0 (DNG 1.6.0.0
+/// Chapter 3); `unknown` for any other value or a malformed entry.
+const Role = enum { raw, preview_or_reduced, alternative_preview, transparency, depth, enhanced, semantic_mask, unknown };
+
+fn role(dir: *const Ifd, endian: Endian) Role {
+    const nst = if (indexOf(dir, tags.new_subfile_type) != null) scalar(dir, tags.new_subfile_type, endian) orelse return .unknown else 0;
+    return switch (nst) {
+        0 => .raw,
+        1 => .preview_or_reduced,
+        0x10001 => .alternative_preview,
+        4, 5 => .transparency,
+        8, 9 => .depth,
+        16 => .enhanced,
+        0x10004 => .semantic_mask,
+        else => .unknown,
+    };
+}
+
+/// PhotometricInterpretation values DNG 1.6.0.0 Chapter 3 allows by role:
+/// previews 1, 2, 6; raw 32803 (CFA) and 34892 (LinearRaw), which "can be
+/// used in reduced resolution IFDs and enhanced IFDs"; depth maps 51177 and
+/// semantic masks 52527 ("required"). NewSubFileType 1 marks previews and
+/// reduced-resolution raw images alike, so it takes both lists. The text
+/// gives transparency masks no list, so they take the union, as an unknown
+/// role does (validate D6).
+fn photometricAllowed(r: Role, value: u64) bool {
+    const cfa = tags.photometric_color_filter_array;
+    const linear = tags.photometric_linear_raw;
+    const any_role = [_]u64{ 1, 2, 6, cfa, linear, tags.photometric_depth, tags.photometric_mask };
+    const list: []const u64 = switch (r) {
+        .raw => &.{ cfa, linear },
+        .preview_or_reduced => &.{ 1, 2, 6, cfa, linear },
+        .alternative_preview => &.{ 1, 2, 6 },
+        .enhanced => &.{linear},
+        .depth => &.{tags.photometric_depth},
+        .semantic_mask => &.{tags.photometric_mask},
+        .transparency, .unknown => &any_role,
+    };
+    return std.mem.indexOfScalar(u64, list, value) != null;
+}
+
+/// DNG 1.6.0.0 Chapter 3, "Restrictions and Extensions to Existing TIFF
+/// Tags", on an entry that passed its TIFF row: restrictions, so faults
+/// (validate D6). Closed lists follow D1 and D2. The Deflate and lossy JPEG
+/// conditions, from 1.4.0.0, apply to any known version from 1.4.0.0 on.
+fn dngRestriction(dir: *const Ifd, index: usize, endian: Endian, dng: Dng) ?Reason {
+    const entry = dir.entries[index];
+    const bytes = dir.entryValueSlice(index);
+    const lists = dng.valueLists();
+    switch (entry.tag) {
+        // "Supported values are from 8 to 32 bits/sample. The depth must be
+        // the same for each sample if SamplesPerPixel is not equal to 1."
+        // Floating point: "16, 24, and 32".
+        tags.bits_per_sample => {
+            const first = element(bytes, entry.field_type, 0, endian) orelse return null;
+            var k: usize = 0;
+            while (k < entry.count) : (k += 1) {
+                const bits = element(bytes, entry.field_type, k, endian) orelse return null;
+                if (bits != first) return .value;
+                if (lists and (bits < 8 or bits > 32)) return .value;
+            }
+            if (lists and floatingPoint(dir, endian) and first != 16 and first != 24 and first != 32) return .value;
+        },
+        // "If BitsPerSample is not equal to 8 or 16 or 32, then the bits must
+        // be packed into bytes using the TIFF default FillOrder of 1".
+        tags.fill_order => {
+            const fill = element(bytes, entry.field_type, 0, endian) orelse return null;
+            if (fill != 1 and !allBitsIn(dir, endian, &.{ 8, 16, 32 })) return .value;
+        },
+        // "DNG versions earlier than 1.4.0.0 always use the default
+        // SampleFormat value of 1"; 1.4.0.0 "allows" 3.
+        tags.sample_format => {
+            if (!lists) return null;
+            var k: usize = 0;
+            while (k < entry.count) : (k += 1) {
+                const format = element(bytes, entry.field_type, k, endian) orelse return null;
+                if (format != 1 and !(format == 3 and dng.from(Dng.v1_4))) return .value;
+            }
+        },
+        // 1 and 7 before 1.4.0.0; 8 (Deflate) and 34892 (lossy JPEG) from it.
+        tags.compression => {
+            const compression = element(bytes, entry.field_type, 0, endian) orelse return null;
+            const later = compression == tags.compression_deflate or compression == tags.compression_dng_lossy_jpeg;
+            if (lists and compression != tags.compression_none and compression != tags.compression_jpeg and
+                !(later and dng.from(Dng.v1_4))) return .value;
+            if (!dng.from(Dng.v1_4)) return null;
+            // "Deflate (8) compression is allowed for floating point image
+            // data, 32-bit integer image data, transparency mask data, and
+            // depth map data."
+            if (compression == tags.compression_deflate) {
+                const r = role(dir, endian);
+                if (!(floatingPoint(dir, endian) or allBitsIn(dir, endian, &.{32}) or r == .transparency or r == .depth)) return .value;
+            }
+            // "Lossy JPEG (34892) is allowed for IFDs that use 8-bit integer
+            // data and one of the following PhotometricInterpretation values:
+            // 34892 (LinearRaw), 52527 (PhotometricMask)".
+            if (compression == tags.compression_dng_lossy_jpeg) {
+                const photometric = scalar(dir, tags.photometric, endian) orelse return null;
+                if (floatingPoint(dir, endian) or !allBitsIn(dir, endian, &.{8}) or
+                    (photometric != tags.photometric_linear_raw and photometric != tags.photometric_mask)) return .value;
+            }
+        },
+        // With Compression 8: 1, 2, 3, or 34892 to 34895.
+        tags.predictor => {
+            if (!lists) return null;
+            const compression = scalar(dir, tags.compression, endian) orelse return null;
+            if (compression != tags.compression_deflate) return null;
+            const p = element(bytes, entry.field_type, 0, endian) orelse return null;
+            if (!(p >= 1 and p <= 3) and !(p >= 34892 and p <= 34895)) return .value;
+        },
+        tags.photometric => {
+            if (!lists) return null;
+            const p = element(bytes, entry.field_type, 0, endian) orelse return null;
+            if (!photometricAllowed(role(dir, endian), p)) return .value;
+        },
+        else => {},
+    }
+    return null;
+}
+
+/// Whether any SampleFormat value is 3 (IEEE floating point).
+fn floatingPoint(dir: *const Ifd, endian: Endian) bool {
+    const k = indexOf(dir, tags.sample_format) orelse return false;
+    const entry = dir.entries[k];
+    const values = dir.entryValueSlice(k);
+    var i: usize = 0;
+    while (i < entry.count) : (i += 1) {
+        if ((element(values, entry.field_type, i, endian) orelse return false) == 3) return true;
+    }
+    return false;
+}
+
+/// Whether every BitsPerSample value (default 1) is one of `allowed`; true
+/// when BitsPerSample is malformed (its own fault).
+fn allBitsIn(dir: *const Ifd, endian: Endian, allowed: []const u64) bool {
+    const k = indexOf(dir, tags.bits_per_sample) orelse return std.mem.indexOfScalar(u64, allowed, 1) != null;
+    const entry = dir.entries[k];
+    const values = dir.entryValueSlice(k);
+    var i: usize = 0;
+    while (i < entry.count) : (i += 1) {
+        const bits = element(values, entry.field_type, i, endian) orelse return true;
+        if (std.mem.indexOfScalar(u64, allowed, bits) == null) return false;
+    }
+    return true;
 }
 
 fn hasExtra(rule: Rule, extra: Extra) bool {
@@ -632,6 +1120,25 @@ fn inRanges(value: u16, ranges: []const [2]u16) bool {
         if (value >= range[0] and value <= range[1]) return true;
     }
     return false;
+}
+
+/// Element `i` of a RATIONAL array as numerator and denominator, or null.
+fn rationalAt(bytes: []const u8, i: usize, endian: Endian) ?[2]u64 {
+    const at = i * 8;
+    if (at + 8 > bytes.len) return null;
+    return .{ header_mod.readU32(bytes[at..], endian), header_mod.readU32(bytes[at + 4 ..], endian) };
+}
+
+fn floatAt(bytes: []const u8, i: usize, endian: Endian) ?f32 {
+    const at = i * 4;
+    if (at + 4 > bytes.len) return null;
+    return @bitCast(header_mod.readU32(bytes[at..], endian));
+}
+
+fn doubleAt(bytes: []const u8, i: usize, endian: Endian) ?f64 {
+    const at = i * 8;
+    if (at + 8 > bytes.len) return null;
+    return @bitCast(header_mod.readU64(bytes[at..][0..8], endian));
 }
 
 /// Element `i` of an unsigned BYTE, SHORT, LONG or LONG8 array, or null if
@@ -748,6 +1255,10 @@ fn inline16(tag: u16, field_type: FieldType, count: u64, value: u32) Entry {
 }
 
 fn faultsOf(entries: []Entry, cached: []?[]u8) !std.ArrayListUnmanaged(Fault) {
+    return faultsOfDng(entries, cached, null);
+}
+
+fn faultsOfDng(entries: []Entry, cached: []?[]u8, dng: ?Dng) !std.ArrayListUnmanaged(Fault) {
     const dir = Ifd{
         .entries = entries,
         .next_offset = 0,
@@ -756,8 +1267,15 @@ fn faultsOf(entries: []Entry, cached: []?[]u8) !std.ArrayListUnmanaged(Fault) {
         .cached_values = cached,
     };
     var out: std.ArrayListUnmanaged(Fault) = .empty;
-    try check(testing.allocator, &dir, .little, &out);
+    try check(testing.allocator, &dir, .little, dng, &out);
     return out;
+}
+
+fn expectFaultsDng(dng: ?Dng, entries: []Entry, expected: []const Fault) !void {
+    var cached = [_]?[]u8{null} ** 16;
+    var out = try faultsOfDng(entries, cached[0..entries.len], dng);
+    defer out.deinit(testing.allocator);
+    try testing.expectEqualDeep(expected, out.items);
 }
 
 fn expectFaults(entries: []Entry, expected: []const Fault) !void {
@@ -808,29 +1326,31 @@ test "every single-value rule accepts its range ends and rejects the values just
     for (rules) |rule| {
         if (rule.count != .one) continue;
         const ranges = rule.values orelse continue;
+        // A DNG row is checked in a DNG 1.6.0.0 file, and has no private range.
+        const dng: ?Dng = if (rule.since != null) v1_6 else null;
         for (ranges) |range| {
             for ([_]u16{ range[0], range[1] }) |v| {
                 if (rule.tag == tags.photometric) {
                     // With the SamplesPerPixel the photometric implies.
                     var ok = [_]Entry{ inline16(rule.tag, .short, 1, v), inline16(tags.samples_per_pixel, .short, 1, impliedChannels(v)) };
-                    try expectFaults(&ok, &.{});
+                    try expectFaultsDng(dng, &ok, &.{});
                 } else {
                     var ok = [_]Entry{inline16(rule.tag, .short, 1, v)};
-                    try expectFaults(&ok, &.{});
+                    try expectFaultsDng(dng, &ok, &.{});
                 }
             }
             for ([_]u32{ range[0] -% 1, range[1] + 1 }) |v| {
-                if (v >= 32768) continue; // private, never a fault
+                if (dng == null and v >= 32768) continue; // private, never a fault
                 var inside = false;
                 for (ranges) |other| inside = inside or (v >= other[0] and v <= other[1]);
                 if (inside) continue;
                 var bad = [_]Entry{inline16(rule.tag, .short, 1, v)};
-                try expectFaults(&bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = v } }});
+                try expectFaultsDng(dng, &bad, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .value, .raw_type = 3, .raw_count = 1, .raw_slot = v } }});
             }
             checked += 1;
         }
         var two = [_]Entry{inline16(rule.tag, .short, 2, ranges[0][0] | (@as(u32, ranges[0][0]) << 16))};
-        try expectFaults(&two, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .count, .raw_type = 3, .raw_count = 2, .raw_slot = ranges[0][0] | (@as(u32, ranges[0][0]) << 16) } }});
+        try expectFaultsDng(dng, &two, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = rule.tag, .reason = .count, .raw_type = 3, .raw_count = 2, .raw_slot = ranges[0][0] | (@as(u32, ranges[0][0]) << 16) } }});
     }
     try testing.expect(checked >= 8);
 }
@@ -1054,7 +1574,7 @@ test "LONG8 is allowed only for strip and tile offsets and counts, and only in B
             const dir = Ifd{ .entries = &entries, .next_offset = 0, .offset_width = width, .allocator = testing.allocator, .cached_values = &cached };
             var out: std.ArrayListUnmanaged(Fault) = .empty;
             defer out.deinit(testing.allocator);
-            try check(testing.allocator, &dir, .little, &out);
+            try check(testing.allocator, &dir, .little, null, &out);
             const allowed = width == .big and tag == tags.strip_offsets;
             if (allowed) {
                 try testing.expectEqual(@as(usize, 0), out.items.len);
@@ -1358,6 +1878,375 @@ fn impliedChannels(photometric: u32) u32 {
         5 => 4,
         else => 1,
     };
+}
+
+const v1_2: Dng = .{ .version = 0x01020000 };
+const v1_3: Dng = .{ .version = 0x01030000 };
+const v1_4: Dng = .{ .version = Dng.v1_4 };
+const v1_5: Dng = .{ .version = 0x01050000 };
+const v1_6: Dng = .{ .version = Dng.cited };
+const v1_7: Dng = .{ .version = 0x01070000 };
+const unknown_version: Dng = .{ .version = null };
+
+/// The reason the single fault on `tag` gives, or null when `entries` (sorted,
+/// out-of-line values in `cached`) have no fault at all.
+fn expectDng(entries: []Entry, cached: []?[]u8, dng: ?Dng, tag: u16, expected: ?Reason) !void {
+    var out = try faultsOfDng(entries, cached, dng);
+    defer out.deinit(testing.allocator);
+    if (expected) |reason| {
+        if (out.items.len != 1 or out.items[0].field_invalid.tag != tag or out.items[0].field_invalid.reason != reason) {
+            std.debug.print("tag {d}: expected {s}, got {any}\n", .{ tag, @tagName(reason), out.items });
+            return error.TestExpectedEqual;
+        }
+    } else if (out.items.len != 0) {
+        std.debug.print("tag {d}: expected no fault, got {any}\n", .{ tag, out.items });
+        return error.TestExpectedEqual;
+    }
+}
+
+/// One entry checked alone in a DNG context.
+fn expectDngOne(dng: ?Dng, entry: Entry, bytes: ?[]u8, expected: ?Reason) !void {
+    var entries = [_]Entry{entry};
+    var cached = [_]?[]u8{bytes};
+    try expectDng(&entries, &cached, dng, entry.tag, expected);
+}
+
+test "DNG rows apply only in a DNG file, and only from the edition that added the tag" {
+    // DepthFormat (1.5.0.0) is SHORT[1]; count 2 is a count fault.
+    const bad = inline16(tags.depth_format, .short, 2, 0);
+    try expectDngOne(null, bad, null, null);
+    try expectDngOne(v1_4, bad, null, null);
+    try expectDngOne(v1_5, bad, null, .count);
+    try expectDngOne(v1_7, bad, null, .count);
+    // An unknown version keeps type and count rows (D2).
+    try expectDngOne(unknown_version, bad, null, .count);
+    // A 1.0/1.1 tag applies to every known version.
+    try expectDngOne(.{ .version = 0x01000000 }, inline16(tags.cfa_layout, .short, 2, 0x0001_0001), null, .count);
+}
+
+test "DNG closed value lists apply up to 1.6.0.0, to a known version, with no private range" {
+    const layout = struct {
+        fn of(v: u32) Entry {
+            return inline16(tags.cfa_layout, .short, 1, v);
+        }
+    };
+    try expectDngOne(v1_6, layout.of(9), null, null);
+    try expectDngOne(v1_6, layout.of(10), null, .value);
+    try expectDngOne(v1_6, layout.of(0), null, .value);
+    try expectDngOne(v1_6, layout.of(40000), null, .value);
+    // The 1.0 to 1.6 union: layouts 6 to 9 (added in 1.3.0.0) are valid in 1.2.
+    try expectDngOne(v1_2, layout.of(6), null, null);
+    // Above 1.6.0.0, or with an unknown version, closed lists are skipped
+    // and nothing is recorded (D1, D2).
+    try expectDngOne(v1_7, layout.of(10), null, null);
+    try expectDngOne(unknown_version, layout.of(10), null, null);
+    // A LONG-defined list (ProfileEmbedPolicy 0-3) faults above 65535 too.
+    try expectDngOne(v1_6, inline16(tags.profile_embed_policy, .long, 1, 3), null, null);
+    try expectDngOne(v1_6, inline16(tags.profile_embed_policy, .long, 1, 70000), null, .value);
+    // PreviewColorSpace's "valid values include" is open (D5): no list.
+    try expectDngOne(v1_6, inline16(tags.preview_color_space, .long, 1, 9), null, null);
+}
+
+test "DNGVersion: four 8-bit values in any unsigned storage, otherwise unknown" {
+    var none = [_]Entry{inline16(tags.image_width, .long, 1, 1)};
+    const no_dng = Ifd{ .entries = &none, .next_offset = 0, .offset_width = .classic, .allocator = testing.allocator, .cached_values = &.{} };
+    try testing.expect(Dng.fromIfd0(&no_dng, .little) == null);
+    var shorts = [_]u8{ 1, 0, 6, 0, 0, 0, 0, 0 };
+    const cases = [_]struct { entry: Entry, bytes: ?[]u8, version: ?u32 }{
+        .{ .entry = inline16(tags.dng_version, .byte, 4, 0x0000_0601), .bytes = null, .version = 0x01060000 },
+        .{ .entry = inline16(tags.dng_version, .short, 4, 0), .bytes = &shorts, .version = 0x01060000 },
+        .{ .entry = inline16(tags.dng_version, .byte, 3, 0x0000_0601), .bytes = null, .version = null },
+        .{ .entry = inline16(tags.dng_version, .ascii, 4, 0x0000_0601), .bytes = null, .version = null },
+    };
+    for (cases) |case| {
+        var entries = [_]Entry{case.entry};
+        var cached = [_]?[]u8{case.bytes};
+        const dir = Ifd{ .entries = &entries, .next_offset = 0, .offset_width = .classic, .allocator = testing.allocator, .cached_values = &cached };
+        try testing.expectEqual(case.version, Dng.fromIfd0(&dir, .little).?.version);
+    }
+}
+
+test "DNG kinds: FLOAT, SHORT or LONG or RATIONAL, SHORT or RATIONAL, and UTF-8 strings" {
+    var four_floats = [_]u8{0} ** 16;
+    try expectDngOne(v1_6, inline16(tags.profile_hue_sat_map_dims, .long, 3, 0), @constCast(&[_]u8{ 1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0 }), null);
+    try expectDngOne(v1_6, inline16(tags.baseline_exposure, .rational, 1, 0), @constCast(&[_]u8{ 0, 0, 0, 0, 1, 0, 0, 0 }), .type);
+    try expectDngOne(v1_6, inline16(tags.profile_tone_curve, .double, 4, 0), &four_floats, .type);
+    // BlackLevel: SHORT, LONG or RATIONAL, not SRATIONAL.
+    var rational = [_]u8{ 0, 0, 0, 0, 1, 0, 0, 0 };
+    try expectDngOne(v1_6, inline16(tags.black_level, .rational, 1, 0), &rational, null);
+    try expectDngOne(v1_6, inline16(tags.black_level, .srational, 1, 0), &rational, .type);
+    try expectDngOne(v1_6, inline16(tags.black_level, .long, 1, 70000), null, null);
+    // AsShotNeutral: SHORT or RATIONAL, so integers hold 16 bits.
+    var three_longs = [_]u8{ 1, 0, 0, 0, 1, 0, 0, 0, 0x70, 0x11, 1, 0 };
+    try expectDngOne(v1_6, inline16(tags.as_shot_neutral, .long, 3, 0), &three_longs, .value);
+    // UTF-8 strings, ASCII or BYTE: NUL last, valid UTF-8 before it; inner
+    // NULs are not checked (D4).
+    const utf8 = struct {
+        fn entry(typ: FieldType, len: usize) Entry {
+            return inline16(tags.localized_camera_model, typ, len, 0);
+        }
+    };
+    var cafe = [_]u8{ 'C', 'a', 'f', 0xc3, 0xa9, 0 };
+    try expectDngOne(v1_6, utf8.entry(.byte, cafe.len), &cafe, null);
+    try expectDngOne(v1_6, utf8.entry(.ascii, cafe.len), &cafe, null);
+    var unterminated = [_]u8{ 'C', 'a', 'f', 0xc3, 0xa9 };
+    try expectDngOne(v1_6, utf8.entry(.byte, unterminated.len), &unterminated, .value);
+    var invalid = [_]u8{ 'C', 0xff, 'f', 0 };
+    try expectDngOne(v1_6, utf8.entry(.byte, invalid.len), &invalid, .value);
+    var inner_nul = [_]u8{ 'A', 0, 'B', 0 };
+    try expectDngOne(v1_6, utf8.entry(.byte, inner_nul.len), &inner_nul, null);
+    try expectDngOne(v1_6, utf8.entry(.short, 2), @constCast(&[_]u8{ 'A', 0, 0, 0 }), .type);
+}
+
+test "DNG count shapes and counts derived from fields in the same IFD" {
+    var longs = [_]u8{0} ** 64;
+    try expectDngOne(v1_6, inline16(tags.masked_areas, .long, 4, 0), &longs, null);
+    try expectDngOne(v1_6, inline16(tags.masked_areas, .long, 8, 0), &longs, null);
+    try expectDngOne(v1_6, inline16(tags.masked_areas, .long, 5, 0), &longs, .count);
+    var doubles = [_]u8{0} ** 48;
+    std.mem.writeInt(u64, doubles[0..8], @bitCast(@as(f64, 1e-5)), .little);
+    try expectDngOne(v1_6, inline16(tags.noise_profile, .double, 2, 0), &doubles, null);
+    try expectDngOne(v1_6, inline16(tags.noise_profile, .double, 3, 0), &doubles, .count);
+    var curve = [_]u8{0} ** 16;
+    try expectDngOne(v1_6, inline16(tags.profile_tone_curve, .float, 2, 0), &curve, .count);
+    // BlackLevel: BlackLevelRepeatDim 2 x 2, one sample: four values.
+    {
+        var e = [_]Entry{ inline16(tags.black_level_repeat_dim, .short, 2, 0x0002_0002), inline16(tags.black_level, .long, 4, 0) };
+        var c = [_]?[]u8{ null, &longs };
+        try expectDng(&e, &c, v1_6, tags.black_level, null);
+        e[1].count = 1;
+        try expectDng(&e, &c, v1_6, tags.black_level, .count);
+    }
+    // WhiteLevel: one per sample.
+    {
+        var e = [_]Entry{ inline16(tags.samples_per_pixel, .short, 1, 3), inline16(tags.white_level, .long, 1, 255) };
+        var c = [_]?[]u8{ null, null };
+        try expectDng(&e, &c, v1_6, tags.white_level, .count);
+    }
+    // BlackLevelDeltaH: one per ActiveArea column, else per image column.
+    {
+        var area = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 3, 0, 0, 0 };
+        var e = [_]Entry{ inline16(tags.black_level_delta_h, .srational, 3, 0), inline16(tags.active_area, .long, 4, 0) };
+        var c = [_]?[]u8{ &longs, &area };
+        try expectDng(&e, &c, v1_6, tags.black_level_delta_h, null);
+        e[0].count = 2;
+        try expectDng(&e, &c, v1_6, tags.black_level_delta_h, .count);
+        var w = [_]Entry{ inline16(tags.image_width, .long, 1, 2), inline16(tags.black_level_delta_h, .srational, 2, 0) };
+        var wc = [_]?[]u8{ null, &longs };
+        try expectDng(&w, &wc, v1_6, tags.black_level_delta_h, null);
+        var l = [_]Entry{ inline16(tags.image_length, .long, 1, 2), inline16(tags.black_level_delta_v, .srational, 1, 0) };
+        var lc = [_]?[]u8{ null, &longs };
+        try expectDng(&l, &lc, v1_6, tags.black_level_delta_v, .count);
+    }
+    // ProfileHueSatMapData1: H * S * V * 3 from ProfileHueSatMapDims.
+    {
+        var dims = [_]u8{ 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0 };
+        var floats = [_]u8{0} ** 48;
+        var e = [_]Entry{ inline16(tags.profile_hue_sat_map_dims, .long, 3, 0), inline16(tags.profile_hue_sat_map_data_1, .float, 12, 0) };
+        var c = [_]?[]u8{ &dims, &floats };
+        try expectDng(&e, &c, v1_6, tags.profile_hue_sat_map_data_1, null);
+        e[1].count = 11;
+        try expectDng(&e, &c, v1_6, tags.profile_hue_sat_map_data_1, .count);
+        // A malformed Dims is its own fault and leaves the data unconstrained.
+        e[0].count = 2;
+        try expectDng(&e, &c, v1_6, tags.profile_hue_sat_map_dims, .count);
+    }
+}
+
+test "DNG value rules: DefaultUserCrop, NoiseProfile, ProfileToneCurve, EnhanceParams" {
+    const crop = struct {
+        fn bytes(r: [4][2]u32) [32]u8 {
+            var out: [32]u8 = undefined;
+            for (r, 0..) |q, k| {
+                std.mem.writeInt(u32, out[8 * k ..][0..4], q[0], .little);
+                std.mem.writeInt(u32, out[8 * k + 4 ..][0..4], q[1], .little);
+            }
+            return out;
+        }
+    };
+    const entry = inline16(tags.default_user_crop, .rational, 4, 0);
+    var ok = crop.bytes(.{ .{ 0, 1 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 1 } });
+    try expectDngOne(v1_6, entry, &ok, null);
+    var inset = crop.bytes(.{ .{ 1, 10 }, .{ 1, 10 }, .{ 9, 10 }, .{ 9, 10 } });
+    try expectDngOne(v1_6, entry, &inset, null);
+    var empty = crop.bytes(.{ .{ 1, 2 }, .{ 0, 1 }, .{ 1, 2 }, .{ 1, 1 } });
+    try expectDngOne(v1_6, entry, &empty, .value);
+    var beyond = crop.bytes(.{ .{ 0, 1 }, .{ 0, 1 }, .{ 1, 1 }, .{ 3, 2 } });
+    try expectDngOne(v1_6, entry, &beyond, .value);
+    var undefined_ratio = crop.bytes(.{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 1 } });
+    try expectDngOne(v1_6, entry, &undefined_ratio, .value);
+    // NoiseProfile: S > 0, O >= 0.
+    const noise = struct {
+        fn bytes(s: f64, o: f64) [16]u8 {
+            var out: [16]u8 = undefined;
+            std.mem.writeInt(u64, out[0..8], @bitCast(s), .little);
+            std.mem.writeInt(u64, out[8..16], @bitCast(o), .little);
+            return out;
+        }
+    };
+    const n = inline16(tags.noise_profile, .double, 2, 0);
+    var good = noise.bytes(1e-5, 0);
+    try expectDngOne(v1_6, n, &good, null);
+    var zero_s = noise.bytes(0, 0);
+    try expectDngOne(v1_6, n, &zero_s, .value);
+    var negative_o = noise.bytes(1e-5, -1e-9);
+    try expectDngOne(v1_6, n, &negative_o, .value);
+    var nan = noise.bytes(std.math.nan(f64), 0);
+    try expectDngOne(v1_6, n, &nan, .value);
+    // ProfileToneCurve: (0, 0) first, (1, 1) last.
+    const curve = struct {
+        fn bytes(v: [6]f32) [24]u8 {
+            var out: [24]u8 = undefined;
+            for (v, 0..) |x, k| std.mem.writeInt(u32, out[4 * k ..][0..4], @bitCast(x), .little);
+            return out;
+        }
+    };
+    const t = inline16(tags.profile_tone_curve, .float, 6, 0);
+    var straight = curve.bytes(.{ 0, 0, 0.5, 0.6, 1, 1 });
+    try expectDngOne(v1_6, t, &straight, null);
+    var lifted = curve.bytes(.{ 0, 0.1, 0.5, 0.6, 1, 1 });
+    try expectDngOne(v1_6, t, &lifted, .value);
+    var short_end = curve.bytes(.{ 0, 0, 0.5, 0.6, 1, 0.9 });
+    try expectDngOne(v1_6, t, &short_end, .value);
+    // EnhanceParams "is required to be non-null".
+    var nul = [_]u8{ 0, 0, 0, 0 };
+    try expectDngOne(v1_6, inline16(tags.enhance_params, .ascii, 1, 0), &nul, .value);
+    var named = [_]u8{ 'A', 'c', 'm', 'e', 0 };
+    try expectDngOne(v1_6, inline16(tags.enhance_params, .ascii, 5, 0), &named, null);
+}
+
+test "DNG Chapter 3: BitsPerSample, FillOrder and SampleFormat" {
+    var two = [_]u8{ 8, 0, 16, 0 };
+    {
+        // "The depth must be the same for each sample", whatever the version.
+        var e = [_]Entry{ inline16(tags.bits_per_sample, .short, 2, 0), inline16(tags.samples_per_pixel, .short, 1, 2) };
+        var c = [_]?[]u8{ &two, null };
+        try expectDng(&e, &c, unknown_version, tags.bits_per_sample, .value);
+        try expectDng(&e, &c, null, tags.bits_per_sample, null);
+    }
+    // "Supported values are from 8 to 32" (a closed list).
+    try expectDngOne(v1_6, inline16(tags.bits_per_sample, .short, 1, 4), null, .value);
+    try expectDngOne(v1_6, inline16(tags.bits_per_sample, .short, 1, 12), null, null);
+    try expectDngOne(v1_7, inline16(tags.bits_per_sample, .short, 1, 4), null, null);
+    // FillOrder 1 unless every sample is 8, 16 or 32 bits.
+    {
+        var e = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 12), inline16(tags.fill_order, .short, 1, 2) };
+        var c = [_]?[]u8{ null, null };
+        try expectDng(&e, &c, v1_6, tags.fill_order, .value);
+        try expectDng(&e, &c, unknown_version, tags.fill_order, .value);
+        e[0] = inline16(tags.bits_per_sample, .short, 1, 16);
+        try expectDng(&e, &c, v1_6, tags.fill_order, null);
+    }
+    // SampleFormat: 1 before 1.4.0.0; 3 from it, with 16, 24 or 32 bits.
+    {
+        var e = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 32), inline16(tags.sample_format, .short, 1, 3) };
+        var c = [_]?[]u8{ null, null };
+        try expectDng(&e, &c, v1_3, tags.sample_format, .value);
+        try expectDng(&e, &c, v1_4, tags.sample_format, null);
+        e[0] = inline16(tags.bits_per_sample, .short, 1, 8);
+        try expectDng(&e, &c, v1_4, tags.bits_per_sample, .value);
+        e[1] = inline16(tags.sample_format, .short, 1, 2);
+        try expectDng(&e, &c, v1_6, tags.sample_format, .value);
+    }
+}
+
+test "DNG Chapter 3: Compression and Predictor, gated by edition" {
+    const ifd = struct {
+        fn of(nst: u32, bits: u32, format: u32, compression: u32, photometric: u32) [5]Entry {
+            return .{
+                inline16(tags.new_subfile_type, .long, 1, nst),
+                inline16(tags.bits_per_sample, .short, 1, bits),
+                inline16(tags.compression, .short, 1, compression),
+                inline16(tags.photometric, .short, 1, photometric),
+                inline16(tags.sample_format, .short, 1, format),
+            };
+        }
+    };
+    var c = [_]?[]u8{null} ** 5;
+    const cfa = tags.photometric_color_filter_array;
+    const linear = tags.photometric_linear_raw;
+    // 1 and 7 in every edition; 8 and 34892 only from 1.4.0.0.
+    var e = ifd.of(0, 16, 1, 7, cfa);
+    try expectDng(&e, &c, v1_2, tags.compression, null);
+    e = ifd.of(0, 32, 1, 8, cfa);
+    try expectDng(&e, &c, v1_3, tags.compression, .value);
+    try expectDng(&e, &c, v1_4, tags.compression, null);
+    // Deflate: floating point, 32-bit integer, transparency or depth only.
+    e = ifd.of(0, 16, 1, 8, cfa);
+    try expectDng(&e, &c, v1_4, tags.compression, .value);
+    try expectDng(&e, &c, v1_7, tags.compression, .value);
+    e = ifd.of(0, 16, 3, 8, linear);
+    try expectDng(&e, &c, v1_4, tags.compression, null);
+    e = ifd.of(8, 16, 1, 8, tags.photometric_depth);
+    try expectDng(&e, &c, v1_5, tags.compression, null);
+    e = ifd.of(4, 16, 1, 8, 1);
+    try expectDng(&e, &c, v1_4, tags.compression, null);
+    // Lossy JPEG: 8-bit integer LinearRaw or PhotometricMask only.
+    e = ifd.of(0, 8, 1, 34892, linear);
+    try expectDng(&e, &c, v1_4, tags.compression, null);
+    e = ifd.of(0x10004, 8, 1, 34892, tags.photometric_mask);
+    try expectDng(&e, &c, v1_4, tags.compression, null);
+    e = ifd.of(0, 16, 1, 34892, linear);
+    try expectDng(&e, &c, v1_4, tags.compression, .value);
+    e = ifd.of(0, 8, 1, 34892, cfa);
+    try expectDng(&e, &c, v1_4, tags.compression, .value);
+    // Any other compression is a fault up to 1.6.0.0; the list is skipped
+    // above it and for an unknown version.
+    e = ifd.of(0, 16, 1, 5, cfa);
+    try expectDng(&e, &c, v1_6, tags.compression, .value);
+    try expectDng(&e, &c, v1_7, tags.compression, null);
+    try expectDng(&e, &c, unknown_version, tags.compression, null);
+    try expectDng(&e, &c, null, tags.compression, null);
+    // Predictor with Deflate: 1, 2, 3, 34892-34895.
+    {
+        var p = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 32), inline16(tags.compression, .short, 1, 8), inline16(tags.photometric, .short, 1, cfa), inline16(tags.predictor, .short, 1, 34893) };
+        var pc = [_]?[]u8{null} ** 4;
+        try expectDng(&p, &pc, v1_4, tags.predictor, null);
+        p[3] = inline16(tags.predictor, .short, 1, 34896);
+        try expectDng(&p, &pc, v1_4, tags.predictor, .value);
+    }
+}
+
+test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
+    const pair = struct {
+        // With the SamplesPerPixel the photometric implies, so that only the
+        // role list is under test.
+        fn of(nst: u32, photometric: u32) [3]Entry {
+            return .{ inline16(tags.new_subfile_type, .long, 1, nst), inline16(tags.photometric, .short, 1, photometric), inline16(tags.samples_per_pixel, .short, 1, impliedChannels(photometric)) };
+        }
+    };
+    var c = [_]?[]u8{null} ** 3;
+    const cases = [_]struct { nst: u32, photometric: u32, ok: bool }{
+        .{ .nst = 0, .photometric = tags.photometric_color_filter_array, .ok = true },
+        .{ .nst = 0, .photometric = tags.photometric_linear_raw, .ok = true },
+        .{ .nst = 0, .photometric = 2, .ok = false },
+        .{ .nst = 1, .photometric = 6, .ok = true },
+        .{ .nst = 1, .photometric = tags.photometric_linear_raw, .ok = true },
+        .{ .nst = 1, .photometric = 5, .ok = false },
+        .{ .nst = 0x10001, .photometric = tags.photometric_color_filter_array, .ok = false },
+        .{ .nst = 16, .photometric = tags.photometric_linear_raw, .ok = true },
+        .{ .nst = 16, .photometric = 2, .ok = false },
+        .{ .nst = 8, .photometric = tags.photometric_depth, .ok = true },
+        .{ .nst = 9, .photometric = 1, .ok = false },
+        .{ .nst = 0x10004, .photometric = tags.photometric_mask, .ok = true },
+        .{ .nst = 0x10004, .photometric = 1, .ok = false },
+        // Transparency masks and unknown roles take the union.
+        .{ .nst = 4, .photometric = 1, .ok = true },
+        .{ .nst = 7, .photometric = tags.photometric_mask, .ok = true },
+        .{ .nst = 7, .photometric = 5, .ok = false },
+    };
+    for (cases) |case| {
+        var e = pair.of(case.nst, case.photometric);
+        expectDng(&e, &c, v1_6, tags.photometric, if (case.ok) null else .value) catch |err| {
+            std.debug.print("NewSubFileType 0x{x}, photometric {d}\n", .{ case.nst, case.photometric });
+            return err;
+        };
+    }
+    // No role list without a DNG claim, above 1.6.0.0, or for an unknown version.
+    var e = pair.of(0, 2);
+    try expectDng(&e, &c, null, tags.photometric, null);
+    try expectDng(&e, &c, v1_7, tags.photometric, null);
+    try expectDng(&e, &c, unknown_version, tags.photometric, null);
 }
 
 test "the pending constraints are pinned" {

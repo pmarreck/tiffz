@@ -2436,8 +2436,12 @@ fn grayWithField(allocator: std.mem.Allocator, tag: u16, typ: u16, values: []con
 /// As `grayWithField`, with the field given as its type, count and raw
 /// little-endian value bytes (inline when at most 4 bytes).
 fn grayWithRaw(allocator: std.mem.Allocator, tag: u16, typ: u16, count: u32, raw: []const u8) ![]u8 {
-    const ntags: usize = 10;
-    const field_off: u32 = 8 + 2 + ntags * 12 + 4;
+    // A DNG row's field goes in a DNG 1.6.0.0 preview IFD: NewSubFileType 1
+    // and DNGVersion 1, 6, 0, 0, unless the field is DNGVersion itself.
+    const dng = isDngTag(tag);
+    const extra: usize = if (!dng) 0 else if (tag == 50706) 1 else 2;
+    const ntags: usize = 10 + extra;
+    const field_off: u32 = @intCast(8 + 2 + ntags * 12 + 4);
     const out_of_line = raw.len > 4;
     const strip_off: u32 = field_off + (if (out_of_line) @as(u32, @intCast(raw.len)) else 0);
     const buf = try allocator.alloc(u8, strip_off + 2);
@@ -2450,7 +2454,7 @@ fn grayWithRaw(allocator: std.mem.Allocator, tag: u16, typ: u16, count: u32, raw
     var slot = [_]u8{0} ** 4;
     if (out_of_line) @memcpy(buf[field_off..strip_off], raw) else @memcpy(slot[0..raw.len], raw);
     const Built = struct { tag: u16, typ: u16, count: u32 = 1, val: u32 };
-    var entries = [_]Built{
+    var all = [_]Built{
         .{ .tag = 256, .typ = 4, .val = 2 },
         .{ .tag = 257, .typ = 4, .val = 1 },
         .{ .tag = 258, .typ = 3, .val = 8 },
@@ -2461,8 +2465,11 @@ fn grayWithRaw(allocator: std.mem.Allocator, tag: u16, typ: u16, count: u32, raw
         .{ .tag = 278, .typ = 4, .val = 1 },
         .{ .tag = 279, .typ = 4, .val = 2 },
         .{ .tag = tag, .typ = typ, .count = count, .val = if (out_of_line) field_off else std.mem.readInt(u32, &slot, .little) },
+        .{ .tag = 254, .typ = 4, .val = 1 },
+        .{ .tag = 50706, .typ = 1, .count = 4, .val = 0x0000_0601 },
     };
-    std.mem.sort(Built, &entries, {}, struct {
+    const entries = all[0..ntags];
+    std.mem.sort(Built, entries, {}, struct {
         fn lt(_: void, a: Built, b: Built) bool {
             return a.tag < b.tag;
         }
@@ -2510,19 +2517,19 @@ test "IFD-entry rules: SampleFormat and TransferFunction stored as BYTE or LONG 
 /// Every single-value enumerated rule, written out independently of
 /// `ifd_conformance.rules` so that dropping or narrowing a row fails here.
 /// `seen` counts the classic-TIFF IFDs (next chain and SubIFDs) carrying the
-/// tag across the 244 distinct files of the pinned corpus
+/// tag across the 249 distinct files of the pinned corpus
 /// (docs/plan_context/real_corpus_manifest.tsv); 0 means the row rests on the text alone.
-const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: []const u8, seen: u32, drives_decoding: bool = false, max: u32 = 65535 }{
+const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: []const u8, seen: u32, drives_decoding: bool = false, max: u32 = 65535, dng: bool = false }{
     .{ .tag = 255, .ranges = &.{.{ 1, 3 }}, .citation = "SubfileType, TIFF 6.0 pp. 40-41", .seen = 3 },
-    .{ .tag = 259, .ranges = &.{.{ 1, 10 }}, .citation = "Compression, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 338, .drives_decoding = true },
-    .{ .tag = 262, .ranges = &.{ .{ 0, 6 }, .{ 8, 10 } }, .citation = "PhotometricInterpretation, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 302, .drives_decoding = true },
+    .{ .tag = 259, .ranges = &.{.{ 1, 10 }}, .citation = "Compression, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 349, .drives_decoding = true },
+    .{ .tag = 262, .ranges = &.{ .{ 0, 6 }, .{ 8, 10 } }, .citation = "PhotometricInterpretation, TIFF 6.0, Photoshop notes, RFC 3949", .seen = 313, .drives_decoding = true },
     .{ .tag = 263, .ranges = &.{.{ 1, 3 }}, .citation = "Threshholding, TIFF 6.0 p. 41", .seen = 1 },
     .{ .tag = 266, .ranges = &.{.{ 1, 2 }}, .citation = "FillOrder, TIFF 6.0 p. 32", .seen = 21 },
-    .{ .tag = 274, .ranges = &.{.{ 1, 8 }}, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 127 },
-    .{ .tag = 284, .ranges = &.{.{ 1, 2 }}, .citation = "PlanarConfiguration, TIFF 6.0 p. 38", .seen = 281, .drives_decoding = true },
+    .{ .tag = 274, .ranges = &.{.{ 1, 8 }}, .citation = "Orientation, TIFF 6.0 pp. 36-37", .seen = 132 },
+    .{ .tag = 284, .ranges = &.{.{ 1, 2 }}, .citation = "PlanarConfiguration, TIFF 6.0 p. 38", .seen = 290, .drives_decoding = true },
     .{ .tag = 290, .ranges = &.{.{ 1, 5 }}, .citation = "GrayResponseUnit, TIFF 6.0 pp. 33-34", .seen = 0 },
     .{ .tag = 317, .ranges = &.{.{ 1, 3 }}, .citation = "Predictor, TIFF 6.0 p. 64; Adobe TN3 (2005)", .seen = 25, .drives_decoding = true },
-    .{ .tag = 296, .ranges = &.{.{ 1, 3 }}, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 163 },
+    .{ .tag = 296, .ranges = &.{.{ 1, 3 }}, .citation = "ResolutionUnit, TIFF 6.0 p. 38", .seen = 166 },
     .{ .tag = 327, .ranges = &.{.{ 0, 2 }}, .citation = "CleanFaxData, RFC 3949 p. 33", .seen = 2 },
     .{ .tag = 332, .ranges = &.{.{ 1, 2 }}, .citation = "InkSet, TIFF 6.0 p. 70", .seen = 5 },
     .{ .tag = 346, .ranges = &.{.{ 0, 1 }}, .citation = "Indexed, PageMaker 6.0 TIFF Technical Notes p. 11", .seen = 0 },
@@ -2531,7 +2538,19 @@ const enumerated_rows = [_]struct { tag: u16, ranges: []const [2]u16, citation: 
     .{ .tag = 402, .ranges = &.{.{ 0, 6 }}, .citation = "FaxProfile (BYTE), RFC 3949 p. 19", .seen = 0, .max = 255 },
     .{ .tag = 512, .ranges = &.{ .{ 1, 1 }, .{ 14, 14 } }, .citation = "JPEGProc, TIFF 6.0 p. 104", .seen = 4 },
     .{ .tag = 517, .ranges = &.{.{ 1, 7 }}, .citation = "JPEGLosslessPredictors (one sample), TIFF 6.0 p. 106", .seen = 1 },
-    .{ .tag = 531, .ranges = &.{.{ 1, 2 }}, .citation = "YCbCrPositioning, TIFF 6.0 p. 92", .seen = 43 },
+    .{ .tag = 531, .ranges = &.{.{ 1, 2 }}, .citation = "YCbCrPositioning, TIFF 6.0 p. 92", .seen = 44 },
+    // DNG 1.6.0.0 closed lists (validate D5), checked in a DNG 1.6.0.0 file; DNG
+    // defines no private range.
+    .{ .tag = 50711, .ranges = &.{.{ 1, 9 }}, .citation = "CFALayout, DNG 1.6.0.0", .seen = 9, .dng = true },
+    .{ .tag = 50741, .ranges = &.{.{ 0, 1 }}, .citation = "MakerNoteSafety, DNG 1.6.0.0", .seen = 4, .dng = true },
+    .{ .tag = 50879, .ranges = &.{.{ 0, 1 }}, .citation = "ColorimetricReference, DNG 1.6.0.0", .seen = 0, .dng = true },
+    .{ .tag = 50941, .ranges = &.{.{ 0, 3 }}, .citation = "ProfileEmbedPolicy, DNG 1.6.0.0", .seen = 4, .dng = true },
+    .{ .tag = 51107, .ranges = &.{.{ 0, 1 }}, .citation = "ProfileHueSatMapEncoding, DNG 1.6.0.0", .seen = 0, .dng = true },
+    .{ .tag = 51108, .ranges = &.{.{ 0, 1 }}, .citation = "ProfileLookTableEncoding, DNG 1.6.0.0", .seen = 2, .dng = true },
+    .{ .tag = 51110, .ranges = &.{.{ 0, 1 }}, .citation = "DefaultBlackRender, DNG 1.6.0.0", .seen = 2, .dng = true },
+    .{ .tag = 51177, .ranges = &.{.{ 0, 2 }}, .citation = "DepthFormat, DNG 1.6.0.0", .seen = 0, .dng = true },
+    .{ .tag = 51180, .ranges = &.{.{ 0, 1 }}, .citation = "DepthUnits, DNG 1.6.0.0", .seen = 0, .dng = true },
+    .{ .tag = 51181, .ranges = &.{.{ 0, 2 }}, .citation = "DepthMeasureType, DNG 1.6.0.0", .seen = 0, .dng = true },
 };
 
 fn expectFieldVerdict(allocator: std.mem.Allocator, tag: u16, value: u32, corrupt: bool) !void {
@@ -2576,8 +2595,9 @@ test "IFD-entry rules: each enumerated row validates its range ends and rejects 
                 if (!inside) try expectRowVerdict(allocator, row.tag, v, true, row.drives_decoding);
             }
         }
-        // Private values are never faults, where the defined type can hold one.
-        if (row.max >= 40000) try expectRowVerdict(allocator, row.tag, 40000, false, row.drives_decoding);
+        // Private values are never faults, where the defined type can hold one;
+        // DNG defines no private range, so there 40000 is a fault.
+        if (row.max >= 40000) try expectRowVerdict(allocator, row.tag, 40000, row.dng, row.drives_decoding);
     }
 }
 
@@ -2676,6 +2696,34 @@ fn rational(comptime n: u32) RowField {
 fn ascii(comptime text: []const u8) RowField {
     return .{ .typ = 2, .count = text.len, .raw = text };
 }
+fn byteField(comptime values: []const u8) RowField {
+    return .{ .typ = 1, .count = values.len, .raw = values };
+}
+fn srat(comptime n: u32) RowField {
+    return .{ .typ = 10, .count = n, .raw = ones(n) };
+}
+fn ratios(comptime values: []const [2]u32) RowField {
+    const raw = comptime blk: {
+        var out: [values.len * 8]u8 = undefined;
+        for (values, 0..) |q, i| {
+            std.mem.writeInt(u32, out[8 * i ..][0..4], q[0], .little);
+            std.mem.writeInt(u32, out[8 * i + 4 ..][0..4], q[1], .little);
+        }
+        break :blk out;
+    };
+    return .{ .typ = 5, .count = values.len, .raw = &raw };
+}
+fn flt(comptime values: []const f32) RowField {
+    const raw = comptime blk: {
+        var out: [values.len * 4]u8 = undefined;
+        for (values, 0..) |v, i| std.mem.writeInt(u32, out[4 * i ..][0..4], @bitCast(v), .little);
+        break :blk out;
+    };
+    return .{ .typ = 11, .count = values.len, .raw = &raw };
+}
+fn undef(comptime n: u32) RowField {
+    return .{ .typ = 7, .count = n, .raw = &([_]u8{0} ** n) };
+}
 fn dbl(comptime values: []const f64) RowField {
     const bytes = comptime blk: {
         var out: [values.len * 8]u8 = undefined;
@@ -2693,31 +2741,31 @@ fn dbl(comptime values: []const f64) RowField {
 /// file would test the decoder more than the rule. `seen` is counted as for
 /// `enumerated_rows`.
 const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reason: u16, end_to_end: bool = true, seen: u32 }{
-    .{ .tag = 254, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 140 },
+    .{ .tag = 254, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 151 },
     .{ .tag = 255, .clean = short(&.{1}), .corrupt = short(&.{4}), .reason = 3, .seen = 3 },
-    .{ .tag = 256, .clean = long(&.{2}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 304 },
-    .{ .tag = 257, .clean = long(&.{1}), .corrupt = ascii("1\x00"), .reason = 1, .end_to_end = false, .seen = 304 },
-    .{ .tag = 258, .clean = short(&.{8}), .corrupt = short(&.{ 8, 8 }), .reason = 2, .end_to_end = false, .seen = 301 },
-    .{ .tag = 259, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 338 },
-    .{ .tag = 262, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 302 },
+    .{ .tag = 256, .clean = long(&.{2}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 315 },
+    .{ .tag = 257, .clean = long(&.{1}), .corrupt = ascii("1\x00"), .reason = 1, .end_to_end = false, .seen = 315 },
+    .{ .tag = 258, .clean = short(&.{8}), .corrupt = short(&.{ 8, 8 }), .reason = 2, .end_to_end = false, .seen = 312 },
+    .{ .tag = 259, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 349 },
+    .{ .tag = 262, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 313 },
     .{ .tag = 263, .clean = short(&.{1}), .corrupt = short(&.{0}), .reason = 3, .seen = 1 },
     .{ .tag = 264, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
     .{ .tag = 265, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
     .{ .tag = 266, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 21 },
     .{ .tag = 269, .clean = ascii("doc\x00"), .corrupt = ascii("doc"), .reason = 3, .seen = 41 },
-    .{ .tag = 270, .clean = ascii("a\x00b\x00\x00"), .corrupt = ascii("a\x00\x00b\x00"), .reason = 3, .seen = 44 },
-    .{ .tag = 271, .clean = ascii("Make\x00"), .corrupt = .{ .typ = 1, .count = 5, .raw = "Make\x00" }, .reason = 1, .seen = 57 },
-    .{ .tag = 272, .clean = ascii("Model\x00"), .corrupt = ascii("Mod\xe9l\x00"), .reason = 3, .seen = 57 },
-    .{ .tag = 273, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 269 },
-    .{ .tag = 274, .clean = short(&.{1}), .corrupt = short(&.{9}), .reason = 3, .seen = 127 },
-    .{ .tag = 277, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 298 },
-    .{ .tag = 278, .clean = long(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 260 },
-    .{ .tag = 279, .clean = long(&.{2}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .end_to_end = false, .seen = 268 },
+    .{ .tag = 270, .clean = ascii("a\x00b\x00\x00"), .corrupt = ascii("a\x00\x00b\x00"), .reason = 3, .seen = 47 },
+    .{ .tag = 271, .clean = ascii("Make\x00"), .corrupt = .{ .typ = 1, .count = 5, .raw = "Make\x00" }, .reason = 1, .seen = 62 },
+    .{ .tag = 272, .clean = ascii("Model\x00"), .corrupt = ascii("Mod\xe9l\x00"), .reason = 3, .seen = 62 },
+    .{ .tag = 273, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 278 },
+    .{ .tag = 274, .clean = short(&.{1}), .corrupt = short(&.{9}), .reason = 3, .seen = 132 },
+    .{ .tag = 277, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 309 },
+    .{ .tag = 278, .clean = long(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .end_to_end = false, .seen = 269 },
+    .{ .tag = 279, .clean = long(&.{2}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .end_to_end = false, .seen = 277 },
     .{ .tag = 280, .clean = short(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 27 },
     .{ .tag = 281, .clean = short(&.{255}), .corrupt = short(&.{ 255, 255 }), .reason = 2, .seen = 3 },
-    .{ .tag = 282, .clean = rational(1), .corrupt = long(&.{72}), .reason = 1, .seen = 170 },
-    .{ .tag = 283, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 170 },
-    .{ .tag = 284, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 281 },
+    .{ .tag = 282, .clean = rational(1), .corrupt = long(&.{72}), .reason = 1, .seen = 173 },
+    .{ .tag = 283, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 173 },
+    .{ .tag = 284, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 290 },
     .{ .tag = 285, .clean = ascii("page\x00"), .corrupt = ascii("page"), .reason = 3, .seen = 0 },
     .{ .tag = 286, .clean = rational(1), .corrupt = .{ .typ = 10, .count = 1, .raw = ones(1) }, .reason = 1, .seen = 3 },
     .{ .tag = 287, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 3 },
@@ -2727,11 +2775,11 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 291, .clean = short(ramp16(256)), .corrupt = short(ramp16(255)), .reason = 2, .seen = 3 },
     .{ .tag = 292, .clean = long(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 2 },
     .{ .tag = 293, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .seen = 0 },
-    .{ .tag = 296, .clean = short(&.{2}), .corrupt = short(&.{0}), .reason = 3, .seen = 163 },
+    .{ .tag = 296, .clean = short(&.{2}), .corrupt = short(&.{0}), .reason = 3, .seen = 166 },
     .{ .tag = 297, .clean = short(&.{ 0, 1 }), .corrupt = short(&.{0}), .reason = 2, .seen = 16 },
     .{ .tag = 301, .clean = short(ramp16(256)), .corrupt = short(ramp16(255)), .reason = 2, .seen = 2 },
-    .{ .tag = 305, .clean = ascii("tiffz\x00"), .corrupt = ascii("tiffz"), .reason = 3, .seen = 96 },
-    .{ .tag = 306, .clean = ascii("2017:07:13 16:58:28\x00"), .corrupt = ascii("2017-07-13 16:58:28\x00"), .reason = 3, .seen = 55 },
+    .{ .tag = 305, .clean = ascii("tiffz\x00"), .corrupt = ascii("tiffz"), .reason = 3, .seen = 101 },
+    .{ .tag = 306, .clean = ascii("2017:07:13 16:58:28\x00"), .corrupt = ascii("2017-07-13 16:58:28\x00"), .reason = 3, .seen = 60 },
     .{ .tag = 315, .clean = ascii("artist\x00"), .corrupt = ascii("art\xc3\xa9\x00"), .reason = 3, .seen = 16 },
     .{ .tag = 316, .clean = ascii("host\x00"), .corrupt = .{ .typ = 7, .count = 5, .raw = "host\x00" }, .reason = 1, .seen = 0 },
     .{ .tag = 317, .clean = short(&.{1}), .corrupt = short(&.{ 1, 1 }), .reason = 2, .seen = 25 },
@@ -2739,14 +2787,14 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 319, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 16 },
     .{ .tag = 320, .clean = short(ramp16(768)), .corrupt = short(ramp16(767)), .reason = 2, .seen = 10 },
     .{ .tag = 321, .clean = short(&.{ 0, 255 }), .corrupt = short(&.{0}), .reason = 2, .seen = 2 },
-    .{ .tag = 322, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 33 },
-    .{ .tag = 323, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 35 },
-    .{ .tag = 324, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 31 },
-    .{ .tag = 325, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 31 },
+    .{ .tag = 322, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 35 },
+    .{ .tag = 323, .clean = long(&.{16}), .corrupt = long(&.{10}), .reason = 3, .end_to_end = false, .seen = 37 },
+    .{ .tag = 324, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 33 },
+    .{ .tag = 325, .clean = long(&.{0}), .corrupt = rational(1), .reason = 1, .end_to_end = false, .seen = 33 },
     .{ .tag = 326, .clean = long(&.{3}), .corrupt = rational(1), .reason = 1, .seen = 2 },
     .{ .tag = 327, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 2 },
     .{ .tag = 328, .clean = short(&.{2}), .corrupt = short(&.{ 2, 2 }), .reason = 2, .seen = 2 },
-    .{ .tag = 330, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 39 },
+    .{ .tag = 330, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .end_to_end = false, .seen = 44 },
     .{ .tag = 332, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 5 },
     .{ .tag = 333, .clean = ascii("Cyan\x00Magenta\x00"), .corrupt = ascii("Cyan\x00\x00Magenta\x00"), .reason = 3, .seen = 0 },
     .{ .tag = 334, .clean = short(&.{4}), .corrupt = short(&.{ 4, 4 }), .reason = 2, .seen = 0 },
@@ -2779,13 +2827,13 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 519, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 6 },
     .{ .tag = 520, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 2 },
     .{ .tag = 521, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 2 },
-    .{ .tag = 529, .clean = rational(3), .corrupt = rational(2), .reason = 2, .seen = 15 },
-    .{ .tag = 530, .clean = short(&.{ 2, 2 }), .corrupt = short(&.{ 1, 2 }), .reason = 3, .seen = 19 },
-    .{ .tag = 531, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 43 },
-    .{ .tag = 532, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 17 },
+    .{ .tag = 529, .clean = rational(3), .corrupt = rational(2), .reason = 2, .seen = 16 },
+    .{ .tag = 530, .clean = short(&.{ 2, 2 }), .corrupt = short(&.{ 1, 2 }), .reason = 3, .seen = 20 },
+    .{ .tag = 531, .clean = short(&.{1}), .corrupt = short(&.{3}), .reason = 3, .seen = 44 },
+    .{ .tag = 532, .clean = rational(6), .corrupt = rational(5), .reason = 2, .seen = 18 },
     .{ .tag = 559, .clean = long(&.{1}), .corrupt = .{ .typ = 4, .count = 0, .raw = "" }, .reason = 2, .end_to_end = false, .seen = 1 },
     .{ .tag = 32781, .clean = ascii("hires.tif\x00"), .corrupt = ascii("hires.tif"), .reason = 3, .seen = 0 },
-    .{ .tag = 33432, .clean = ascii("(c) 2026\x00"), .corrupt = ascii("(c) 2026"), .reason = 3, .seen = 20 },
+    .{ .tag = 33432, .clean = ascii("(c) 2026\x00"), .corrupt = ascii("(c) 2026"), .reason = 3, .seen = 23 },
     // GeoTIFF 1.1 (OGC 19-008r4): DOUBLE only for the model and parameter tags.
     .{ .tag = 33550, .clean = dbl(&.{ 0.5, 0.5, 0 }), .corrupt = rational(3), .reason = 1, .seen = 105 },
     .{ .tag = 33922, .clean = dbl(&.{ 0, 0, 0, -80.5, 40.5, 0 }), .corrupt = dbl(&.{ 0, 0, 0, -80.5, 40.5, 0, 1 }), .reason = 2, .seen = 108 },
@@ -2795,7 +2843,126 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 34736, .clean = dbl(&.{6378137}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0x4ac2_7c52}) }, .reason = 1, .seen = 25 },
     .{ .tag = 34737, .clean = ascii("WGS 84|\x00"), .corrupt = ascii("WGS 84|"), .reason = 3, .seen = 99 },
     .{ .tag = 37724, .clean = .{ .typ = 7, .count = 2, .raw = "8B" }, .corrupt = ascii("8B\x00"), .reason = 1, .seen = 0 },
+    // DNG 1.6.0.0 rows, checked in a DNG 1.6.0.0 preview IFD (see `rowFaults`).
+    .{ .tag = 50706, .clean = byteField(&.{ 1, 6, 0, 0 }), .corrupt = byteField(&.{ 1, 6, 0, 0, 0 }), .reason = 2, .seen = 17 }, // DNGVersion
+    .{ .tag = 50707, .clean = byteField(&.{ 1, 1, 0, 0 }), .corrupt = byteField(&.{ 1, 1, 0, 0, 0 }), .reason = 2, .seen = 16 }, // DNGBackwardVersion
+    .{ .tag = 50708, .clean = ascii("Acme\x00"), .corrupt = byteField(&.{ 65, 0 }), .reason = 1, .seen = 17 }, // UniqueCameraModel
+    .{ .tag = 50709, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 0 }, // LocalizedCameraModel
+    .{ .tag = 50710, .clean = byteField(&.{ 0, 1, 2 }), .corrupt = rational(1), .reason = 1, .seen = 7 }, // CFAPlaneColor
+    .{ .tag = 50711, .clean = short(&.{1}), .corrupt = short(&.{10}), .reason = 3, .seen = 9 }, // CFALayout
+    .{ .tag = 50712, .clean = short(&.{ 0, 1 }), .corrupt = rational(1), .reason = 1, .seen = 4 }, // LinearizationTable
+    .{ .tag = 50713, .clean = short(&.{ 1, 1 }), .corrupt = short(&.{ 1, 1, 1 }), .reason = 2, .seen = 14 }, // BlackLevelRepeatDim
+    .{ .tag = 50714, .clean = long(&.{0}), .corrupt = long(&.{ 0, 0 }), .reason = 2, .seen = 17 }, // BlackLevel
+    .{ .tag = 50715, .clean = srat(2), .corrupt = srat(3), .reason = 2, .seen = 0 }, // BlackLevelDeltaH
+    .{ .tag = 50716, .clean = srat(1), .corrupt = srat(2), .reason = 2, .seen = 1 }, // BlackLevelDeltaV
+    .{ .tag = 50717, .clean = long(&.{255}), .corrupt = long(&.{ 255, 255 }), .reason = 2, .seen = 21 }, // WhiteLevel
+    .{ .tag = 50718, .clean = rational(2), .corrupt = rational(3), .reason = 2, .seen = 10 }, // DefaultScale
+    .{ .tag = 50719, .clean = long(&.{ 1, 1 }), .corrupt = long(&.{ 1, 1, 1 }), .reason = 2, .seen = 19 }, // DefaultCropOrigin
+    .{ .tag = 50720, .clean = long(&.{ 1, 1 }), .corrupt = long(&.{ 1, 1, 1 }), .reason = 2, .seen = 19 }, // DefaultCropSize
+    .{ .tag = 50721, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 17 }, // ColorMatrix1
+    .{ .tag = 50722, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 16 }, // ColorMatrix2
+    .{ .tag = 50723, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 9 }, // CameraCalibration1
+    .{ .tag = 50724, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 9 }, // CameraCalibration2
+    .{ .tag = 50725, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 0 }, // ReductionMatrix1
+    .{ .tag = 50726, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 1 }, // ReductionMatrix2
+    .{ .tag = 50727, .clean = rational(3), .corrupt = srat(3), .reason = 1, .seen = 7 }, // AnalogBalance
+    .{ .tag = 50728, .clean = rational(3), .corrupt = srat(3), .reason = 1, .seen = 16 }, // AsShotNeutral
+    .{ .tag = 50729, .clean = rational(2), .corrupt = rational(3), .reason = 2, .seen = 2 }, // AsShotWhiteXY
+    .{ .tag = 50730, .clean = srat(1), .corrupt = srat(2), .reason = 2, .seen = 16 }, // BaselineExposure
+    .{ .tag = 50731, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 9 }, // BaselineNoise
+    .{ .tag = 50732, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 11 }, // BaselineSharpness
+    .{ .tag = 50733, .clean = long(&.{1}), .corrupt = long(&.{ 1, 1 }), .reason = 2, .seen = 7 }, // BayerGreenSplit
+    .{ .tag = 50734, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 7 }, // LinearResponseLimit
+    .{ .tag = 50735, .clean = ascii("Acme\x00"), .corrupt = byteField(&.{ 65, 0 }), .reason = 1, .seen = 5 }, // CameraSerialNumber
+    .{ .tag = 50736, .clean = rational(4), .corrupt = rational(5), .reason = 2, .seen = 4 }, // LensInfo
+    .{ .tag = 50737, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 0 }, // ChromaBlurRadius
+    .{ .tag = 50738, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 8 }, // AntiAliasStrength
+    .{ .tag = 50739, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 3 }, // ShadowScale
+    .{ .tag = 50740, .clean = byteField(&.{ 65, 0 }), .corrupt = undef(2), .reason = 1, .seen = 20 }, // DNGPrivateData
+    .{ .tag = 50741, .clean = short(&.{0}), .corrupt = short(&.{2}), .reason = 3, .seen = 4 }, // MakerNoteSafety
+    .{ .tag = 50778, .clean = short(&.{21}), .corrupt = short(&.{ 21, 21 }), .reason = 2, .seen = 17 }, // CalibrationIlluminant1
+    .{ .tag = 50779, .clean = short(&.{17}), .corrupt = short(&.{ 17, 17 }), .reason = 2, .seen = 16 }, // CalibrationIlluminant2
+    .{ .tag = 50780, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 3 }, // BestQualityScale
+    .{ .tag = 50781, .clean = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .corrupt = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .reason = 2, .seen = 3 }, // RawDataUniqueID
+    .{ .tag = 50827, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 2 }, // OriginalRawFileName
+    .{ .tag = 50828, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 1 }, // OriginalRawFileData
+    .{ .tag = 50829, .clean = long(&.{ 0, 0, 1, 2 }), .corrupt = long(&.{ 0, 0, 1, 2, 2 }), .reason = 2, .seen = 9 }, // ActiveArea
+    .{ .tag = 50830, .clean = long(&.{ 0, 0, 1, 2 }), .corrupt = long(&.{ 0, 0, 1, 2, 0 }), .reason = 2, .seen = 0 }, // MaskedAreas
+    .{ .tag = 50831, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 0 }, // AsShotICCProfile
+    .{ .tag = 50832, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 0 }, // AsShotPreProfileMatrix
+    .{ .tag = 50833, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 1 }, // CurrentICCProfile
+    .{ .tag = 50834, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 1 }, // CurrentPreProfileMatrix
+    .{ .tag = 50879, .clean = short(&.{0}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 }, // ColorimetricReference
+    .{ .tag = 50931, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 1 }, // CameraCalibrationSignature
+    .{ .tag = 50932, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 1 }, // ProfileCalibrationSignature
+    .{ .tag = 50933, .clean = long(&.{0}), .corrupt = short(&.{0}), .reason = 1, .seen = 0 }, // ExtraCameraProfiles
+    .{ .tag = 50934, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 1 }, // AsShotProfileName
+    .{ .tag = 50935, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 1 }, // NoiseReductionApplied
+    .{ .tag = 50936, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 6 }, // ProfileName
+    .{ .tag = 50937, .clean = long(&.{ 1, 2, 1 }), .corrupt = long(&.{ 1, 2, 1, 1 }), .reason = 2, .seen = 3 }, // ProfileHueSatMapDims
+    .{ .tag = 50938, .clean = flt(&.{ 0, 0, 0 }), .corrupt = dbl(&.{ 0, 0, 0 }), .reason = 1, .seen = 3 }, // ProfileHueSatMapData1
+    .{ .tag = 50939, .clean = flt(&.{ 0, 0, 0 }), .corrupt = dbl(&.{ 0, 0, 0 }), .reason = 1, .seen = 3 }, // ProfileHueSatMapData2
+    .{ .tag = 50940, .clean = flt(&.{ 0, 0, 1, 1 }), .corrupt = flt(&.{ 0, 0 }), .reason = 2, .seen = 4 }, // ProfileToneCurve
+    .{ .tag = 50941, .clean = long(&.{0}), .corrupt = long(&.{4}), .reason = 3, .seen = 4 }, // ProfileEmbedPolicy
+    .{ .tag = 50942, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 1 }, // ProfileCopyright
+    .{ .tag = 50964, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 7 }, // ForwardMatrix1
+    .{ .tag = 50965, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 6 }, // ForwardMatrix2
+    .{ .tag = 50966, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 4 }, // PreviewApplicationName
+    .{ .tag = 50967, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 3 }, // PreviewApplicationVersion
+    .{ .tag = 50968, .clean = byteField(&.{ 67, 97, 102, 0xc3, 0xa9, 0 }), .corrupt = byteField(&.{ 67, 97, 102, 0xc3, 0xa9 }), .reason = 3, .seen = 0 }, // PreviewSettingsName
+    .{ .tag = 50969, .clean = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .corrupt = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .reason = 2, .seen = 3 }, // PreviewSettingsDigest
+    .{ .tag = 50970, .clean = long(&.{2}), .corrupt = long(&.{ 2, 2 }), .reason = 2, .seen = 3 }, // PreviewColorSpace
+    .{ .tag = 50971, .clean = ascii("Acme\x00"), .corrupt = byteField(&.{ 65, 0 }), .reason = 1, .seen = 3 }, // PreviewDateTime
+    .{ .tag = 50972, .clean = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .corrupt = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .reason = 2, .seen = 0 }, // RawImageDigest
+    .{ .tag = 50973, .clean = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .corrupt = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .reason = 2, .seen = 0 }, // OriginalRawFileDigest
+    .{ .tag = 50974, .clean = long(&.{ 1, 1 }), .corrupt = long(&.{ 1, 1, 1 }), .reason = 2, .seen = 0 }, // SubTileBlockSize
+    .{ .tag = 50975, .clean = long(&.{1}), .corrupt = long(&.{ 1, 1 }), .reason = 2, .seen = 0 }, // RowInterleaveFactor
+    .{ .tag = 50981, .clean = long(&.{ 1, 2, 1 }), .corrupt = long(&.{ 1, 2, 1, 1 }), .reason = 2, .seen = 4 }, // ProfileLookTableDims
+    .{ .tag = 50982, .clean = flt(&.{ 0, 0, 0 }), .corrupt = dbl(&.{ 0, 0, 0 }), .reason = 1, .seen = 3 }, // ProfileLookTableData
+    .{ .tag = 51008, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 1 }, // OpcodeList1
+    .{ .tag = 51009, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 6 }, // OpcodeList2
+    .{ .tag = 51022, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 5 }, // OpcodeList3
+    .{ .tag = 51041, .clean = dbl(&.{ 1e-5, 0 }), .corrupt = dbl(&.{ 1e-5, 0, 1e-5 }), .reason = 2, .seen = 12 }, // NoiseProfile
+    .{ .tag = 51089, .clean = long(&.{ 2, 1 }), .corrupt = long(&.{ 2, 1, 1 }), .reason = 2, .seen = 2 }, // OriginalDefaultFinalSize
+    .{ .tag = 51090, .clean = long(&.{ 2, 1 }), .corrupt = long(&.{ 2, 1, 1 }), .reason = 2, .seen = 2 }, // OriginalBestQualityFinalSize
+    .{ .tag = 51091, .clean = long(&.{ 1, 1 }), .corrupt = long(&.{ 1, 1, 1 }), .reason = 2, .seen = 1 }, // OriginalDefaultCropSize
+    .{ .tag = 51107, .clean = long(&.{0}), .corrupt = long(&.{2}), .reason = 3, .seen = 0 }, // ProfileHueSatMapEncoding
+    .{ .tag = 51108, .clean = long(&.{0}), .corrupt = long(&.{2}), .reason = 3, .seen = 2 }, // ProfileLookTableEncoding
+    .{ .tag = 51109, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 0 }, // BaselineExposureOffset
+    .{ .tag = 51110, .clean = long(&.{0}), .corrupt = long(&.{2}), .reason = 3, .seen = 2 }, // DefaultBlackRender
+    .{ .tag = 51111, .clean = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .corrupt = byteField(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), .reason = 2, .seen = 3 }, // NewRawImageDigest
+    .{ .tag = 51112, .clean = dbl(&.{1}), .corrupt = dbl(&.{ 1, 1 }), .reason = 2, .seen = 0 }, // RawToPreviewGain
+    .{ .tag = 51125, .clean = ratios(&.{ .{ 0, 1 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 1 } }), .corrupt = ratios(&.{ .{ 1, 2 }, .{ 0, 1 }, .{ 1, 2 }, .{ 1, 1 } }), .reason = 3, .seen = 2 }, // DefaultUserCrop
+    .{ .tag = 51177, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .seen = 0 }, // DepthFormat
+    .{ .tag = 51178, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 0 }, // DepthNear
+    .{ .tag = 51179, .clean = rational(1), .corrupt = rational(2), .reason = 2, .seen = 0 }, // DepthFar
+    .{ .tag = 51180, .clean = short(&.{0}), .corrupt = short(&.{2}), .reason = 3, .seen = 0 }, // DepthUnits
+    .{ .tag = 51181, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .seen = 0 }, // DepthMeasureType
+    .{ .tag = 51182, .clean = ascii("Acme\x00"), .corrupt = ascii("\x00"), .reason = 3, .seen = 0 }, // EnhanceParams
+    .{ .tag = 52525, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 3 }, // ProfileGainTableMap
+    .{ .tag = 52526, .clean = ascii("Acme\x00"), .corrupt = byteField(&.{ 65, 0 }), .reason = 1, .seen = 1 }, // SemanticName
+    .{ .tag = 52528, .clean = ascii("Acme\x00"), .corrupt = byteField(&.{ 65, 0 }), .reason = 1, .seen = 0 }, // SemanticInstanceID
+    .{ .tag = 52529, .clean = short(&.{21}), .corrupt = short(&.{ 21, 21 }), .reason = 2, .seen = 1 }, // CalibrationIlluminant3
+    .{ .tag = 52530, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 1 }, // CameraCalibration3
+    .{ .tag = 52531, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 1 }, // ColorMatrix3
+    .{ .tag = 52532, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 1 }, // ForwardMatrix3
+    .{ .tag = 52533, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 0 }, // IlluminantData1
+    .{ .tag = 52534, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 0 }, // IlluminantData2
+    .{ .tag = 52535, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 1 }, // IlluminantData3
+    .{ .tag = 52536, .clean = long(&.{ 0, 0, 1, 2 }), .corrupt = long(&.{ 0, 0, 1, 2, 2 }), .reason = 2, .seen = 0 }, // MaskSubArea
+    .{ .tag = 52537, .clean = flt(&.{ 0, 0, 0 }), .corrupt = dbl(&.{ 0, 0, 0 }), .reason = 1, .seen = 0 }, // ProfileHueSatMapData3
+    .{ .tag = 52538, .clean = srat(3), .corrupt = rational(3), .reason = 1, .seen = 0 }, // ReductionMatrix3
+    .{ .tag = 52543, .clean = undef(4), .corrupt = byteField(&.{ 0, 0, 0, 0 }), .reason = 1, .seen = 0 }, // RGBTables
 };
+
+/// Whether `tag` is one of DNG's own (Digital Negative Specification 1.6.0.0,
+/// Chapter 4): rows with an edition gate.
+fn isDngTag(tag: u16) bool {
+    const rule = for (tiffz.ifd_conformance.rules) |r| {
+        if (r.tag == tag) break r;
+    } else return false;
+    return rule.since != null;
+}
 
 /// Rule-level verdict of one field in the 8-bit grayscale context.
 fn rowFaults(allocator: std.mem.Allocator, tag: u16, field: RowField) !std.ArrayListUnmanaged(tiffz.ifd_conformance.Fault) {
@@ -2811,9 +2978,17 @@ fn rowFaults(allocator: std.mem.Allocator, tag: u16, field: RowField) !std.Array
         5 => 4,
         else => 1,
     } else 1;
-    const context = [_]struct { tag: u16, value: u16 }{ .{ .tag = 258, .value = 8 }, .{ .tag = 262, .value = 1 }, .{ .tag = 277, .value = spp } };
-    var entries: [4]Entry = undefined;
-    var cached = [_]?[]u8{null} ** 4;
+    // A DNG row is checked in a DNG 1.6.0.0 file, in a preview IFD
+    // (NewSubFileType 1, where BlackIsZero is allowed) two pixels wide and
+    // one long, so that counts derived from the image size have a value.
+    const dng_row = isDngTag(tag);
+    const dng_context: tiffz.ifd_conformance.Dng = .{ .version = tiffz.ifd_conformance.Dng.cited };
+    const Context = struct { tag: u16, value: u16 };
+    const gray = [_]Context{ .{ .tag = 258, .value = 8 }, .{ .tag = 262, .value = 1 }, .{ .tag = 277, .value = spp } };
+    const dng_gray = [_]Context{ .{ .tag = 254, .value = 1 }, .{ .tag = 256, .value = 2 }, .{ .tag = 257, .value = 1 } } ++ gray;
+    const context: []const Context = if (dng_row) &dng_gray else &gray;
+    var entries: [7]Entry = undefined;
+    var cached = [_]?[]u8{null} ** 7;
     var n: usize = 0;
     var placed = false;
     const copy = try allocator.dupe(u8, field.raw);
@@ -2839,7 +3014,7 @@ fn rowFaults(allocator: std.mem.Allocator, tag: u16, field: RowField) !std.Array
     const dir = tiffz.ifd.Ifd{ .entries = entries[0..n], .next_offset = 0, .offset_width = .classic, .allocator = allocator, .cached_values = cached[0..n] };
     var out: std.ArrayListUnmanaged(tiffz.ifd_conformance.Fault) = .empty;
     errdefer out.deinit(allocator);
-    try tiffz.ifd_conformance.check(allocator, &dir, .little, &out);
+    try tiffz.ifd_conformance.check(allocator, &dir, .little, if (dng_row) dng_context else null, &out);
     allocator.free(copy);
     return out;
 }

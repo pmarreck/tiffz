@@ -287,10 +287,11 @@ pub const Decoder = struct {
     /// a corrupt finding per fault. Notes the first fault for progress and
     /// returns whether there was any. Validation fails Malformed once the
     /// walk ends, so every page is still decoded for reach.
-    fn checkIfdConformance(self: *Decoder, dir: *const Ifd, ifd_index: usize) errors.Error!bool {
+    /// `dng` is what IFD 0 declares about DNG (`conformance.Dng.fromIfd0`).
+    fn checkIfdConformance(self: *Decoder, dir: *const Ifd, ifd_index: usize, dng: ?conformance.Dng) errors.Error!bool {
         var faults: std.ArrayListUnmanaged(conformance.Fault) = .empty;
         defer faults.deinit(self.allocator);
-        try conformance.check(self.allocator, dir, self.endian, &faults);
+        try conformance.check(self.allocator, dir, self.endian, dng, &faults);
         const ifd_offset = self.ifdFileOffset(ifd_index) orelse return error.Bug;
         for (faults.items) |fault| {
             const entry_offset = conformance.entryOffset(ifd_offset, fault.entryIndex(), dir.offset_width);
@@ -706,6 +707,9 @@ pub const Decoder = struct {
         // A directory-rule fault fails validation only after the walk, so
         // later pages still get decoded and their findings reported.
         var nonconforming = false;
+        // DNG rows and restrictions apply to every IFD of a file whose IFD 0
+        // declares DNGVersion.
+        const dng: ?conformance.Dng = if (self.ifdCount() > 0) conformance.Dng.fromIfd0(try self.ifd(0), self.endian) else null;
 
         var ifd_index: usize = 0;
         while (ifd_index < self.ifdCount()) : (ifd_index += 1) {
@@ -713,7 +717,7 @@ pub const Decoder = struct {
                 self.noteFileClaim(err, self.ifdFileOffset(ifd_index));
                 return err;
             };
-            if (try self.checkIfdConformance(dir, ifd_index)) nonconforming = true;
+            if (try self.checkIfdConformance(dir, ifd_index, dng)) nonconforming = true;
             // No strip/tile arrays. A JPEGInterchangeFormat thumbnail (CR2
             // IFD1) is still a known page with nothing for this walk to
             // decode. Any other main-chain IFD in that shape is not an
