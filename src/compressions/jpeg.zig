@@ -19,11 +19,11 @@
 //! both default to it). Mode 1 falls out naturally — when there's no
 //! JPEGTables to splice, the strip bytes ARE the complete stream.
 //!
-//! Photometric scope: RGB (2), YCbCr (6), and CFA (32803). RGB/YCbCr
-//! decode to pixels (YCbCr becomes RGB inside jpegz). CFA accepts only
-//! a jpegz-checked single-component decode and returns those samples
-//! unchanged. Other photometrics stay UnsupportedCompression before
-//! jpegz runs. An unchecked CFA variant still runs jpegz.validate so
+//! Photometric scope: RGB (2), YCbCr (6), BlackIsZero (1) and CFA (32803).
+//! RGB/YCbCr decode to pixels (YCbCr becomes RGB inside jpegz). BlackIsZero
+//! (a gray page) and CFA accept only a jpegz-checked single-component decode
+//! and return those samples unchanged. Other photometrics stay UnsupportedCompression before
+//! jpegz runs. An unchecked single-component variant still runs jpegz.validate so
 //! the reach finding is visible, then returns UnsupportedCompression.
 //!
 //! For YCbCr the underlying
@@ -31,7 +31,7 @@
 //! the bytes returned in `dest` are RGB pixels regardless of the TIFF
 //! photometric tag. The caller MUST treat the output as
 //! photometric=RGB during photometric expansion (libtiff takes the
-//! same approach in TIFFReadRGBAImage). Non-RGB/non-YCbCr photometric
+//! same approach in TIFFReadRGBAImage). Other photometric
 //! values with Compression=7 surface as UnsupportedCompression at the
 //! decoder layer.
 

@@ -1710,7 +1710,8 @@ pub const Decoder = struct {
             },
             tags.compression_jpeg => blk: {
                 // JPEG-in-TIFF (Compression=7, TIFF Tech Note 2).
-                // Supports photometric=RGB (2) and photometric=YCbCr (6).
+                // Supports photometric=RGB (2), YCbCr (6), and the single-
+                // component BlackIsZero (1) and CFA (32803).
                 // CAVEAT: the cleanroom JPEG codec (jpegz.decode)
                 // performs YCbCr→RGB conversion internally for YCbCr-marked
                 // JPEG streams. The bytes written to `dest` are therefore
@@ -1723,7 +1724,11 @@ pub const Decoder = struct {
                 // codec would need explicit colorspace handling.
                 const photo = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse return error.Malformed;
                 const cfa = photo == tags.photometric_color_filter_array;
-                if (photo != tags.photometric_rgb and photo != tags.photometric_ycbcr and !cfa) {
+                // BlackIsZero is grayscale JPEG-in-TIFF, what libtiff and GDAL
+                // write for gray pages: one component whose samples are the
+                // stored values, decoded on the same checked path as CFA.
+                const single_component = cfa or photo == tags.photometric_black_is_zero;
+                if (photo != tags.photometric_rgb and photo != tags.photometric_ycbcr and !single_component) {
                     break :blk error.UnsupportedCompression;
                 }
 
@@ -1770,11 +1775,11 @@ pub const Decoder = struct {
                 }
                 if (corrupt or !validation.isValid()) break :blk error.JpegInTiffPayload;
 
-                if (cfa) {
-                    // Sensor mosaic: only a checked single-component decode is
-                    // sensor samples. An unchecked variant keeps jpegz's reach
-                    // finding and does not become RGB. A multi-component JPEG
-                    // under photometric CFA is not a mosaic stream.
+                if (single_component) {
+                    // Sensor mosaic or gray page: only a checked single-component
+                    // decode is stored samples. An unchecked variant keeps jpegz's
+                    // reach finding and does not become RGB. A multi-component
+                    // JPEG under photometric CFA or BlackIsZero is not one of these.
                     if (validation.codec_check != .decoded) break :blk error.UnsupportedCompression;
                     const img = compressions_jpeg.jpegz.decode(self.allocator, prepared.bytes) catch |e| switch (e) {
                         error.OutOfMemory => break :blk error.OutOfMemory,

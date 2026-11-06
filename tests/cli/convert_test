@@ -5,7 +5,7 @@
 # TIFF tiffz writes without complaint. tiffz's own validate must accept them.
 #
 # Usage: tests/cli/convert_test PATH_TO_TIFFZ
-# Needs magick, tiffinfo, tiffdump and gawk on PATH.
+# Needs magick, tiffinfo, tiffdump, tiffcp, tiffset and gawk on PATH.
 
 set -u
 
@@ -28,7 +28,7 @@ fail() {
 	failures=$((failures + 1))
 }
 
-for tool in magick tiffinfo tiffdump gawk cmp; do
+for tool in magick tiffinfo tiffdump tiffcp tiffset gawk cmp; do
 	command -v "$tool" >/dev/null 2>&1 || { printf 'convert_test: %s is required\n' "$tool" >&2; exit 1; }
 done
 
@@ -118,6 +118,25 @@ for fx in uncompressed/minisblack-1c-8b.tiff uncompressed/rgb-3c-8b.tiff uncompr
 		[ "$to" = tif ] && tiff_ok "$fx -> tif" "$out" AdobeDeflate
 	done
 done
+
+# --- Grayscale JPEG-in-TIFF (BlackIsZero), written by libtiff ---
+# tiffcp writes TN2 Mode 2 (JPEGTables). RowsPerStrip 16 over 23 rows leaves a
+# short last strip. tiffz must decode the pixels ImageMagick (libtiff) does.
+magick -size ${w}x$h -depth 8 "gray:$work/gray.raw" -compress none "$work/gray-plain.tif"
+if tiffcp -c jpeg -r 16 "$work/gray-plain.tif" "$work/gray-jpeg.tif" 2>"$sandbox/tiffcp.err"; then
+	tiffinfo "$work/gray-jpeg.tif" 2>/dev/null | grep -q "Photometric Interpretation: min-is-black" || fail "gray JPEG: tiffcp did not write BlackIsZero"
+	run validate "$work/gray-jpeg.tif"
+	[ "$status" -eq 0 ] || fail "gray JPEG: validate exited $status: $err"
+	run convert "$work/gray-jpeg.tif" -o "$work/gray-jpeg.png"
+	if [ "$status" -eq 0 ]; then same_pixels "gray JPEG -> png" "$work/gray-jpeg.tif" "$work/gray-jpeg.png"; else fail "gray JPEG -> png exited $status: $err"; fi
+	# WhiteIsZero under JPEG stays outside tiffz's scope: reach, exit 4.
+	cp "$work/gray-jpeg.tif" "$work/white-jpeg.tif"
+	tiffset -s 262 0 "$work/white-jpeg.tif" >/dev/null 2>&1 || fail "gray JPEG: tiffset could not set WhiteIsZero"
+	run validate "$work/white-jpeg.tif"
+	[ "$status" -eq 4 ] || fail "WhiteIsZero JPEG: expected unsupported (exit 4), got $status: $err"
+else
+	fail "gray JPEG: tiffcp failed: $(cat "$sandbox/tiffcp.err")"
+fi
 
 # A round trip PNG -> TIFF -> PNG -> BMP -> TIFF keeps every pixel.
 run convert "$work/rgba.png" -o "$work/rt1.tif" --compression lzw

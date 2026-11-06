@@ -111,6 +111,7 @@ The counts are on acb0c0aa. Since 12ae528f, a feature tiffz does not implement i
    - `tif_jpeg_too_big_last_stripe.tif` (BlackIsZero, 1 component) is `unsupported`: UnsupportedCompression at offset 460, which is strip 0. The walk stops before reaching the last strip, so the quirk is never judged. This is the abbreviated-stream reach gap listed for GDAL's JPEG-tables files. Strip 0's own SOF0 matches its strip: 16 rows by 20.
 
    So the quirk has one verdict, a warning. Once the gray JPEG-tables gap is closed, the gray file should land on the same finding 13. Question for the audit: is a JPEG frame one row taller than its last strip (libtiff accepts it, and GDAL's writer produced it) the warning this file shows, or KNOWN_DEFECT once validate's registry admits the GDAL signature?
+   **Ruling (validate, 2026-11-05):** WARN (finding 13) by default. KNOWN_DEFECT only through the admission rule: the same signature in 3 or more independent real-world files or in verified checksummed bytes, or a documented upstream producer bug describing it exactly (a libtiff or GDAL writer note or fix commit). These two GDAL test files count as neither. Close the JPEG-tables reach gap first, so the gray file reaches the same finding.
 
 
 ## validate review, 2026-11-05 14:51 (owner approval pending)
