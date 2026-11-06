@@ -2765,6 +2765,78 @@ test "Compression 2 (CCITT modified Huffman): a damaged code stream fails" {
     try std.testing.expect(std.meta.isError(outcome));
 }
 
+/// Decode a one-strip coded fixture and its libtiff `tiffcp -c none` oracle,
+/// and require the same samples. The coded strip is decoded directly, apart
+/// from the directory rules (see the NeXT Compression value test).
+fn expectMatchesOracle(coded_path: []const u8, oracle_path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const coded = try loadFile(allocator, coded_path);
+    defer allocator.free(coded);
+    const oracle = try loadFile(allocator, oracle_path);
+    defer allocator.free(oracle);
+    var got: [64]u8 = undefined;
+    var want: [64]u8 = undefined;
+    var handle = tiffz.source.BufferHandle.init(coded);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    const n = try dec.decodeStrip(0, 0, &got, &ws);
+    const m = try validateAndDecodeStrip(allocator, oracle, &want);
+    try std.testing.expectEqualSlices(u8, want[0..m], got[0..n]);
+}
+
+// Fixtures from tests/fixtures/next_thunder/gen.pl; the -none files are
+// libtiff 4.7.2's decodes of them.
+test "Compression 32766 (NeXT): every row code decodes to libtiff's samples" {
+    try expectMatchesOracle("tests/fixtures/next_thunder/next-8x3.tif", "tests/fixtures/next_thunder/next-8x3-none.tif");
+}
+
+test "Compression 32809 (ThunderScan): every code decodes to libtiff's samples" {
+    try expectMatchesOracle("tests/fixtures/next_thunder/thunder-8x2.tif", "tests/fixtures/next_thunder/thunder-8x2-none.tif");
+}
+
+test "Compressions 32766 and 32809: a run past the end of its row is Malformed" {
+    const allocator = std.testing.allocator;
+    const Case = struct { path: []const u8, from: u8, to: u8 };
+    const cases = [_]Case{
+        // NeXT run byte 0x83 (3 of gray 2) becomes 0xBF (63 of gray 2).
+        .{ .path = "tests/fixtures/next_thunder/next-8x3.tif", .from = 0x83, .to = 0xBF },
+        // ThunderScan's final run of 2 becomes a run of 63.
+        .{ .path = "tests/fixtures/next_thunder/thunder-8x2.tif", .from = 0x02, .to = 0x3F },
+    };
+    for (cases) |case| {
+        const bytes = try loadFile(allocator, case.path);
+        defer allocator.free(bytes);
+        const at = std.mem.lastIndexOfScalar(u8, bytes, case.from) orelse return error.TestUnexpectedResult;
+        bytes[at] = case.to;
+        var handle = tiffz.source.BufferHandle.init(bytes);
+        const src = tiffz.Source.fromBuffer(&handle);
+        var dec = try tiffz.Decoder.open(allocator, src);
+        defer dec.deinit();
+        var ws = tiffz.Workspace.init(allocator);
+        defer ws.deinit();
+        var dest: [64]u8 = undefined;
+        try std.testing.expectError(error.Malformed, dec.decodeStrip(0, 0, &dest, &ws));
+    }
+}
+
+// No published specification defines Compression 32766: the Compression row
+// takes TIFF 6.0's 1-7, Photoshop's 8 and RFC 3949's 9-10, and leaves the
+// private range from 32768 unchecked. So a NeXT file decodes and still carries
+// a finding 18 value fault on Compression; whether 32766 counts as specified
+// is validate's question (asked 2026-11-06). ThunderScan's 32809 is private.
+test "Compression 32766 (NeXT): the strip decodes and the Compression value is still a finding 18 fault" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/next_thunder/next-8x3.tif");
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
+    try std.testing.expectEqual(@as(usize, 1), recorder.count(.tag_field_invalid));
+}
+
 test "BlackIsZero compression 7: a three-component frame stays outside the gray path" {
     const allocator = std.testing.allocator;
     const bytes = try wrapJpegDepth(allocator, &lossless_flat8_jpeg, 6, 2, 1, 1, 8, .little);

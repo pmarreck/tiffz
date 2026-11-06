@@ -23,6 +23,8 @@ const Ifd = ifd_mod.Ifd;
 const tags = parser.tags;
 const compressions_none = @import("compressions/none.zig");
 const compressions_packbits = @import("compressions/packbits.zig");
+const compressions_next = @import("compressions/next.zig");
+const compressions_thunderscan = @import("compressions/thunderscan.zig");
 const lzwz = @import("lzwz");
 const compressions_deflate = @import("compressions/deflate.zig");
 const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
@@ -1506,6 +1508,8 @@ pub const Decoder = struct {
     pub const supported_compressions = [_]u16{
         tags.compression_none,
         tags.compression_ccitt_rle,
+        tags.compression_next,
+        tags.compression_thunderscan,
         tags.compression_ccitt_t4,
         tags.compression_ccitt_t6,
         tags.compression_lzw,
@@ -1651,6 +1655,27 @@ pub const Decoder = struct {
                     fill,
                     eol_byte_align,
                 ) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
+            tags.compression_next, tags.compression_thunderscan => blk: {
+                // NeXT (32766) and ThunderScan (32809): one-sample gray at a
+                // single depth each, 2 and 4 bits. Neither has a published
+                // specification; see the codec modules.
+                const depth: u16 = if (comp == tags.compression_next) 2 else 4;
+                const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+                if (samples != 1 or (self.uniformBitsPerSample(dir, samples) catch |e| break :blk e) != depth) {
+                    break :blk error.UnsupportedBitDepth;
+                }
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = (if (comp == tags.compression_next)
+                    compressions_next.decode(scratch, dest, ext.width, ext.rows)
+                else
+                    compressions_thunderscan.decode(scratch, dest, ext.width, ext.rows)) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -2203,7 +2228,7 @@ test "decodeStrip: uncompressed RGB single strip" {
 // classify unsupported. Oracles are hand-derived from the dispatch switch, so
 // adding a codec to one side without the other fails here.
 test "compressionSupported: classifier over supported / never-supported / unknown codes" {
-    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 50000, 34887, 34892 };
+    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 50000, 34887, 34892 };
     for (supported) |c| {
         try std.testing.expect(Decoder.compressionSupported(c));
     }
@@ -2211,7 +2236,6 @@ test "compressionSupported: classifier over supported / never-supported / unknow
         0, // not a legal Compression value
         6, // old-style JPEG (OJPEG) — deliberately never supported, SPEC §3
         9, 10, // T.85 / T.43 reserved
-        32809, // Thunderscan
         34712, // JPEG2000-in-TIFF
         34925, // LZMA2
         50001, // WebP
