@@ -1,10 +1,15 @@
-# Severity audit draft (tiffz, 2026-11-05)
+# Severity audit draft (tiffz, 2026-11-05; re-graded 2026-11-06)
 
 Status: **draft for validate and the owner. Nothing here is implemented,** and no verdict changes until the owner approves.
 
 ## Basis
 
-**The owner's definition** (2026-11-05, 11:07 and 11:10, relayed by validate): a failure is data statistically likely to come from damage. That means a media, transmission, disk or driver error, or a cosmic ray. Writer non-conformance that readers tolerate is a spec violation, and gets a warning. Detection stays as strict as it is now; only the severity attached to a record changes.
+**The owner's definition** (2026-11-05, 11:07 and 11:10, relayed by validate): a failure is data statistically likely to come from damage. That means a media, transmission, disk or driver error, or a cosmic ray. Detection stays as strict as it is now; only the severity attached to a record changes.
+
+**The owner's correction** (2026-11-06, relayed by validate): "we are no longer in the business of judging what's acceptable, just what's out of spec ... we don't judge based on what other readers do anymore." So:
+- WARN is a spec violation most likely made by the writer.
+- FAIL is likely damage, a checksum or length mismatch, or data the specification gives no decode for. "No specified decode" means the specification defines none.
+- What other readers do is not evidence for a grade. Producer evidence is: the same signature from repeated files, bodies or makers, against the corruption campaign's damage counts.
 
 **validate TERMINOLOGY.md A2** (rewritten 2026-11-05, uncommitted at the time of writing):
 - KNOWN_DEFECT is its own category, and is either warning-treated or failure-treated.
@@ -38,45 +43,58 @@ Two independent measurements.
 
 The test_suite class (90 files) carries none of these records. In the damaged class, the only one is the GDAL ExtraSamples writer bug.
 
-## Proposed classes
+## Proposed classes (re-graded 2026-11-06)
 
 Columns:
 - **Damage:** campaign cases out of 743 detections, plus an example mutation.
-- **Writer:** real-world files.
-- **Decodes:** whether a reader decodes the image correctly anyway.
-- **Proposed:** FAIL (corrupt) or WARN (spec violation).
-- **KNOWN_DEFECT:** the candidate, and how it would be treated.
+- **Writer:** real-world files and their producers.
+- **Specified decode:** whether the specification defines a decode for the data as written. A deviation in a descriptive field leaves the image payload's decode defined.
+- **Proposed:** FAIL, WARN or open, by the 2026-11-06 rule:
+  - FAIL when the specification gives no decode, for a checksum or length mismatch, or when damage is the only observed source.
+  - WARN when the specification gives a decode and producer repetition shows a writer made it.
+  - Open when there is no evidence either way.
+- **KNOWN_DEFECT:** the candidate signature. There is no treatment column (owner, 2026-11-05 15:25).
+- **Changed:** whether the 2026-11-06 re-grade changed the row. The 2026-11-05 draft had a "Decodes" column (whether other readers cope); it is gone.
 
-| Rule or reason | Now | Damage | Writer | Decodes | Proposed | KNOWN_DEFECT |
-|---|---|---|---|---|---|---|
-| 17 entries out of order | FAIL | 11: a bit in a tag ID (sniper rgb_zstd.tif round 130) | 13 (Sony ARW, Samsung) | yes: readers search or sort the directory | WARN | Sony ARW candidate, warning-treated |
-| 18 r1, a type readers widen (SHORT/LONG, RATIONAL forms) | FAIL | 3: a bit in the type field (RowsPerStrip, FillOrder, PhotometricInterpretation) | 3 (HP, NeXT, Samsung) | yes | WARN | |
-| 18 r1, an unknown or unreadable type (raw type 0 or above 18) | FAIL | yes, a type-field flip | none | no defined read | FAIL | |
-| 18 r2, count on a field that drives decoding (StripOffsets, StripByteCounts, TileOffsets, TileByteCounts, BitsPerSample, SampleFormat) | FAIL | 1 (SampleFormat count, sniper gray16_lerc.tif round 156) | Canon 40D IFD0 BitsPerSample | no: per-sample or per-chunk layout undefined | FAIL | Canon CR2 IFD0 candidate, failure-treated |
-| 18 r2, count on a descriptive field (MinSampleValue, ExtraSamples, ...) | FAIL | 2 (TransferFunction count, rgb_zstd.tif sniper round 132, bolter round 136) | Kodak DCS 280, GDAL ExtraSamples bug | yes | WARN | Kodak MinSampleValue candidate, warning-treated |
-| 18 r3, value of a field that drives decoding (Compression, PhotometricInterpretation, Predictor, PlanarConfiguration, BitsPerSample, SampleFormat, SamplesPerPixel) | FAIL | 3 (SampleFormat, Compression 16385, Photometric 1026; gray16_geotiff.tif rounds 280 and 292, rgb16.tif round 341) | Sony Compression 32767 | no specified decode | FAIL | Sony ARW candidate, failure-treated |
-| 18 r3, Predictor 3 with samples that are not whole bytes | FAIL | not observed | none | no defined decode (TN3) | FAIL | |
-| 18 r3, value of a descriptive field (Orientation, ResolutionUnit, Threshholding, FillOrder where readers default, ...) | FAIL | 2 (Orientation, FillOrder) | Kodak Orientation 9 | yes | WARN | Kodak Orientation 9 candidate, warning-treated |
-| 18 r3, ASCII content (high byte, embedded NUL run, missing terminator) | FAIL | 2 (nuke deflate-last-strip.tif rounds 85, 90: GeoAsciiParams) | Leica, Nikon Coolscan, Kodak DCS 3 | yes | WARN | |
-| 18 r3, TileWidth or TileLength not a multiple of 16 | FAIL | not observed | Apple iPhone DNG | yes | WARN | Apple candidate, warning-treated |
-| 18 r3, an offset or pointer outside the file (SubIFDs, ExtraCameraProfiles, ...) | FAIL | yes: an offset flip | none | no | FAIL (validate's caution) | |
-| 18 r4 channel mismatch (SamplesPerPixel against Photometric, no ExtraSamples) | FAIL | not observed | Kodak KDC and DCS 3 | yes for the color channels; the extra sample is unlabeled | WARN | Kodak KDC candidate, warning-treated |
-| 18 cross-field: palette without ColorMap; transparency mask not 1 bit; palette or mask with JPEG | FAIL | yes, a Photometric flip | none | no defined decode | FAIL | |
-| 18 cross-field: YCbCr RowsPerStrip not a multiple of vertical subsampling; StripRowCounts with RowsPerStrip | FAIL | not observed | none | chunk layout ambiguous | FAIL | |
-| 18 cross-field: ImageLayer; DNG DefaultUserCrop, NoiseProfile signs, ProfileToneCurve endpoints | FAIL | not observed | none | yes: rendering metadata | WARN | |
-| 18, DNG Chapter 3 restrictions (Compression and bit-depth lists, Photometric by role) | FAIL | not observed | none | decode-driving rows: no; others: yes | FAIL for decode-driving rows, WARN otherwise | |
-| 18, GeoTIFF Tier 1 (types and counts of the six georeferencing tags) | FAIL | 2 (GeoAsciiParams, above) | none | the image decodes; georeferencing is readable when the values are | WARN when readable, FAIL when too few values to read | |
-| 19 rules 1, 2, 3, 5 (JPEG strip and tile geometry against SOF and MCU) | FAIL | not observed | none | no: pixel placement undefined | FAIL | |
-| 19 rule 4 (YCbCrSubSampling against SOF factors) | FAIL | not observed | Leica M11, Ricoh GR | yes: readers follow the SOF | WARN | DNG 4:2:2 candidate, warning-treated |
-| 19 rule 6 (DNG SOF variant) | FAIL | not observed | Blackmagic | yes: the SOF says which process | WARN | |
-| 19 rule 7 (hierarchical JPEG in a DNG) | FAIL | not observed | none | most readers cannot | FAIL | |
-| presence 1: ImageWidth, ImageLength, strip or tile offsets and counts | (held) | yes: a tag-ID flip | none | no | FAIL (validate's caution) | |
-| presence 1: PhotometricInterpretation | (held) | yes | the Canon SPP layout | readers infer it | WARN | Canon SPP candidate, warning-treated |
-| presence 1: XResolution, YResolution | (held) | yes | many | yes | WARN (owner, 11:07) | |
-| presence 2: tiles stored in strip tags | (held) | unlikely | libtiff pics quad-tile, cramps-tile | libtiff reads them | WARN | |
-| presence 3: a tile field without its partner | (held) | yes | none | no | FAIL | |
-| checksum or declared-length mismatch (Adler-32, LERC, Zstd checksum, truncated strip) | FAIL | the bulk of the 719 | none | no | FAIL (owner, 11:13) | |
-| TileByteCounts or StripByteCounts zero for a chunk with a nonzero offset | FAIL (SourceTooShort) | yes: a zeroed count | 1 test_suite file: GDAL COG, sizes in a 4-byte leader | GDAL only, from the leader; libtiff refuses | FAIL, unless the GDAL ghost header declares the leader (question 4) | |
+| Rule or reason | Now | Damage | Writer | Specified decode | Proposed | KNOWN_DEFECT | Changed |
+|---|---|---|---|---|---|---|---|
+| 17 entries out of order | FAIL | 11: a bit in a tag ID (sniper rgb_zstd.tif round 130) | 13 (Sony ARW, 13 bodies; Samsung NX500) | yes: every entry is still defined | WARN | Sony ARW candidate | basis only |
+| 18 r1, a type a reader could widen (SHORT for LONG, RATIONAL forms) | FAIL | 3: a bit in the type field (RowsPerStrip, FillOrder, PhotometricInterpretation) | 3 (HP, NeXT, Samsung NX500) | yes: the value is representable | WARN | | basis only |
+| 18 r1, an unknown or unreadable type (raw type 0 or above 18) | FAIL | yes, a type-field flip | none | no | FAIL | | no |
+| 18 r2, count on a field that drives decoding (StripOffsets, StripByteCounts, TileOffsets, TileByteCounts, BitsPerSample, SampleFormat) | FAIL | 1 (SampleFormat count, sniper gray16_lerc.tif round 156) | Canon 40D IFD0 BitsPerSample | no: per-sample or per-chunk layout undefined | FAIL | Canon CR2 IFD0, admitted | no |
+| 18 r2, count on a descriptive field (MinSampleValue, ExtraSamples, ...) | FAIL | 2 (TransferFunction count, rgb_zstd.tif sniper round 132, bolter round 136) | Kodak DCS bodies (MinSampleValue); GDAL ExtraSamples bug | yes for the payload | WARN | Kodak MinSampleValue candidate | basis only |
+| 18 r3, value of a field that drives decoding (Compression, PhotometricInterpretation, Predictor, PlanarConfiguration, BitsPerSample, SampleFormat, SamplesPerPixel) | FAIL | 3 (SampleFormat, Compression 16385, Photometric 1026; gray16_geotiff.tif rounds 280 and 292, rgb16.tif round 341) | Sony Compression 32767 | no | FAIL | Sony ARW candidate | no |
+| 18 r3, Predictor 3 with samples that are not whole bytes | FAIL | not observed | none | no (TN3) | FAIL | | no |
+| 18 r3, value of a descriptive field (Orientation, ResolutionUnit, Threshholding, FillOrder, ...) | FAIL | 2 (Orientation, FillOrder) | Kodak Orientation 9 (several bodies) | yes for the payload | WARN | Kodak Orientation 9 candidate | basis only |
+| 18 r3, ASCII content (high byte, embedded NUL run, missing terminator) | FAIL | 2 (nuke deflate-last-strip.tif rounds 85, 90: GeoAsciiParams) | Leica, Nikon Coolscan, Kodak DCS 3 | yes for the payload | WARN | | basis only |
+| 18 r3, TileWidth or TileLength not a multiple of 16 | FAIL | not observed | Apple iPhone DNG (2 files) | yes: the tile grid is fully stated | WARN | Apple candidate | basis only |
+| 18 r3, an offset or pointer outside the file (SubIFDs, ExtraCameraProfiles, ...) | FAIL | yes: an offset flip | none | no | FAIL | | no |
+| 18 r4 channel mismatch (SamplesPerPixel against Photometric, no ExtraSamples) | FAIL | not observed | Kodak P880, P712 KDC; Kodak EOS DCS 3 | yes for the color channels; the extra sample has no defined meaning | WARN | Kodak KDC candidate | basis only |
+| 18 cross-field: palette without ColorMap; transparency mask not 1 bit; palette or mask with JPEG | FAIL | yes, a Photometric flip | none | no | FAIL | | no |
+| 18 cross-field: YCbCr RowsPerStrip not a multiple of vertical subsampling; StripRowCounts with RowsPerStrip | FAIL | not observed | none | no: chunk layout ambiguous | FAIL | | no |
+| 18 cross-field: ImageLayer; DNG DefaultUserCrop, NoiseProfile signs, ProfileToneCurve endpoints | FAIL | not observed | none | yes for the payload | open (was WARN because rendering metadata is readable) | | yes |
+| 18, DNG Chapter 3 restrictions (Compression and bit-depth lists, Photometric by role) | FAIL | not observed | none | decode-driving rows: no; others: yes | FAIL for decode-driving rows; open for the others (was WARN) | | yes |
+| 18, GeoTIFF Tier 1 (types and counts of the six georeferencing tags) | FAIL | 2 (GeoAsciiParams, above) | none | yes when enough values are present | FAIL: damage is the only observed source (was WARN when readable) | | yes |
+| 19 rules 1, 2, 3, 5 (JPEG strip and tile geometry against SOF and MCU) | FAIL | not observed | none | no: pixel placement undefined | FAIL | | no |
+| 19 rule 4 (YCbCrSubSampling against SOF factors) | FAIL | not observed | Leica M11, Ricoh GR | yes: the JPEG stream defines its own sampling | WARN | DNG 4:2:2 candidate | basis only |
+| 19 rule 6 (DNG SOF variant) | FAIL | not observed | Blackmagic Micro Cinema | yes: the SOF names its process | WARN | | basis only |
+| 19 rule 7 (hierarchical JPEG in a DNG) | FAIL | not observed | none | no: DNG defines baseline and lossless only | FAIL | | no |
+| presence 1: ImageWidth, ImageLength, strip or tile offsets and counts | (held) | yes: a tag-ID flip | none | no | FAIL | | no |
+| presence 1: PhotometricInterpretation | (held) | yes | the Canon SPP layout | no: TIFF 6.0 gives it no default | FAIL (was WARN because readers infer it) | Canon SPP candidate | yes |
+| presence 1: XResolution, YResolution | (held) | yes | many | yes for the payload | WARN (owner, 11:07) | | no |
+| presence 2: tiles stored in strip tags | (held) | unlikely | libtiff pics quad-tile, cramps-tile | no: TIFF 6.0 describes tiles only through the tile tags | FAIL by the rule (was WARN because libtiff reads them); tiffz tolerates it today with a warning record, so this needs validate's ruling | | yes |
+| presence 3: a tile field without its partner | (held) | yes | none | no | FAIL | | no |
+| checksum or declared-length mismatch (Adler-32, LERC, Zstd checksum, truncated strip) | FAIL | the bulk of the 719 | none | no | FAIL (owner, 11:13) | | no |
+| TileByteCounts or StripByteCounts zero for a chunk with a nonzero offset | FAIL (SourceTooShort) | yes: a zeroed count | 1 test_suite file: GDAL COG, sizes in a 4-byte leader | only through GDAL's declared leader convention | FAIL, unless the ghost header declares the leader (amendment 3) | | basis only |
+
+**What changed on 2026-11-06.** Rows marked "basis only" keep their grade on producer evidence, without reader evidence. Five rows changed:
+- **Rendering metadata cross-field rows:** they had no evidence either way, so they are open.
+- **Non-decode-driving DNG Chapter 3 rows:** likewise open.
+- **GeoTIFF Tier 1:** damage is its only observed source, so it is FAIL.
+- **Missing PhotometricInterpretation:** TIFF 6.0 gives it no default, so it is FAIL.
+- **Tiles in strip tags:** the rule makes it FAIL, but tiffz tolerates it today, so it waits for a ruling.
+
+The rows behind the 16 real-world flips below are all writer-evidenced and unchanged. The presence rows are on a held branch, so the effect counts do not move.
 
 ## Effect
 
@@ -119,6 +137,7 @@ The counts are on acb0c0aa. Since 12ae528f, a feature tiffz does not implement i
 ## Amendments
 
 **1. "No specified decode" means no decode exists anywhere, not "the TIFF spec defines none".**
+- **Withdrawn 2026-11-06** by validate after the owner's correction. "No specified decode" now means the specification defines none.
 - Sony Compression 32767 is a vendor codec. rawz decodes the Sony raw payload, and LibRaw reads all 11 exemplars.
 - So the generic row stays FAIL: an unassigned Compression value outside a recognized signature is damage-likely.
 - But the Sony signature becomes KNOWN_DEFECT, **warning-treated**, because the data does decode through the vendor format.
@@ -166,3 +185,11 @@ The owner, at 15:25:
 A tolerating reader is no longer required. Admission rests on the same signature in at least 3 independent real-world files, or inside verified checksummed bytes. A documented upstream producer bug, reproduced synthetically, is also accepted.
 
 Amendments 3 and 4 are unchanged. The table itself still waits for the owner's approval.
+
+
+## validate update, 2026-11-06 (owner corrections)
+
+- **The owner, November 6:** "we are no longer in the business of judging what's acceptable, just what's out of spec ... we don't judge based on what other readers do anymore." The table above drops the readers column and re-grades every row from producer and damage evidence. See "What changed on 2026-11-06".
+- **Amendment 1's reading of "no specified decode" is withdrawn.** It now means the specification defines none.
+- **Admitted:** the DNG exactly-full Huffman table (Pentax K-x, K-r, Ricoh GR, DJI FC4382) is a KNOWN_DEFECT. jpegz emits 71 `huffman_table_full_all_ones` at KNOWN_DEFECT severity, and tiffz needs a repin.
+- **The owner, on unchecked payloads:** "we need to parse everything parseable." Every "unsupported" reach on a payload the specification defines is a work item, not an end state (`codec-reach.md`).
