@@ -1834,7 +1834,15 @@ pub const Decoder = struct {
                     break :blk written;
                 }
 
-                const written = compressions_jpeg.decodePrepared(self.allocator, prepared.bytes, dest) catch |e| break :blk e;
+                // jpegz returns RGB (YCbCr converted), so a chunk row holds
+                // three samples per pixel. The depth is read only for a decode
+                // wider than 8 bits, which jpegz returns as host-order u16.
+                const wide: compressions_jpeg.WideLayout = .{
+                    .bps = self.uniformBitsPerSample(dir, (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1),
+                    .row_samples = @as(usize, ext.width) * 3,
+                    .endian = self.endian,
+                };
+                const written = compressions_jpeg.decodePrepared(self.allocator, prepared.bytes, wide, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }

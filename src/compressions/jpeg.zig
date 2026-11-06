@@ -98,10 +98,23 @@ pub fn prepareStream(
     };
 }
 
+/// Where a decode wider than 8 bits goes: the chunk's BitsPerSample (an
+/// error when it is not one depth for every sample), samples per chunk row,
+/// and the file's byte order.
+pub const WideLayout = struct {
+    bps: errors.Error!u16,
+    row_samples: usize,
+    endian: Endian,
+};
+
 /// Decode an already-prepared stream after the caller has run jpegz validation.
+/// An 8-bit decode is copied as jpegz returns it. A wider one (12-bit
+/// baseline, for one) is written as an uncompressed chunk holds it, through
+/// `storeSamples`, since jpegz returns host-order u16 values.
 pub fn decodePrepared(
     allocator: Allocator,
     stream: []const u8,
+    wide: WideLayout,
     dest: []u8,
 ) errors.Error!usize {
     const img = jpegz.decode(allocator, stream) catch |e| switch (e) {
@@ -112,6 +125,7 @@ pub fn decodePrepared(
     };
     defer allocator.free(img.pixels);
 
+    if (img.bits_per_sample > 8) return storeSamples(img, try wide.bps, wide.row_samples, wide.endian, dest);
     if (img.pixels.len > dest.len) return error.DestTooSmall;
     @memcpy(dest[0..img.pixels.len], img.pixels);
     return img.pixels.len;
@@ -202,6 +216,7 @@ pub fn decode(
     allocator: Allocator,
     strip_bytes: []const u8,
     jpeg_tables: ?[]const u8,
+    wide: WideLayout,
     dest: []u8,
 ) errors.Error!usize {
     // Splice JPEGTables (sans trailing EOI) + strip_bytes (sans leading SOI)
@@ -225,7 +240,7 @@ pub fn decode(
     // failure as JpegInTiffPayload. Unvalidated, "no decoder for this
     // variant" also covers bytes that are not JPEG at all, so it stays a
     // payload failure here.
-    return decodePrepared(allocator, prepared.bytes, dest) catch |e| switch (e) {
+    return decodePrepared(allocator, prepared.bytes, wide, dest) catch |e| switch (e) {
         error.UnsupportedCompression => error.JpegInTiffPayload,
         else => e,
     };
@@ -345,6 +360,6 @@ test "decode: malformed JPEG payloads map to error.JpegInTiffPayload, not generi
         &[_]u8{ 0xFF, 0xD8, 0xFF, 0xD9 }, // SOI + EOI, no frame
     };
     for (bad_streams) |s| {
-        try std.testing.expectError(error.JpegInTiffPayload, decode(allocator, s, null, &dest));
+        try std.testing.expectError(error.JpegInTiffPayload, decode(allocator, s, null, .{ .bps = 8, .row_samples = 1, .endian = .little }, &dest));
     }
 }
