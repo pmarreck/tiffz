@@ -1,0 +1,45 @@
+# Codec reach
+
+On 2026-11-06 the owner, answering a report that undecodable files now read "unsupported", said: "We need to support those compression algorithms, simple as that. Our goal is 100% TIFF/RAW coverage (in conjunction with rawz), to the extent technically-possible."
+
+INTENT.md had left "JPEG2000-in-TIFF, JBIG, and other undispatched codecs" unclaimed "until an explicit owner decision". This note takes the 2026-11-06 statement as that decision for every undispatched TIFF codec that is not blocked.
+
+OJPEG (Compression 6) is different: the owner blocked it by name on 2026-08-27 ("Do not reopen"). Whether the 2026-11-06 goal reopens it is an open question for the owner, and nothing changes for OJPEG until it is answered.
+
+Vendor RAW codecs (Sony ARW 32767 and the others in rawz's scope) stay with rawz.
+
+## Supported before this program
+
+1, 3, 4, 5, 7, 8, 32773, 32946, 34887 (LERC) and 50000 (zstd).
+
+## What the local corpora use
+
+This is a survey of 589 TIFF and DNG files: tiffz's committed fixtures, validate's ground-truth examples and the scratch GDAL and raw.pixls.us sets. Only IFD 0 and chained IFDs were counted, not SubIFDs. Undecoded codes, by number of files:
+
+| Code | Scheme | Files | Notes |
+|---|---|---|---|
+| 6 | Old-style JPEG (TIFF 6.0 section 22) | 27 | blocked (owner, 2026-08-27); question open |
+| 34676 / 34677 | SGILog / SGILog24 (LogLuv) | 3 / 1 | Ward, "The LogLuv Encoding for Full Gamut, High Dynamic Range Images" |
+| 32766 | NeXT 2-bit RLE | 3 | |
+| 50001 | WebP | 2 | needs a WebP decoder (VP8L lossless, VP8 lossy) |
+| 32809 | ThunderScan 4-bit | 2 | |
+| 2 | CCITT modified Huffman (T.4 1D, no EOLs, byte-aligned rows) | 1 | TIFF 6.0 section 10 |
+| 34892 | DNG lossy JPEG | (SubIFDs) | DNG 1.4.0.0; the iPhone 12 Pro semantic mask uses it |
+
+There is no local file for JPEG 2000 (34712), JPEG XL (50002 in libtiff, 52546 in DNG 1.7), LZMA (34925), JBIG (34661) or Pixar log (32908/32909). Each needs a reproducible exemplar before it is built.
+
+## Order
+
+Within one cost tier, the order follows corpus prevalence. Each codec gets the following before it counts as covered:
+- an independent oracle (libtiff, ImageMagick, or the scheme's reference decoder);
+- clean and damaged fixtures;
+- a controlled red;
+- a corpus report.
+
+1. **34892 DNG lossy JPEG.** Baseline JPEG per tile through jpegz, the same path as Compression 7 without JPEGTables.
+2. **2 CCITT modified Huffman.** The existing T.4 one-dimensional decoder without EOL codes, with rows byte-aligned.
+3. **32766 NeXT and 32809 ThunderScan.** Small run-length schemes.
+4. **34676 / 34677 SGILog.** LogLuv decode to the stored form.
+5. **50001 WebP, 34925 LZMA.** These need a codec package. A new sibling package, or a vendored C library in the zstdz pattern, is a dependency decision to record first.
+6. **34712 JPEG 2000 and 50002 / 52546 JPEG XL.** These go through jpegz's jp2z and libjxlz legs (INTENT: one jpegz instance per compilation), once exemplars exist.
+7. **6 OJPEG.** Only if the owner reopens it.

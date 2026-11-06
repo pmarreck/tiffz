@@ -84,9 +84,12 @@ findings.
   compilation. Validate consumes JPEG-family codecs only through
   `tiffz.jpegz`.
 
-Unsupported means unclaimed. Blocked means will not be implemented.
-JPEG2000-in-TIFF, JBIG, and other undispatched codecs stay unclaimed
-until an explicit owner decision.
+Unsupported means not yet decoded. Blocked means will not be implemented.
+On 2026-11-06 the owner claimed every undispatched TIFF codec that is not
+blocked: "Our goal is 100% TIFF/RAW coverage (in conjunction with rawz),
+to the extent technically-possible." Order and evidence rules:
+`docs/plan_context/codec-reach.md`. Whether that goal reopens OJPEG is an
+open question for the owner; until answered, OJPEG stays blocked.
 
 ## Constraints
 
@@ -138,8 +141,8 @@ parser.
 
 - TIFF writer beyond the minimal 2026-10-23 scope (tiles, 16-bit,
   BigTIFF, multi-page): accepted as eventual (SPEC §0), no date.
-- JPEG2000-in-TIFF and other undispatched codecs: unsupported, not
-  blocked. No owner decision yet.
+- Does the 2026-11-06 coverage goal reopen OJPEG (blocked 2026-08-27)?
+  Asked 2026-11-06; until answered, it stays blocked.
 - SPEC.md still reads as a 2026-05 starting brief in places
   (greenfield header, zigimg-gap table, Garnix). Those sections are
   historical; they are not a second purpose statement.
