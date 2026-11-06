@@ -2725,6 +2725,46 @@ test "DNG lossy JPEG 34892: another photometric is not decoded" {
     try std.testing.expectError(error.UnsupportedCompression, dec.decodeStrip(0, 0, &dest, &ws));
 }
 
+/// tests/fixtures/ccitt_mh/gen.c's pixel rule for mh-300x4.tif.
+fn mhBlack(x: usize, y: usize) bool {
+    return switch (y) {
+        0 => false,
+        1 => true,
+        2 => x % 2 == 1,
+        else => x % 97 < 70,
+    };
+}
+
+test "Compression 2 (CCITT modified Huffman): a libtiff-encoded strip decodes to its source rule" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/ccitt_mh/mh-300x4.tif");
+    defer allocator.free(bytes);
+    var dest: [4 * 38]u8 = undefined;
+    const n = try validateAndDecodeStrip(allocator, bytes, &dest);
+    try std.testing.expectEqual(@as(usize, 4 * 38), n);
+    for (0..4) |y| {
+        for (0..300) |x| {
+            const bit = (dest[y * 38 + x / 8] >> @intCast(7 - x % 8)) & 1;
+            if ((bit == 1) != mhBlack(x, y)) {
+                std.debug.print("pixel ({d}, {d}): got {d}\n", .{ x, y, bit });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
+test "Compression 2 (CCITT modified Huffman): a damaged code stream fails" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/ccitt_mh/mh-300x4.tif");
+    defer allocator.free(bytes);
+    // The strip starts at 8 (libtiff writes the IFD after it). Eight zero
+    // bits are no T.4 run code.
+    @memset(bytes[8 + 10 .. 8 + 12], 0);
+    var dest: [4 * 38]u8 = undefined;
+    const outcome = validateAndDecodeStrip(allocator, bytes, &dest);
+    try std.testing.expect(std.meta.isError(outcome));
+}
+
 test "BlackIsZero compression 7: a three-component frame stays outside the gray path" {
     const allocator = std.testing.allocator;
     const bytes = try wrapJpegDepth(allocator, &lossless_flat8_jpeg, 6, 2, 1, 1, 8, .little);

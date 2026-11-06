@@ -73,6 +73,35 @@ pub fn decode(
     return total_out;
 }
 
+/// Decode a TIFF Compression 2 strip (CCITT modified Huffman, TIFF 6.0
+/// section 10, pp. 43-44): the T.4 one-dimensional run codes of `decode`,
+/// but "New rows always begin on the next available byte boundary" and
+/// "No EOL code words are used. No fill bits are used, except for the
+/// ignored bits at the end of the last byte of a row. RTC is not used."
+/// A row whose runs do not sum to `width` is Malformed ("an unrecoverable
+/// error"). Output is packed as `decode` packs it.
+pub fn decodeModifiedHuffman(
+    src: []const u8,
+    dest: []u8,
+    width: u32,
+    rows: u32,
+    fill_order: FillOrder,
+) errors.Error!usize {
+    const bytes_per_row: usize = (@as(usize, width) + 7) / 8;
+    const total_out: usize = bytes_per_row * rows;
+    if (dest.len < total_out) return error.DestTooSmall;
+    @memset(dest[0..total_out], 0);
+
+    var reader = BitReader.init(src, fill_order);
+    var rows_done: u32 = 0;
+    while (rows_done < rows) : (rows_done += 1) {
+        const row_dest = dest[rows_done * bytes_per_row ..][0..bytes_per_row];
+        try decodeRow(&reader, row_dest, width);
+        reader.alignToByte();
+    }
+    return total_out;
+}
+
 /// Decode one scan-line: alternating white/black runs that sum to
 /// `width`. Output bits set into `row_dest` MSB-first within bytes;
 /// caller pre-zeroed dest, so we only set 1-bits.
@@ -647,4 +676,22 @@ test "ccitt_t4.decode: synthetic row of all-black" {
     const n = try decode(&src, &dest, 8, 1, .msb_first, false);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 0xFF), dest[0]);
+}
+
+test "decodeModifiedHuffman: rows start on byte boundaries and carry no EOL (TIFF 6.0 p. 44)" {
+    // Row 0, 8 white: white 8 = 10011, then 3 ignored bits.
+    // Row 1, 8 black: white 0 = 00110101, black 8 = 000101, then 2 ignored bits.
+    const src = [_]u8{ 0b1001_1000, 0b0011_0101, 0b0001_0100 };
+    var dest: [2]u8 = undefined;
+    const n = try decodeModifiedHuffman(&src, &dest, 8, 2, .msb_first);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0xFF }, &dest);
+}
+
+test "decodeModifiedHuffman: a row cut short or wider than the image is an error" {
+    var dest: [2]u8 = undefined;
+    // Row 1 stops after its white-0 code.
+    try std.testing.expect(std.meta.isError(decodeModifiedHuffman(&.{ 0b1001_1000, 0b0011_0101 }, &dest, 8, 2, .msb_first)));
+    // White 8 in a 7-pixel row overruns ImageWidth.
+    try std.testing.expectError(error.Malformed, decodeModifiedHuffman(&.{0b1001_1000}, dest[0..1], 7, 1, .msb_first));
 }

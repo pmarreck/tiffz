@@ -1505,6 +1505,7 @@ pub const Decoder = struct {
     /// deliberately absent forever (SPEC §3; Peter re-affirmed 2026-08-27).
     pub const supported_compressions = [_]u16{
         tags.compression_none,
+        tags.compression_ccitt_rle,
         tags.compression_ccitt_t4,
         tags.compression_ccitt_t6,
         tags.compression_lzw,
@@ -1650,6 +1651,25 @@ pub const Decoder = struct {
                     fill,
                     eol_byte_align,
                 ) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
+            tags.compression_ccitt_rle => blk: {
+                // CCITT modified Huffman (Compression 2, TIFF 6.0 section 10):
+                // T.4 one-dimensional codes, no EOL, rows byte-aligned. It has
+                // no options tag; FillOrder applies as for Compression 3.
+                const fill_raw = (try readScalarU16(dir.*, tags.fill_order, self.endian)) orelse 1;
+                const fill: compressions_ccitt_t4.FillOrder = switch (fill_raw) {
+                    1 => .msb_first,
+                    2 => .lsb_first,
+                    else => break :blk error.Malformed,
+                };
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = compressions_ccitt_t4.decodeModifiedHuffman(scratch, dest, ext.width, ext.rows, fill) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -2183,19 +2203,19 @@ test "decodeStrip: uncompressed RGB single strip" {
 // classify unsupported. Oracles are hand-derived from the dispatch switch, so
 // adding a codec to one side without the other fails here.
 test "compressionSupported: classifier over supported / never-supported / unknown codes" {
-    const supported = [_]u16{ 1, 3, 4, 5, 7, 8, 32946, 32773, 50000, 34887 };
+    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 50000, 34887, 34892 };
     for (supported) |c| {
         try std.testing.expect(Decoder.compressionSupported(c));
     }
     const unsupported = [_]u16{
         0, // not a legal Compression value
-        2, // CCITT RLE (modified Huffman) — never implemented
         6, // old-style JPEG (OJPEG) — deliberately never supported, SPEC §3
         9, 10, // T.85 / T.43 reserved
         32809, // Thunderscan
         34712, // JPEG2000-in-TIFF
         34925, // LZMA2
-        50002, // WEBP
+        50001, // WebP
+        50002, // JPEG XL (libtiff)
         0xFFFF,
     };
     for (unsupported) |c| {

@@ -37,7 +37,7 @@ Within one cost tier, the order follows corpus prevalence. Each codec gets the f
 - a corpus report.
 
 1. **34892 DNG lossy JPEG** (done 2026-11-06). Baseline JPEG through jpegz. LinearRaw is color-converted like RGB and YCbCr, a PhotometricMask is a one-component gray decode, and any other photometric stays unsupported. The Adobe-converted Canon 5D Mark III raw IFD and the iPhone 12 Pro mask now decode.
-2. **2 CCITT modified Huffman.** The existing T.4 one-dimensional decoder without EOL codes, with rows byte-aligned.
+2. **2 CCITT modified Huffman** (done 2026-11-06). The T.4 one-dimensional decoder without EOL codes, rows byte-aligned. The fixture comes from libtiff's own encoder.
 3. **32766 NeXT and 32809 ThunderScan.** Small run-length schemes.
 4. **34676 / 34677 SGILog.** LogLuv decode to the stored form.
 5. **50001 WebP, 34925 LZMA.** These need a codec package. A new sibling package, or a vendored C library in the zstdz pattern, is a dependency decision to record first.

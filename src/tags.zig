@@ -52,6 +52,7 @@ pub const photometric_color_filter_array: u16 = 32803;
 
 /// Compression scheme codes (tag 259).
 pub const compression_none: u16 = 1;
+pub const compression_ccitt_rle: u16 = 2;    // CCITT modified Huffman (TIFF 6.0 section 10)
 pub const compression_ccitt_t4: u16 = 3;     // Group 3 1D
 pub const compression_ccitt_t6: u16 = 4;     // Group 4
 pub const compression_lzw: u16 = 5;
