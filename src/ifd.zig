@@ -164,14 +164,6 @@ pub const Ifd = struct {
 
     /// Look up an entry by tag number. Returns null if not present.
     /// Linear scan — IFDs are small (typically 10-50 entries).
-    /// True when an entry's type code is outside 1..18 (see `parse`).
-    pub fn hasOutOfRangeType(self: *const Ifd) bool {
-        for (self.entries) |entry| {
-            if (outOfRangeType(entry.raw_type)) return true;
-        }
-        return false;
-    }
-
     pub fn get(self: *const Ifd, tag: u16) ?*const Entry {
         for (self.entries) |*e| {
             if (e.tag == tag) return e;
@@ -251,8 +243,9 @@ pub const Ifd = struct {
     }
 
     /// Total bytes required for an entry's value array.
+    /// Saturates: a BigTIFF count near 2^64 times 8 does not wrap.
     pub fn entryValueBytes(entry: Entry) u64 {
-        return @as(u64, entry.field_type.elementBytes()) * entry.count;
+        return std.math.mul(u64, entry.field_type.elementBytes(), entry.count) catch std.math.maxInt(u64);
     }
 
     /// Read an entry's value bytes into `dest`. Static-form (no Ifd
@@ -325,11 +318,10 @@ pub const Ifd = struct {
 /// Every field type parses; one tiffz cannot read is `.unknown` with
 /// its code in `raw_type`, and ifd_conformance faults it.
 ///
-/// A code outside 1..18 was Malformed here until 2026-11-05, so it
-/// always outranked whatever the rest of the directory would have
-/// failed on. It still does: once this IFD holds one, any later
-/// failure in this parse is Malformed, as before. The decoder keeps
-/// the same order across directories (`hasOutOfRangeType`).
+/// A declared extent that cannot fit in the file (an entry table, or a
+/// value array of count times element size) is SourceShortRead, even
+/// when it also exceeds a cap: a cap is a limit only for a structure
+/// the file can hold (validate, 2026-11-05).
 pub fn parse(
     allocator: Allocator,
     source: Source,
@@ -337,27 +329,6 @@ pub fn parse(
     offset: u64,
     limits: Limits,
     offset_width: OffsetWidth,
-) errors.Error!Ifd {
-    var out_of_range_type = false;
-    return parseEntries(allocator, source, endian, offset, limits, offset_width, &out_of_range_type) catch |err| {
-        if (out_of_range_type and err != error.OutOfMemory) return error.Malformed;
-        return err;
-    };
-}
-
-/// A type code outside 1..18: never assigned by TIFF 6.0, TN1 or BigTIFF.
-pub fn outOfRangeType(code: u16) bool {
-    return code == 0 or code > 18;
-}
-
-fn parseEntries(
-    allocator: Allocator,
-    source: Source,
-    endian: Endian,
-    offset: u64,
-    limits: Limits,
-    offset_width: OffsetWidth,
-    out_of_range_type: *bool,
 ) errors.Error!Ifd {
     const count_bytes: usize = switch (offset_width) {
         .classic => 2,
@@ -377,6 +348,8 @@ fn parseEntries(
     };
 
     if (entry_count_u64 > limits.max_tags_per_ifd) {
+        const table = std.math.mul(u64, entry_count_u64, entry_bytes) catch std.math.maxInt(u64);
+        if (endsPastFile(source, offset +| count_bytes, table)) return error.SourceShortRead;
         return error.LimitExceededTagCount;
     }
     // entry_count fits in u32 after the cap check.
@@ -411,7 +384,6 @@ fn parseEntries(
         // (finding 18 reason 1), since a code no writer has used since 1992
         // is a damaged type field (validate, 2026-11-05).
         const type_code = header_mod.readU16(entries_buf[base + 2 ..][0..2], endian);
-        if (outOfRangeType(type_code)) out_of_range_type.* = true;
         entry.* = .{
             .tag = header_mod.readU16(entries_buf[base..][0..2], endian),
             .field_type = FieldType.fromU16(type_code),
@@ -425,7 +397,13 @@ fn parseEntries(
 
         // Check tag value byte cap before any later read of the value array.
         // errdefer above handles cleanup of `entries` on the error path.
-        if (Ifd.entryValueBytes(entry.*) > limits.max_tag_value_bytes) {
+        const value_bytes = Ifd.entryValueBytes(entry.*);
+        if (value_bytes > limits.max_tag_value_bytes) {
+            const value_offset: u64 = switch (offset_width) {
+                .classic => header_mod.readU32(entry.raw_value_or_offset[0..4], endian),
+                .big => header_mod.readU64(&entry.raw_value_or_offset, endian),
+            };
+            if (endsPastFile(source, value_offset, value_bytes)) return error.SourceShortRead;
             return error.LimitExceededTagValueBytes;
         }
     }
@@ -569,6 +547,13 @@ const BufferHandle = @import("source.zig").BufferHandle;
 
 /// Build a minimal little-endian classic TIFF in memory:
 ///   header (8 bytes) + IFD0 (entry_count + N×12-byte entries + next_offset)
+/// True when `len` bytes from `start` run past the end of the source. A
+/// source whose size is unknown answers false, so the caller's cap applies.
+pub fn endsPastFile(source: Source, start: u64, len: u64) bool {
+    const size = source.sizeOf() catch return false;
+    return start > size or len > size - start;
+}
+
 fn fakeTiff(comptime N: comptime_int, entries: [N][12]u8) [8 + 2 + N * 12 + 4]u8 {
     var out: [8 + 2 + N * 12 + 4]u8 = undefined;
     // Header: II 0x002A, ifd0_offset = 8
@@ -669,45 +654,55 @@ test "ifd.parse: tag count over limit is rejected" {
     );
 }
 
-test "ifd.parse: tag value bytes over limit rejected" {
-    // count = huge for SHORT (2 bytes each) → trivially blows the cap.
+test "ifd.parse: tag value bytes over limit rejected, when the value fits in the file" {
+    // SHORT count 10 (20 bytes) at offset 26, right after the IFD, over a
+    // cap of 16. The file holds the value, so this is a limit.
     const entry: [12]u8 = .{
         0x00, 0x01,
         0x03, 0x00, // SHORT (2 bytes/elem)
-        0x00, 0x00, 0x10, 0x00, // count = 0x00100000 = 1048576
-        0x00, 0x00, 0x00, 0x00,
+        0x0A, 0x00, 0x00, 0x00, // count = 10
+        0x1A, 0x00, 0x00, 0x00, // offset = 26
     };
-    const bytes = fakeTiff(1, .{entry});
+    const bytes = fakeTiff(1, .{entry}) ++ [_]u8{0} ** 20;
 
     var handle = BufferHandle.init(&bytes);
     const src = Source.fromBuffer(&handle);
 
-    const limits: Limits = .{ .max_tag_value_bytes = 1024 };
+    const limits: Limits = .{ .max_tag_value_bytes = 16 };
     try std.testing.expectError(
         error.LimitExceededTagValueBytes,
         parse(std.testing.allocator, src, .little, 8, limits, .classic),
     );
 }
 
-test "ifd.parse: a type code outside 1..18 outranks a later limit, not an earlier one" {
-    // Until 2026-11-05 such a code was Malformed at its entry, before any
-    // later entry was checked. A corruption-reader shotgun case (type 34,
-    // then a DOUBLE of 16.9M elements in a 598-byte file) depends on it.
-    const damaged: [12]u8 = .{ 0x0E, 0x01, 0x22, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    const huge: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    const limits: Limits = .{ .max_tag_value_bytes = 1024 };
-    const after = fakeTiff(2, .{ damaged, huge });
-    var after_handle = BufferHandle.init(&after);
-    try std.testing.expectError(error.Malformed, parse(std.testing.allocator, Source.fromBuffer(&after_handle), .little, 8, limits, .classic));
-    const before = fakeTiff(2, .{ huge, damaged });
-    var before_handle = BufferHandle.init(&before);
-    try std.testing.expectError(error.LimitExceededTagValueBytes, parse(std.testing.allocator, Source.fromBuffer(&before_handle), .little, 8, limits, .classic));
-    // Codes 14 and 15 parsed before as well, so the limit still wins.
-    var unassigned = damaged;
-    unassigned[2] = 14;
-    const kept = fakeTiff(2, .{ unassigned, huge });
-    var kept_handle = BufferHandle.init(&kept);
-    try std.testing.expectError(error.LimitExceededTagValueBytes, parse(std.testing.allocator, Source.fromBuffer(&kept_handle), .little, 8, limits, .classic));
+test "ifd.parse: a declared extent past the end of the file is SourceShortRead, not a limit" {
+    // validate, 2026-11-05: a cap is a limit only for a structure the file
+    // can hold. Corruption-reader shotgun cases: a DOUBLE of 16.9M elements
+    // in a 598-byte file, and an IFD of 61,635 entries in 3,490 bytes.
+    const limits: Limits = .{ .max_tag_value_bytes = 16, .max_tags_per_ifd = 2 };
+    // The value: one byte short of fitting.
+    const short_value: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x1A, 0x00, 0x00, 0x00 };
+    const value_bytes = fakeTiff(1, .{short_value}) ++ [_]u8{0} ** 19;
+    var value_handle = BufferHandle.init(&value_bytes);
+    try std.testing.expectError(error.SourceShortRead, parse(std.testing.allocator, Source.fromBuffer(&value_handle), .little, 8, limits, .classic));
+    // A count whose byte length overflows u64 in BigTIFF saturates, and is past the end.
+    var big_value: [20]u8 = .{0} ** 20;
+    std.mem.writeInt(u16, big_value[0..2], 256, .little);
+    std.mem.writeInt(u16, big_value[2..4], 16, .little); // LONG8
+    std.mem.writeInt(u64, big_value[4..12], 1 << 62, .little); // times 8 wraps to exactly 0
+    var big = [_]u8{0} ** (8 + 20 + 8);
+    big[0] = 1; // one entry
+    @memcpy(big[8..28], &big_value);
+    var big_handle = BufferHandle.init(&big);
+    try std.testing.expectError(error.SourceShortRead, parse(std.testing.allocator, Source.fromBuffer(&big_handle), .little, 0, limits, .big));
+    // The entry table: 3 entries declared over a cap of 2. Two fit and the
+    // third does not; with all three present, it is the limit.
+    const entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const full = fakeTiff(3, .{ entry, entry, entry });
+    var table_handle = BufferHandle.init(full[0 .. 8 + 2 + 3 * 12 - 1]);
+    try std.testing.expectError(error.SourceShortRead, parse(std.testing.allocator, Source.fromBuffer(&table_handle), .little, 8, limits, .classic));
+    var full_handle = BufferHandle.init(&full);
+    try std.testing.expectError(error.LimitExceededTagCount, parse(std.testing.allocator, Source.fromBuffer(&full_handle), .little, 8, limits, .classic));
 }
 
 // MFIC: allocation-failure sweep over ifd.parse — a classifier over the whole set of

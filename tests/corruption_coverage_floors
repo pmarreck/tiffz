@@ -98,10 +98,12 @@ detect	bolter	tests/fixtures/deflate/deflate-last-strip.tiff	103
 detect	bolter	tests/fixtures/deflate/deflate-last-strip.tiff	104
 detect	bolter	tests/fixtures/geotiff/gray16_geotiff.tif	274
 detect	bolter	tests/fixtures/geotiff/gray16_geotiff.tif	275
+detect	bolter	tests/fixtures/geotiff/gray16_geotiff.tif	280
 detect	bolter	tests/fixtures/geotiff/gray16_geotiff.tif	282
 detect	bolter	tests/fixtures/geotiff/gray16_geotiff.tif	283
 detect	bolter	tests/fixtures/geotiff/gray16_geotiff.tif	286
 detect	bolter	tests/fixtures/geotiff/gray16_geotiff.tif	288
+detect	bolter	tests/fixtures/geotiff/gray16_geotiff.tif	290
 detect	bolter	tests/fixtures/jpeg/rgb-jpeg.tif	210
 detect	bolter	tests/fixtures/jpeg/rgb-jpeg.tif	213
 detect	bolter	tests/fixtures/jpeg/rgb-jpeg.tif	217
@@ -132,6 +134,7 @@ detect	bolter	tests/fixtures/lerc/gray16_lerc.tif	163
 detect	bolter	tests/fixtures/lerc/gray16_lerc.tif	164
 detect	bolter	tests/fixtures/lerc/gray16_lerc.tif	165
 detect	bolter	tests/fixtures/lerc/gray16_lerc.tif	166
+detect	bolter	tests/fixtures/lerc/gray16_lerc.tif	167
 detect	bolter	tests/fixtures/lzw/strike.tif	63
 detect	bolter	tests/fixtures/lzw/strike.tif	64
 detect	bolter	tests/fixtures/lzw/strike.tif	65
@@ -157,7 +160,9 @@ detect	bolter	tests/fixtures/photometric/cmyk.tif	322
 detect	bolter	tests/fixtures/photometric/rgb16.tif	339
 detect	bolter	tests/fixtures/photometric/rgb16.tif	355
 detect	bolter	tests/fixtures/photometric/ycbcr.tif	296
+detect	bolter	tests/fixtures/photometric/ycbcr.tif	297
 detect	bolter	tests/fixtures/photometric/ycbcr.tif	300
+detect	bolter	tests/fixtures/photometric/ycbcr.tif	304
 detect	bolter	tests/fixtures/photometric/ycbcr.tif	309
 detect	bolter	tests/fixtures/predictor/predictor2_lzw.tif	357
 detect	bolter	tests/fixtures/predictor/predictor2_lzw.tif	358
@@ -471,6 +476,8 @@ detect	nuke	tests/fixtures/predictor/predictor3_deflate_fp32.tif	395
 detect	nuke	tests/fixtures/predictor/predictor3_deflate_fp32.tif	396
 detect	nuke	tests/fixtures/predictor/predictor3_deflate_fp32.tif	397
 detect	nuke	tests/fixtures/predictor/predictor3_deflate_fp32.tif	398
+detect	nuke	tests/fixtures/uncompressed/palette-1c-8b.tiff	42
+detect	nuke	tests/fixtures/uncompressed/palette-1c-8b.tiff	60
 detect	nuke	tests/fixtures/zstd/rgb_zstd.tif	126
 detect	nuke	tests/fixtures/zstd/rgb_zstd.tif	127
 detect	nuke	tests/fixtures/zstd/rgb_zstd.tif	128
@@ -492,6 +499,7 @@ detect	nuke	tests/fixtures/zstd/rgb_zstd.tif	143
 detect	nuke	tests/fixtures/zstd/rgb_zstd.tif	144
 detect	nuke	tests/fixtures/zstd/rgb_zstd.tif	145
 detect	nuke	tests/fixtures/zstd/rgb_zstd.tif	146
+detect	shotgun	tests/fixtures/bigtiff/rgb-3c-8b.btf	234
 detect	shotgun	tests/fixtures/ccitt_g3/fax2d.tif	169
 detect	shotgun	tests/fixtures/ccitt_g3/fax2d.tif	170
 detect	shotgun	tests/fixtures/ccitt_g3/fax2d.tif	171
@@ -556,6 +564,9 @@ detect	shotgun	tests/fixtures/deflate/deflate-last-strip.tiff	103
 detect	shotgun	tests/fixtures/deflate/deflate-last-strip.tiff	104
 detect	shotgun	tests/fixtures/geotiff/gray16_geotiff.tif	273
 detect	shotgun	tests/fixtures/geotiff/gray16_geotiff.tif	283
+detect	shotgun	tests/fixtures/geotiff/gray16_geotiff.tif	288
+detect	shotgun	tests/fixtures/geotiff/gray16_geotiff.tif	293
+detect	shotgun	tests/fixtures/jpeg/rgb-jpeg.tif	210
 detect	shotgun	tests/fixtures/jpeg/rgb-jpeg.tif	211
 detect	shotgun	tests/fixtures/jpeg/rgb-jpeg.tif	215
 detect	shotgun	tests/fixtures/jpeg/rgb-jpeg.tif	216
@@ -573,6 +584,7 @@ detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	148
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	149
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	150
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	151
+detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	152
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	153
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	154
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	155
@@ -582,6 +594,7 @@ detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	158
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	159
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	160
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	161
+detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	162
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	164
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	165
 detect	shotgun	tests/fixtures/lerc/gray16_lerc.tif	166
@@ -617,6 +630,7 @@ detect	shotgun	tests/fixtures/packbits/cramps.tif	121
 detect	shotgun	tests/fixtures/packbits/cramps.tif	122
 detect	shotgun	tests/fixtures/packbits/cramps.tif	123
 detect	shotgun	tests/fixtures/photometric/cmyk.tif	317
+detect	shotgun	tests/fixtures/photometric/cmyk.tif	318
 detect	shotgun	tests/fixtures/photometric/cmyk.tif	321
 detect	shotgun	tests/fixtures/photometric/cmyk.tif	329
 detect	shotgun	tests/fixtures/photometric/cmyk.tif	332
@@ -627,9 +641,12 @@ detect	shotgun	tests/fixtures/photometric/rgb16.tif	338
 detect	shotgun	tests/fixtures/photometric/ycbcr.tif	295
 detect	shotgun	tests/fixtures/photometric/ycbcr.tif	306
 detect	shotgun	tests/fixtures/photometric/ycbcr.tif	308
+detect	shotgun	tests/fixtures/photometric/ycbcr.tif	311
+detect	shotgun	tests/fixtures/photometric/ycbcr.tif	312
 detect	shotgun	tests/fixtures/photometric/ycbcr.tif	314
 detect	shotgun	tests/fixtures/predictor/predictor2_lzw.tif	358
 detect	shotgun	tests/fixtures/predictor/predictor2_lzw.tif	359
+detect	shotgun	tests/fixtures/predictor/predictor2_lzw.tif	360
 detect	shotgun	tests/fixtures/predictor/predictor2_lzw.tif	361
 detect	shotgun	tests/fixtures/predictor/predictor2_lzw.tif	362
 detect	shotgun	tests/fixtures/predictor/predictor2_lzw.tif	363
@@ -668,8 +685,10 @@ detect	shotgun	tests/fixtures/predictor/predictor3_deflate_fp32.tif	395
 detect	shotgun	tests/fixtures/predictor/predictor3_deflate_fp32.tif	396
 detect	shotgun	tests/fixtures/predictor/predictor3_deflate_fp32.tif	397
 detect	shotgun	tests/fixtures/predictor/predictor3_deflate_fp32.tif	398
+detect	shotgun	tests/fixtures/zstd/rgb_zstd.tif	134
 detect	shotgun	tests/fixtures/zstd/rgb_zstd.tif	137
 detect	shotgun	tests/fixtures/zstd/rgb_zstd.tif	140
+detect	shotgun	tests/fixtures/zstd/rgb_zstd.tif	145
 detect	sniper	tests/fixtures/bigtiff/rgb-3c-8b.btf	243
 detect	sniper	tests/fixtures/ccitt_g3/fax2d.tif	168
 detect	sniper	tests/fixtures/ccitt_g3/fax2d.tif	169
@@ -734,7 +753,9 @@ detect	sniper	tests/fixtures/geotiff/gray16_geotiff.tif	274
 detect	sniper	tests/fixtures/geotiff/gray16_geotiff.tif	276
 detect	sniper	tests/fixtures/geotiff/gray16_geotiff.tif	280
 detect	sniper	tests/fixtures/geotiff/gray16_geotiff.tif	282
+detect	sniper	tests/fixtures/geotiff/gray16_geotiff.tif	283
 detect	sniper	tests/fixtures/geotiff/gray16_geotiff.tif	285
+detect	sniper	tests/fixtures/geotiff/gray16_geotiff.tif	290
 detect	sniper	tests/fixtures/geotiff/gray16_geotiff.tif	292
 detect	sniper	tests/fixtures/jpeg/rgb-jpeg.tif	211
 detect	sniper	tests/fixtures/jpeg/rgb-jpeg.tif	213
@@ -784,6 +805,7 @@ detect	sniper	tests/fixtures/photometric/ycbcr.tif	309
 detect	sniper	tests/fixtures/photometric/ycbcr.tif	311
 detect	sniper	tests/fixtures/predictor/predictor2_lzw.tif	358
 detect	sniper	tests/fixtures/predictor/predictor2_lzw.tif	360
+detect	sniper	tests/fixtures/predictor/predictor2_lzw.tif	372
 detect	sniper	tests/fixtures/predictor/predictor2_lzw.tif	373
 detect	sniper	tests/fixtures/predictor/predictor3_deflate_fp32.tif	378
 detect	sniper	tests/fixtures/predictor/predictor3_deflate_fp32.tif	379

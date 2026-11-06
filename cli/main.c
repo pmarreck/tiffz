@@ -215,12 +215,13 @@ static int is_unsupported(tiffz_status_t status) {
 }
 
 /* Reach is a resource limit or a feature tiffz does not implement; it
-   never proves corruption (exit 4). A corrupt record outranks an
-   unsupported refusal: then the file is invalid. */
+   never proves corruption (exit 4). A corrupt record is a claim about the
+   file and outranks both: then the file is invalid, and a limit's progress
+   stays in the JSON reach fields (validate, 2026-11-05). */
 static const char *report_word(int ok, tiffz_status_t status, int corrupt) {
 	if (ok)
 		return "ok";
-	if (is_resource_limit(status))
+	if (is_resource_limit(status) && !corrupt)
 		return "limited";
 	if (is_unsupported(status) && !corrupt)
 		return "unsupported";
@@ -228,7 +229,7 @@ static const char *report_word(int ok, tiffz_status_t status, int corrupt) {
 }
 
 static int exit_for_status(tiffz_status_t status, int corrupt) {
-	if (is_resource_limit(status))
+	if (is_resource_limit(status) && !corrupt)
 		return EXIT_LIMITED;
 	if (is_unsupported(status) && !corrupt)
 		return EXIT_LIMITED;

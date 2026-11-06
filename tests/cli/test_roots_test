@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# tools/check-test-roots: every src/ file with tests is reachable from a test
+# root. Green on the real tree; red when the tiffz-parser test root is
+# removed (the 2026-11-05 gap); red on a synthetic tree whose only path to a
+# tested file is an import by module name. Writes only under a private
+# mktemp directory.
+
+set -u
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+check="$root/tools/check-test-roots"
+failures=0
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/tiffz-test-roots.XXXXXX")" || { echo "FAIL: mktemp" >&2; exit 1; }
+cleanup() { [ -n "$tmp" ] && [ -d "$tmp" ] && find "$tmp" -depth -delete; }
+trap cleanup EXIT
+
+expect() { # label expected_status expected_output_or_empty -- command...
+	local label="$1" want="$2" want_out="$3"
+	shift 4
+	local out status=0
+	out="$("$@" 2>&1)" || status=$?
+	if [ "$status" -ne "$want" ] || { [ -n "$want_out" ] && [ "$out" != "$want_out" ]; }; then
+		printf 'FAIL: %s: exit %s (want %s)\n%s\n' "$label" "$status" "$want" "$out" >&2
+		failures=$((failures + 1))
+	else
+		printf 'ok: %s\n' "$label"
+	fi
+}
+
+expect "real tree is fully rooted" 0 "" -- "$check" "$root/build.zig" "$root"
+
+grep -v 'b\.addTest(.{ \.root_module = parser_module })' "$root/build.zig" >"$tmp/build-no-parser.zig"
+if cmp -s "$root/build.zig" "$tmp/build-no-parser.zig"; then
+	echo "FAIL: the parser test root line was not found in build.zig" >&2
+	failures=$((failures + 1))
+else
+	expect "without the parser root, its files are unrooted" 1 "unrooted tests: src/errors.zig
+unrooted tests: src/header.zig
+unrooted tests: src/ifd.zig
+unrooted tests: src/limits.zig
+unrooted tests: src/parser.zig
+unrooted tests: src/source.zig" -- "$check" "$tmp/build-no-parser.zig" "$root"
+fi
+
+# Synthetic tree: lib.zig reaches a.zig by path, and other.zig only by the
+# module name "other", so other.zig's test is unrooted.
+mkdir -p "$tmp/tree/src/sub"
+cat >"$tmp/tree/build.zig" <<'EOF'
+    const lib_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+    });
+    const unit = b.addTest(.{ .root_module = lib_module });
+    const inline_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sub/inline.zig"),
+        }),
+    });
+EOF
+printf 'const a = @import("a.zig");\nconst o = @import("other");\ntest { _ = a; }\n' >"$tmp/tree/src/lib.zig"
+printf 'test "a" {}\n' >"$tmp/tree/src/a.zig"
+printf 'test "other" {}\n' >"$tmp/tree/src/other.zig"
+printf 'const n = @import("../nested.zig");\ntest "inline" {}\n' >"$tmp/tree/src/sub/inline.zig"
+printf 'test "nested" {}\n' >"$tmp/tree/src/nested.zig"
+expect "a module-name import does not root a file" 1 "unrooted tests: src/other.zig" -- \
+	"$check" "$tmp/tree/build.zig" "$tmp/tree"
+printf 'const lib_module = b.createModule(.{\n' >"$tmp/tree/bad.zig"
+printf '    const unit = b.addTest(.{ .root_module = missing_module });\n' >>"$tmp/tree/bad.zig"
+expect "an undeclared root module is a usage error" 2 "" -- "$check" "$tmp/tree/bad.zig" "$tmp/tree"
+
+[ "$failures" -eq 0 ] || exit 1
+echo "test roots check passed"

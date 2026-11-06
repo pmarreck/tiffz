@@ -3220,14 +3220,19 @@ test "IFD-entry rules: after a graph error, the IFDs parsed before it are checke
     try std.testing.expectEqual(stops[0], stops[1]);
 }
 
-test "IFD-entry rules: after a limit stop, no directory rule runs for the IFDs not reached" {
+test "IFD-entry rules: after a limit stop, the directory rules still run for the IFDs not reached" {
+    // validate, 2026-11-05, reversing 2026-11-04: a limit is a claim about
+    // tiffz and a corrupt record one about the file, so a limit never hides
+    // the records. The limit is still the error returned.
     const allocator = std.testing.allocator;
-    const bytes = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, 9, 0);
-    defer allocator.free(bytes);
-    var recorder = FindingRecorder.init(allocator);
-    defer recorder.deinit();
-    try std.testing.expectError(error.LimitExceededStripCount, validateWithLimits(allocator, bytes, &recorder, .{ .max_strips_or_tiles = 0 }));
-    try std.testing.expectEqual(@as(usize, 0), conformanceHits(&recorder, 1, 274));
+    for ([_]u16{ 1, 9 }) |orientation| {
+        const bytes = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, orientation, 0);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        try std.testing.expectError(error.LimitExceededStripCount, validateWithLimits(allocator, bytes, &recorder, .{ .max_strips_or_tiles = 0 }));
+        try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
+    }
 }
 
 

@@ -471,17 +471,15 @@ pub const Decoder = struct {
     }
 
     /// Record the first limit site. A later backfill must not overwrite it.
+    /// A chunk over the compressed-bytes cap is a limit only when the file
+    /// holds it; one that runs past the end of the file is SourceShortRead
+    /// (validate, 2026-11-05: a declared extent past the file is not a limit).
+    fn compressedChunkTooLarge(self: *const Decoder, offset: u64, byte_count: u64) errors.Error {
+        if (ifd_mod.endsPastFile(self.source, offset, byte_count)) return error.SourceShortRead;
+        return error.LimitExceededCompressedStripBytes;
+    }
+
     fn noteLimit(self: *Decoder, err: errors.Error, offset: u64, ifd_index: u64) errors.Error {
-        // A parsed directory with a type code outside 1..18 was Malformed at
-        // parse until 2026-11-05, before the walk could reach this limit. It
-        // still outranks the limit: the file is Malformed, and the directory
-        // rules run so the entry is reported (finding 18 reason 1).
-        for (self.ifds.items, 0..) |*dir, i| {
-            if (!dir.hasOutOfRangeType()) continue;
-            self.noteFileClaim(error.Malformed, self.ifd_offsets.items[i]);
-            self.checkUnreachedConformance();
-            return error.Malformed;
-        }
         if (self.limit_progress == null) {
             self.limit_progress = .{
                 .offset = offset,
@@ -684,14 +682,16 @@ pub const Decoder = struct {
     /// FAIL vs WARN buckets per its taxonomy.
     pub fn validateAllStripsAndTiles(self: *Decoder, workspace: *Workspace) errors.Error!void {
         self.validatePages(workspace) catch |err| {
-            if (errors.isLimit(err)) return self.noteLimit(err, self.budget.last_offset, self.progressIfdIndex());
-            // A decode or graph stop leaves every parsed IFD checkable: the
-            // directory rules read only parsed entries. Their faults follow
-            // the stopping error, which is still the one returned and
-            // reported first (validate, 2026-11-04; reach-gap.md). OutOfMemory
-            // and Bug stop everything, as a limit does.
+            const result = if (errors.isLimit(err)) self.noteLimit(err, self.budget.last_offset, self.progressIfdIndex()) else err;
+            // A decode, graph or limit stop leaves every parsed IFD checkable:
+            // the directory rules read only parsed entries. Their faults
+            // follow the stopping error, which is still the one returned and
+            // reported first (validate, 2026-11-04; reach-gap.md). A limit is
+            // a claim about tiffz and a corrupt record one about the file, so
+            // a limit never hides the records (validate, 2026-11-05).
+            // OutOfMemory and Bug stop everything.
             if (err != error.OutOfMemory and err != error.Bug) self.checkUnreachedConformance();
-            return err;
+            return result;
         };
     }
 
@@ -1065,7 +1065,7 @@ pub const Decoder = struct {
         const offset = try dir.arrayElementU64(layout.offsets_tag, chunk_index, self.endian, self.source);
         const byte_count_u64 = try dir.arrayElementU64(layout.counts_tag, chunk_index, self.endian, self.source);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes or byte_count_u64 > std.math.maxInt(usize)) {
-            return error.LimitExceededCompressedStripBytes;
+            return self.compressedChunkTooLarge(offset, byte_count_u64);
         }
         const byte_count: usize = @intCast(byte_count_u64);
         const compressed = workspace.ensureScratch(byte_count) catch return error.OutOfMemory;
@@ -1414,7 +1414,7 @@ pub const Decoder = struct {
         const offset = try dir.arrayElementU64(layout.offsets_tag, strip_index, self.endian, self.source);
         const byte_count_u64 = try dir.arrayElementU64(layout.counts_tag, strip_index, self.endian, self.source);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes) {
-            return error.LimitExceededCompressedStripBytes;
+            return self.compressedChunkTooLarge(offset, byte_count_u64);
         }
         const byte_count: u32 = @intCast(byte_count_u64);
 
@@ -1456,7 +1456,7 @@ pub const Decoder = struct {
         const offset = try dir.arrayElementU64(layout.offsets_tag, tile_index, self.endian, self.source);
         const byte_count_u64 = try dir.arrayElementU64(layout.counts_tag, tile_index, self.endian, self.source);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes) {
-            return error.LimitExceededCompressedStripBytes;
+            return self.compressedChunkTooLarge(offset, byte_count_u64);
         }
         const byte_count: u32 = @intCast(byte_count_u64);
 
@@ -1520,7 +1520,7 @@ pub const Decoder = struct {
         const byte_count = ext.byte_count;
 
         if (byte_count > self.limits.max_compressed_strip_bytes) {
-            return error.LimitExceededCompressedStripBytes;
+            return self.compressedChunkTooLarge(offset, byte_count);
         }
 
         // Predicate/dispatch agreement guard: if `supported_compressions`
@@ -3003,21 +3003,50 @@ const ChainedTypeZeroRecords = struct {
     }
 };
 
-test "validateAllStripsAndTiles: a limit after a directory with type 0 is still Malformed, with the type record" {
-    // IFD 1 links to an IFD 2 of 9 entries, over a cap of 8. Until
-    // 2026-11-05 IFD 1 was Malformed at parse, so the walk never reached
-    // IFD 2; that limit must not turn the file into reach.
-    var bytes = chained_type_zero ++ [_]u8{ 0x09, 0x00 };
-    std.mem.writeInt(u32, bytes[127..131], chained_type_zero.len, .little);
-    var handle = BufferHandle.init(&bytes);
-    var dec = try Decoder.openWithLimits(std.testing.allocator, Source.fromBuffer(&handle), .{ .max_tags_per_ifd = 8 });
-    defer dec.deinit();
-    var records: ChainedTypeZeroRecords = .{};
-    dec.setFindingCallback(&ChainedTypeZeroRecords.callback, @ptrCast(&records));
-    var ws = Workspace.init(std.testing.allocator);
-    defer ws.deinit();
-    try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&ws));
-    try std.testing.expectEqual(@as(usize, 1), records.count);
+test "validateAllStripsAndTiles: a limit never hides a corrupt record, and an IFD past the end is not a limit" {
+    // IFD 1 (type 0) links to an IFD 2 of 9 entries, over a cap of 8
+    // (validate, 2026-11-05). When IFD 2 fits in the file the walk stops on
+    // the limit, and IFD 1's type record is still reported, so the file is
+    // invalid; when it runs past the end of the file it is SourceShortRead.
+    inline for (.{ true, false }) |fits| {
+        const tail = if (fits) [_]u8{ 0x09, 0x00 } ++ [_]u8{0} ** (9 * 12 + 4) else [_]u8{ 0x09, 0x00 };
+        var bytes = chained_type_zero ++ tail;
+        std.mem.writeInt(u32, bytes[127..131], chained_type_zero.len, .little);
+        var handle = BufferHandle.init(&bytes);
+        var dec = try Decoder.openWithLimits(std.testing.allocator, Source.fromBuffer(&handle), .{ .max_tags_per_ifd = 8 });
+        defer dec.deinit();
+        var records: ChainedTypeZeroRecords = .{};
+        dec.setFindingCallback(&ChainedTypeZeroRecords.callback, @ptrCast(&records));
+        var ws = Workspace.init(std.testing.allocator);
+        defer ws.deinit();
+        const want: errors.Error = if (fits) error.LimitExceededTagCount else error.SourceShortRead;
+        try std.testing.expectError(want, dec.validateAllStripsAndTiles(&ws));
+        try std.testing.expectEqual(@as(usize, 1), records.count);
+    }
+}
+
+test "validateAllStripsAndTiles: a strip over the compressed cap is a limit only when the file holds it" {
+    // validate, 2026-11-05: a declared extent past the end of the file is
+    // not a limit. A 1x1 gray page, its strip at 0xF0 of a 256-byte file,
+    // under a 4-byte cap: 8 declared bytes fit, 0x20 run past the end.
+    const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const bps_entry: [12]u8 = .{ 0x02, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00 };
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const photo_entry: [12]u8 = .{ 0x06, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0xF0, 0x00, 0x00, 0x00 };
+    const rps_entry: [12]u8 = .{ 0x16, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const strip = [_]u8{0x7F};
+    inline for (.{ .{ 0x08, error.LimitExceededCompressedStripBytes }, .{ 0x20, error.SourceShortRead } }) |case| {
+        const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, case[0], 0x00, 0x00, 0x00 };
+        const bytes = synthesize(8, .{ w_entry, h_entry, bps_entry, comp_entry, photo_entry, so_entry, rps_entry, sbc_entry }, &strip, 0xF0);
+        var handle = BufferHandle.init(&bytes);
+        var dec = try Decoder.openWithLimits(std.testing.allocator, Source.fromBuffer(&handle), .{ .max_compressed_strip_bytes = 4 });
+        defer dec.deinit();
+        var ws = Workspace.init(std.testing.allocator);
+        defer ws.deinit();
+        try std.testing.expectError(case[1], dec.validateAllStripsAndTiles(&ws));
+    }
 }
 
 test "validateAllStripsAndTiles: chained IFD with field type 0 is Malformed" {

@@ -54,6 +54,9 @@ run_subtest "libjxlz private-seed control" \
 run_subtest ".gitignore build-layout classifier" \
     tests/cli/gitignore_test
 
+run_subtest "every src/ file with tests has a test root" \
+    tests/cli/test_roots_test
+
 run_subtest "platform classifier, header oracle and ./build publication (sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.build-layout" --print-out-paths --no-link
 

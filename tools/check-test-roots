@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Fail when a src/ Zig file containing tests is reachable from no test
+# binary's root module.
+#
+# Zig runs a file's tests only in a test binary whose root module contains
+# that file. A file joins a module through relative @import("x.zig")
+# edges; an import by module name ("tiffz-parser") crosses into another
+# module and does not count. Until 2026-11-05 the tiffz-parser module had
+# no test root, so the tests in src/ifd.zig, header.zig, source.zig,
+# errors.zig and limits.zig never ran.
+#
+# usage: check-test-roots [BUILD_ZIG [ROOT_DIR]]
+#   BUILD_ZIG  build script to read test roots from (default ROOT_DIR/build.zig)
+#   ROOT_DIR   repository root holding src/ (default: this script's parent)
+#
+# Roots are the root_source_file of each module given to b.addTest, by
+# name (`.root_module = name`) or inline (`b.createModule(.{ ... })`).
+# Exit 0 when every such file is rooted, 1 when one is not (each is
+# printed), 2 on a usage or read error.
+
+set -u
+
+root="${2:-$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}"
+build="${1:-$root/build.zig}"
+[ -r "$build" ] || { printf 'check-test-roots: cannot read %s\n' "$build" >&2; exit 2; }
+[ -d "$root/src" ] || { printf 'check-test-roots: no src/ under %s\n' "$root" >&2; exit 2; }
+
+# Module variable -> root file, and the roots handed to addTest.
+roots="$(awk '
+	function path_of(line) {
+		if (match(line, /b\.path\("[^"]+"\)/)) return substr(line, RSTART + 8, RLENGTH - 10)
+		return ""
+	}
+	/const [A-Za-z_][A-Za-z0-9_]* = b\.(createModule|addModule)\(/ {
+		match($0, /const [A-Za-z_][A-Za-z0-9_]*/)
+		pending = substr($0, RSTART + 6, RLENGTH - 6)
+	}
+	/\.root_source_file = b\.path\(/ {
+		p = path_of($0)
+		if (pending != "") { module[pending] = p; pending = "" }
+		if (in_test) { print p; in_test = 0 }
+	}
+	/b\.addTest\(/ {
+		if (match($0, /\.root_module = [A-Za-z_][A-Za-z0-9_]*/)) {
+			name = substr($0, RSTART + 15, RLENGTH - 15)
+			if (name in module) print module[name]
+			else printf "unresolved %s\n", name
+		} else {
+			in_test = 1
+		}
+	}
+' "$build")"
+
+if printf '%s\n' "$roots" | grep -q '^unresolved '; then
+	printf 'check-test-roots: addTest root module not declared before use: %s\n' \
+		"$(printf '%s\n' "$roots" | sed -n 's/^unresolved //p' | tr '\n' ' ')" >&2
+	exit 2
+fi
+[ -n "$roots" ] || { printf 'check-test-roots: no addTest roots in %s\n' "$build" >&2; exit 2; }
+
+# Breadth-first walk over relative .zig imports from every root.
+declare -A seen=()
+queue=()
+while IFS= read -r r; do
+	[ -n "$r" ] || continue
+	f="$(realpath -m -- "$root/$r")"
+	[ -n "${seen[$f]:-}" ] && continue
+	seen[$f]=1
+	queue+=("$f")
+done <<<"$roots"
+
+i=0
+while [ "$i" -lt "${#queue[@]}" ]; do
+	f="${queue[$i]}"
+	i=$((i + 1))
+	[ -r "$f" ] || continue
+	dir="$(dirname -- "$f")"
+	while IFS= read -r imp; do
+		[ -n "$imp" ] || continue
+		g="$(realpath -m -- "$dir/$imp")"
+		[ -n "${seen[$g]:-}" ] && continue
+		seen[$g]=1
+		queue+=("$g")
+	done < <(grep -o '@import("[^"]*\.zig")' -- "$f" | sed 's/^@import("//; s/")$//')
+done
+
+missing=0
+while IFS= read -r -d '' f; do
+	grep -qE '^[[:space:]]*test([[:space:]]+"|[[:space:]]*\{)' -- "$f" || continue
+	abs="$(realpath -m -- "$f")"
+	if [ -z "${seen[$abs]:-}" ]; then
+		printf 'unrooted tests: %s\n' "${abs#"$root"/}"
+		missing=$((missing + 1))
+	fi
+done < <(find "$root/src" -name '*.zig' -type f -print0 | sort -z)
+
+[ "$missing" -eq 0 ] || exit 1
+exit 0
