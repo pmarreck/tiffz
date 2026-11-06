@@ -147,8 +147,8 @@ pub const Verdict = enum(i32) {
 /// (`jpegz.classicFindingVerdict`, exported at jpegz 37231b9), so a TIFF
 /// consumer sees the codec's judgment per finding. Recovered truncation and
 /// restart faults are corruption whatever their severity, all-zero Huffman
-/// padding is a known encoder defect, and an unknown marker or unchecked
-/// JFIF version leaves the outcome indeterminate. These are per-finding
+/// padding and any finding at known_defect severity are a known defect (jpegz
+/// c77f514), and an unknown marker leaves the outcome indeterminate. These are per-finding
 /// labels: never fold them into a report verdict by taking the worst one.
 pub fn classicFindingVerdict(code: @import("jpegz").FindingCode, severity: @import("jpegz").Severity) Verdict {
     return fromStrictVerdict(@import("jpegz").classicFindingVerdict(code, severity));
@@ -211,23 +211,25 @@ test "classic JPEG finding verdict follows jpegz's classification over every cod
     // implementation: any fail is corrupt; recovered truncation and restart
     // faults are corrupt at any severity (BDFN, 2026-11-03: a fault the
     // decoder works around is corrupt or a known defect, never a warning);
-    // all-zero Huffman padding is a known encoder defect; an unknown marker
-    // or unchecked JFIF version leaves the result indeterminate, as do the
-    // two validateAny meta-findings. Everything else a decoder recovers from
-    // is valid. A jpegz change to any of these fails here.
+    // all-zero Huffman padding, and any finding at known_defect severity that
+    // is not corrupt class, is a known defect (validate 2026-11-06: a known
+    // defect is independent of WARN and FAIL); an unknown marker leaves the
+    // result indeterminate, as do the two validateAny meta-findings. An
+    // unchecked JFIF version is a WARN-class deviation, so valid (validate
+    // 2026-11-05). Everything else a decoder recovers from is valid. A jpegz change to any of these fails here.
     @setEvalBranchQuota(100_000);
     const testing = @import("std").testing;
     const jpegz = @import("jpegz");
     const C = jpegz.FindingCode;
     const always_corrupt = [_]C{ .missing_eoi, .insufficient_data, .restart_marker_missing, .restart_marker_unexpected };
-    const indeterminate = [_]C{ .unknown_marker, .jfif_version_unchecked, .unrecognized_container, .jxl_validator_unavailable };
+    const indeterminate = [_]C{ .unknown_marker, .unrecognized_container, .jxl_validator_unavailable };
     inline for (@typeInfo(C).@"enum".fields) |field| {
         const code: C = @field(C, field.name);
         inline for (@typeInfo(jpegz.Severity).@"enum".fields) |sev_field| {
             const severity: jpegz.Severity = @field(jpegz.Severity, sev_field.name);
             const expected: Verdict = if (severity == .fail or comptime contains(&always_corrupt, code))
                 .corrupt
-            else if (code == .entropy_padding_zero_bits)
+            else if (severity == .known_defect or code == .entropy_padding_zero_bits)
                 .known_defect
             else if (comptime contains(&indeterminate, code))
                 .indeterminate

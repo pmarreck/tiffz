@@ -2493,13 +2493,36 @@ test "DNG LinearRaw compression 7: a lossy three-component frame is not stored s
     try std.testing.expectError(error.UnsupportedCompression, validateAndDecodeStrip(allocator, bytes, &dest));
 }
 
-// jpegz validates a two-component lossless stream but its decoder takes one
-// or three components (decode/lossless.zig). That is a limit of the checker,
-// so the strip is unsupported, never invalid. When jpegz decodes two
-// components this test fails and becomes a decode of sixteen samples of 128.
-test "DNG CFA compression 7: a two-component lossless frame jpegz cannot decode yet is unsupported, not invalid" {
+test "DNG CFA compression 7: a two-component lossless frame fills a mosaic tile twice its width" {
+    // jpegz decodes two components from a41db55; before that this was
+    // unsupported. Sixteen samples of 128 fill the 4x4 mosaic.
     const allocator = std.testing.allocator;
     const bytes = try wrapJpegDepth(allocator, &lossless_two_component_jpeg, 4, 4, 1, 32803, 8, .little);
+    defer allocator.free(bytes);
+    var dest: [64]u8 = undefined;
+    const n = try validateAndDecodeStrip(allocator, bytes, &dest);
+    try std.testing.expectEqual(@as(usize, 16), n);
+    for (dest[0..n]) |sample| try std.testing.expectEqual(@as(u8, 128), sample);
+}
+
+// A lossless frame whose first component is sampled 2x1: jpegz validates it,
+// but its decoder takes 1x1 sampling only (decode/lossless.zig). Twelve
+// samples, every difference 0, then four 1-bit pads.
+const lossless_subsampled_jpeg = [_]u8{
+    0xff, 0xd8,
+    0xff, 0xc3, 0x00, 0x0e, 0x08, 0x00, 0x04, 0x00, 0x02, 0x02, 0x01, 0x21, 0x00, 0x02, 0x11, 0x00,
+    0xff, 0xc4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xda, 0x00, 0x0a, 0x02, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x0f,
+    0xff, 0xd9,
+};
+
+// A stream jpegz validates but has no decoder for is a limit of the checker,
+// so the strip is unsupported, never invalid.
+test "DNG CFA compression 7: a validated lossless frame jpegz cannot decode is unsupported, not invalid" {
+    const allocator = std.testing.allocator;
+    const bytes = try wrapJpegDepth(allocator, &lossless_subsampled_jpeg, 4, 3, 1, 32803, 8, .little);
     defer allocator.free(bytes);
     var recorder = FindingRecorder.init(allocator);
     defer recorder.deinit();
@@ -2511,7 +2534,7 @@ test "DNG CFA compression 7: a two-component lossless frame jpegz cannot decode 
 
 test "RGB compression 7: a validated stream jpegz has no decoder for is unsupported, not a payload failure" {
     const allocator = std.testing.allocator;
-    const bytes = try wrapJpegDepth(allocator, &lossless_two_component_jpeg, 2, 4, 2, 2, 8, .little);
+    const bytes = try wrapJpegDepth(allocator, &lossless_subsampled_jpeg, 2, 2, 3, 2, 8, .little);
     defer allocator.free(bytes);
     var handle = tiffz.source.BufferHandle.init(bytes);
     const src = tiffz.Source.fromBuffer(&handle);

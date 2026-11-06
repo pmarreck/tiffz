@@ -33,9 +33,9 @@ Before this change, 16-bit JPEG samples were copied in host byte order, which wo
 | File | Before | After |
 |---|---|---|
 | Samsung Galaxy S21 Ultra, S22 Ultra, S23 (LinearRaw, 3 components, 16/12/12-bit) | unsupported (3) | ok |
-| Google Pixel 8 Pro (CFA, 2 components, 16-bit) | invalid (JpegInTiffPayload) | unsupported |
-| Apple iPhone 6s Plus (CFA, 2 components, 12-bit) | invalid (JpegInTiffPayload) | invalid (UnsupportedCompression) |
-| Leica M11 (CFA, 2 components, 14-bit) | invalid (JpegInTiffPayload) | invalid (UnsupportedCompression) |
+| Google Pixel 8 Pro (CFA, 2 components, 16-bit) | invalid (JpegInTiffPayload) | unsupported; ok after the jpegz a41db55 repin |
+| Apple iPhone 6s Plus (CFA, 2 components, 12-bit) | invalid (JpegInTiffPayload) | invalid (UnsupportedCompression); invalid (Malformed, raw tiles decoded) after the repin |
+| Leica M11 (CFA, 2 components, 14-bit) | invalid (JpegInTiffPayload) | invalid (UnsupportedCompression); invalid (Malformed, raw tiles decoded) after the repin |
 | Apple iPhone 12 Pro (LinearRaw, 3 components, 12-bit) | invalid (UnsupportedCompression) | invalid (Malformed) |
 | iphone-mask-photometric1.dng (control) | invalid (UnsupportedCompression) | invalid (Malformed) |
 
@@ -43,7 +43,7 @@ No finding set changed. The iPhone 6s Plus, Leica M11 and iPhone 12 Pro stay inv
 
 ## Open gaps
 
-- **jpegz: two-component lossless decode.** Shipped in jpegz a41db55 (2026-11-06); tiffz needs a repin. `decode/lossless.zig` takes one or three components. jpegz validates the Pixel 8 Pro, iPhone 6s Plus and Leica M11 tiles, but its decoder returns NotImplemented, so those files are unsupported. This is the common DNG CFA layout, so it is the largest remaining DNG gap. Owner: jpegz. When it lands, the tiffz test "a two-component lossless frame jpegz cannot decode yet is unsupported" fails and becomes a decode test.
+- **jpegz: two-component lossless decode** (closed 2026-11-06). jpegz a41db55 decodes 1 to 4 lossless components with 1x1 sampling, and tiffz repinned to it. Subsampled lossless frames still return NotImplemented, which tiffz reports as unsupported.
 - **jpegz and validate: all-ones Huffman codeword.** Pentax K-x, Pentax K-r, Ricoh GR and DJI FC4382 DNGs use a DHT whose code space is exactly full, so the last length-10 code is all ones. T.81 Annex C reserves that codeword. jpegz rejects the table as corrupt; libjpeg-turbo rejects it too; LibRaw decodes all four files. Whether this is KNOWN_DEFECT is validate's ruling. Owner: validate (category), jpegz (decode).
 - **Lossy JPEG under a raw photometric.** A baseline frame under CFA or LinearRaw is outside DNG p. 20 unless it is the 8-bit BlackIsZero or YCbCr case. tiffz accepts a single-component baseline CFA frame as before and reports a multi-component one unsupported. Whether that should be a conformance fault is a question for validate.
 - **12-bit lossy JPEG-in-TIFF** (fixed 2026-11-06): this used to copy jpegz's host-order u16 output, which overran the packed 12-bit extent and made valid files read invalid. A decode wider than 8 bits on the RGB/YCbCr path now goes through the same packer. jpegz still treats every 12-bit three-component frame as YCbCr, so a 12-bit RGB stream decodes to wrong values; jpegz has reproduced this and a fix is in progress.
