@@ -136,6 +136,11 @@ const Kind = enum {
     /// DNG "SHORT or RATIONAL": BYTE, SHORT or LONG holding 16-bit values,
     /// or RATIONAL.
     short_or_rational,
+    /// SMinSampleValue and SMaxSampleValue: "Type = the field type that best
+    /// matches the sample data" (TIFF 6.0 pp. 80-81), so no one defined type.
+    /// Only the unreadable-type fault applies until validate rules on what
+    /// "best matches" requires.
+    sample_typed,
     /// DNG "ASCII or BYTE", "Null-terminated UTF-8 encoded Unicode string":
     /// the last byte is NUL and the bytes before it are valid UTF-8; the
     /// 7-bit rule does not apply, and inner NULs are not checked (D4).
@@ -356,6 +361,8 @@ pub const rules = [_]Rule{
     .{ .tag = tags.target_printer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 71" },
     .{ .tag = tags.extra_samples, .kind = .unsigned_short, .count = .any, .values = &.{.{ 0, 2 }}, .extras = &.{.channels_plus_extra_samples}, .citation = "TIFF 6.0 pp. 31-32, 77" },
     .{ .tag = tags.sample_format, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 4 }}, .citation = "TIFF 6.0 p. 80" },
+    .{ .tag = tags.s_min_sample_value, .kind = .sample_typed, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 80 (\"if the image has 3 SamplesPerPixel, 3 values must be specified\")" },
+    .{ .tag = tags.s_max_sample_value, .kind = .sample_typed, .count = .samples_per_pixel, .citation = "TIFF 6.0 pp. 80-81" },
     .{ .tag = tags.transfer_range, .kind = .unsigned_short, .count = .six, .citation = "TIFF 6.0 p. 86" },
     .{ .tag = tags.clip_path, .kind = .bytes, .count = .any, .citation = "PageMaker 6.0 TIFF Technical Notes p. 6" },
     .{ .tag = tags.x_clip_path_units, .kind = .integer32, .count = .one, .citation = "PageMaker 6.0 TIFF Technical Notes p. 9 (\"Type = DWORD\": unsigned 32-bit, so LONG; validate, 2026-11-05)" },
@@ -759,6 +766,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
         .long_or_rational => entry.field_type == .short or entry.field_type == .long or entry.field_type == .rational,
         .short_or_rational => entry.field_type == .short or entry.field_type == .rational,
         .utf8_string => entry.field_type == .ascii or entry.field_type == .byte,
+        .sample_typed => true,
     };
     if (!type_ok) return .type;
 
@@ -813,7 +821,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
 
     const bytes = dir.entryValueSlice(index);
     switch (rule.kind) {
-        .bytes, .undefined, .ifd_offsets, .integer32 => return null,
+        .bytes, .undefined, .ifd_offsets, .integer32, .sample_typed => return null,
         .rational, .srational, .double, .float => return realReason(bytes, entry, rule, endian),
         .ascii => {
             if (!isAscii(bytes)) return .value;
