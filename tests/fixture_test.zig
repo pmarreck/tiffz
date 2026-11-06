@@ -3775,6 +3775,40 @@ fn expectChunkyMixedWidthFault(path: []const u8) !void {
     try std.testing.expectError(error.UnsupportedBitDepth, decodeAllStripsBytes(allocator, path));
 }
 
+// An unassigned field-type code, or a BigTIFF type in a classic file, is a
+// damaged type field: the file fails with exactly one finding 18 reason 1
+// record at that entry, carrying the stored code (validate, 2026-11-05).
+// Before, the parser refused the IFD as Malformed and named nothing.
+test "an unknown or BigTIFF-only field type fails with one type record at its entry" {
+    const allocator = std.testing.allocator;
+    for ([_]struct { tag: u16, code: u16 }{
+        .{ .tag = 273, .code = 0 }, // StripOffsets
+        .{ .tag = 273, .code = 19 },
+        .{ .tag = 262, .code = 16 }, // PhotometricInterpretation as LONG8
+        .{ .tag = 339, .code = 255 }, // SampleFormat
+    }) |case| {
+        const bytes = try loadFile(allocator, "tests/fixtures/predictor/predictor3_deflate_fp16.tif");
+        defer allocator.free(bytes);
+        const at = ifd0EntryOffset(bytes, case.tag) orelse return error.TestUnexpectedResult;
+        std.mem.writeInt(u16, bytes[at + 2 ..][0..2], case.code, .little);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        if (validateRecording(allocator, bytes, &recorder)) |_| return error.TestUnexpectedResult else |_| {}
+        var records: usize = 0;
+        for (recorder.findings.items) |f| {
+            if (f.source != .tiffz or f.verdict != .corrupt) continue;
+            const p = f.payload_bytes;
+            try std.testing.expectEqual(@intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid), @as(u32, @intCast(f.finding_code)));
+            try std.testing.expectEqual(@as(u64, at), std.mem.readInt(u64, p[8..16], .little));
+            try std.testing.expectEqual(case.tag, std.mem.readInt(u16, p[16..18], .little));
+            try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, p[18..20], .little));
+            try std.testing.expectEqual(case.code, std.mem.readInt(u16, p[20..22], .little));
+            records += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), records);
+    }
+}
+
 test "Predictor 3 at 32,32,16 is a value fault on Predictor and never decodes" {
     try expectChunkyMixedWidthFault("tests/fixtures/predictor/predictor3_deflate_mixed.tif");
 }

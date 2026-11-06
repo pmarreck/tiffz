@@ -472,6 +472,16 @@ pub const Decoder = struct {
 
     /// Record the first limit site. A later backfill must not overwrite it.
     fn noteLimit(self: *Decoder, err: errors.Error, offset: u64, ifd_index: u64) errors.Error {
+        // A parsed directory with a type code outside 1..18 was Malformed at
+        // parse until 2026-11-05, before the walk could reach this limit. It
+        // still outranks the limit: the file is Malformed, and the directory
+        // rules run so the entry is reported (finding 18 reason 1).
+        for (self.ifds.items, 0..) |*dir, i| {
+            if (!dir.hasOutOfRangeType()) continue;
+            self.noteFileClaim(error.Malformed, self.ifd_offsets.items[i]);
+            self.checkUnreachedConformance();
+            return error.Malformed;
+        }
         if (self.limit_progress == null) {
             self.limit_progress = .{
                 .offset = offset,
@@ -2955,33 +2965,75 @@ test "validateAllStripsAndTiles: tag-absent YCbCrSubSampling uses the {2,2} defa
 // Validate's 131-byte repro: a real 1x1 LZW page chained to an IFD whose
 // only entry has field type 0 and no image geometry. Both the type and the
 // missing page tags must fail closed. The walk must not treat that failure
-// as the end of the chain.
-test "validateAllStripsAndTiles: chained IFD with field type 0 is Malformed" {
-    const bytes = [_]u8{
-        0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
-        0x08, 0x00,
-        0x00, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
-        0x01, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0x02, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
-        0x06, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x6E, 0x00, 0x00, 0x00,
-        0x16, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
-        0x71, 0x00, 0x00, 0x00,
-        0x80, 0x2A, 0x80,
-        0x01, 0x00,
-        0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-    };
+// as the end of the chain. Since 2026-11-05 the type-0 entry parses as an
+// unknown field (TIFF 6.0 p. 16: readers skip it) and is named by a finding
+// 18 reason 1 record, instead of the IFD failing to parse with no record.
+/// IFD 0 is a one-pixel image; IFD 1 at 0x71 has one entry, ImageWidth with
+/// field type 0. IFD 1's next pointer is at 127.
+const chained_type_zero = [_]u8{
+    0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
+    0x08, 0x00,
+    0x00, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+    0x01, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x02, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+    0x06, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x6E, 0x00, 0x00, 0x00,
+    0x16, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+    0x71, 0x00, 0x00, 0x00,
+    0x80, 0x2A, 0x80,
+    0x01, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+
+/// Counts corrupt type records for `chained_type_zero`'s IFD 1, entry 0.
+const ChainedTypeZeroRecords = struct {
+    count: usize = 0,
+    fn callback(userdata: ?*anyopaque, source_decoder: i32, code: i32, mapped: i32, verdict: i32, offset: u64, host: u64, flags: u32, payload: ?[*]const u8, len: usize) callconv(.c) void {
+        _ = .{ source_decoder, mapped, host, flags };
+        const self: *@This() = @ptrCast(@alignCast(userdata.?));
+        if (code != @intFromEnum(findings_mod.InfoFinding.tag_field_invalid) or verdict != @intFromEnum(findings_mod.Verdict.corrupt)) return;
+        const p = (payload orelse return)[0..len];
+        // IFD 1, entry 0 at offset 0x71 + 2: ImageWidth, reason 1, raw type 0.
+        if (std.mem.readInt(u32, p[0..4], .little) != 1 or offset != 0x73) return;
+        if (std.mem.readInt(u16, p[16..18], .little) != 256 or std.mem.readInt(u16, p[18..20], .little) != 1 or std.mem.readInt(u16, p[20..22], .little) != 0) return;
+        self.count += 1;
+    }
+};
+
+test "validateAllStripsAndTiles: a limit after a directory with type 0 is still Malformed, with the type record" {
+    // IFD 1 links to an IFD 2 of 9 entries, over a cap of 8. Until
+    // 2026-11-05 IFD 1 was Malformed at parse, so the walk never reached
+    // IFD 2; that limit must not turn the file into reach.
+    var bytes = chained_type_zero ++ [_]u8{ 0x09, 0x00 };
+    std.mem.writeInt(u32, bytes[127..131], chained_type_zero.len, .little);
     var handle = BufferHandle.init(&bytes);
-    const src = Source.fromBuffer(&handle);
-    var dec = try Decoder.open(std.testing.allocator, src);
+    var dec = try Decoder.openWithLimits(std.testing.allocator, Source.fromBuffer(&handle), .{ .max_tags_per_ifd = 8 });
     defer dec.deinit();
-    try std.testing.expectError(error.Malformed, dec.ifd(1));
+    var records: ChainedTypeZeroRecords = .{};
+    dec.setFindingCallback(&ChainedTypeZeroRecords.callback, @ptrCast(&records));
     var ws = Workspace.init(std.testing.allocator);
     defer ws.deinit();
     try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&ws));
+    try std.testing.expectEqual(@as(usize, 1), records.count);
+}
+
+test "validateAllStripsAndTiles: chained IFD with field type 0 is Malformed" {
+    var handle = BufferHandle.init(&chained_type_zero);
+    const src = Source.fromBuffer(&handle);
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+    var records: ChainedTypeZeroRecords = .{};
+    dec.setFindingCallback(&ChainedTypeZeroRecords.callback, @ptrCast(&records));
+    const second = try dec.ifd(1);
+    try std.testing.expectEqual(ifd_mod.FieldType.unknown, second.entries[0].field_type);
+    try std.testing.expectEqual(@as(u16, 0), second.entries[0].raw_type);
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.Malformed, dec.validateAllStripsAndTiles(&ws));
+    try std.testing.expectEqual(@as(usize, 1), records.count);
 }
 
 // Same shape as the type-0 chain, but IFD1's single entry is a legal ASCII

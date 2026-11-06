@@ -164,6 +164,14 @@ pub const Ifd = struct {
 
     /// Look up an entry by tag number. Returns null if not present.
     /// Linear scan — IFDs are small (typically 10-50 entries).
+    /// True when an entry's type code is outside 1..18 (see `parse`).
+    pub fn hasOutOfRangeType(self: *const Ifd) bool {
+        for (self.entries) |entry| {
+            if (outOfRangeType(entry.raw_type)) return true;
+        }
+        return false;
+    }
+
     pub fn get(self: *const Ifd, tag: u16) ?*const Entry {
         for (self.entries) |*e| {
             if (e.tag == tag) return e;
@@ -314,9 +322,14 @@ pub const Ifd = struct {
 /// Entries also differ: classic uses u32 count + 4-byte slot; big
 /// uses u64 count + 8-byte slot. We normalize both into the unified
 /// Entry shape (u64 count, [8]u8 slot) so consumers don't care.
-/// Field types outside 1..18 are Malformed. 13..15 stay `.unknown`
-/// because TIFF Tech Note 1 assigns 13 to IFD and 14..15 are inside
-/// the span validate asked us to keep representable.
+/// Every field type parses; one tiffz cannot read is `.unknown` with
+/// its code in `raw_type`, and ifd_conformance faults it.
+///
+/// A code outside 1..18 was Malformed here until 2026-11-05, so it
+/// always outranked whatever the rest of the directory would have
+/// failed on. It still does: once this IFD holds one, any later
+/// failure in this parse is Malformed, as before. The decoder keeps
+/// the same order across directories (`hasOutOfRangeType`).
 pub fn parse(
     allocator: Allocator,
     source: Source,
@@ -324,6 +337,27 @@ pub fn parse(
     offset: u64,
     limits: Limits,
     offset_width: OffsetWidth,
+) errors.Error!Ifd {
+    var out_of_range_type = false;
+    return parseEntries(allocator, source, endian, offset, limits, offset_width, &out_of_range_type) catch |err| {
+        if (out_of_range_type and err != error.OutOfMemory) return error.Malformed;
+        return err;
+    };
+}
+
+/// A type code outside 1..18: never assigned by TIFF 6.0, TN1 or BigTIFF.
+pub fn outOfRangeType(code: u16) bool {
+    return code == 0 or code > 18;
+}
+
+fn parseEntries(
+    allocator: Allocator,
+    source: Source,
+    endian: Endian,
+    offset: u64,
+    limits: Limits,
+    offset_width: OffsetWidth,
+    out_of_range_type: *bool,
 ) errors.Error!Ifd {
     const count_bytes: usize = switch (offset_width) {
         .classic => 2,
@@ -369,8 +403,15 @@ pub fn parse(
             .classic => @memcpy(slot[0..4], entries_buf[base + 8 ..][0..4]),
             .big => @memcpy(&slot, entries_buf[base + 12 ..][0..8]),
         }
+        // A type code tiffz does not know (anything but 1-12 and 16-18; TN1's
+        // IFD type 13 included, as before) parses as `.unknown`, with no element
+        // size, so its value is never read: "Readers should skip over fields
+        // containing an unexpected field type" (TIFF 6.0 p. 16). Reading one
+        // later is UnsupportedTagType, and ifd_conformance faults the entry
+        // (finding 18 reason 1), since a code no writer has used since 1992
+        // is a damaged type field (validate, 2026-11-05).
         const type_code = header_mod.readU16(entries_buf[base + 2 ..][0..2], endian);
-        if (type_code == 0 or type_code > 18) return error.Malformed;
+        if (outOfRangeType(type_code)) out_of_range_type.* = true;
         entry.* = .{
             .tag = header_mod.readU16(entries_buf[base..][0..2], endian),
             .field_type = FieldType.fromU16(type_code),
@@ -589,6 +630,30 @@ test "ifd.parse: one entry with inline SHORT value" {
     try std.testing.expectEqual(@as(u16, 512), header_mod.readU16(&value_bytes, .little));
 }
 
+test "ifd.parse: an unknown field type is skipped, not fatal (TIFF 6.0 p. 16)" {
+    // StripOffsets with type 0 and a huge count: the entry parses as
+    // `.unknown` with its raw code kept, no value is read, and a later read
+    // is UnsupportedTagType. ifd_conformance faults the entry.
+    for ([_]u16{ 0, 14, 19, 0xFFFF }) |code| {
+        var entry: [12]u8 = .{
+            0x11, 0x01, // tag = 273
+            0x00, 0x00, // type, below
+            0xFF, 0xFF, 0xFF, 0x7F, // count
+            0x08, 0x00, 0x00, 0x00,
+        };
+        std.mem.writeInt(u16, entry[2..4], code, .little);
+        const bytes = fakeTiff(1, .{entry});
+        var handle = BufferHandle.init(&bytes);
+        const src = Source.fromBuffer(&handle);
+        var ifd = try parse(std.testing.allocator, src, .little, 8, .{}, .classic);
+        defer ifd.deinit();
+        const e = ifd.get(273) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(FieldType.unknown, e.field_type);
+        try std.testing.expectEqual(code, e.raw_type);
+        try std.testing.expectError(error.UnsupportedTagType, ifd.arrayElementU64(273, 0, .little, src));
+    }
+}
+
 test "ifd.parse: tag count over limit is rejected" {
     // entry_count = 0x0003, but limits cap at 2.
     const entry: [12]u8 = .{0x00} ** 12;
@@ -622,6 +687,27 @@ test "ifd.parse: tag value bytes over limit rejected" {
         error.LimitExceededTagValueBytes,
         parse(std.testing.allocator, src, .little, 8, limits, .classic),
     );
+}
+
+test "ifd.parse: a type code outside 1..18 outranks a later limit, not an earlier one" {
+    // Until 2026-11-05 such a code was Malformed at its entry, before any
+    // later entry was checked. A corruption-reader shotgun case (type 34,
+    // then a DOUBLE of 16.9M elements in a 598-byte file) depends on it.
+    const damaged: [12]u8 = .{ 0x0E, 0x01, 0x22, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const huge: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const limits: Limits = .{ .max_tag_value_bytes = 1024 };
+    const after = fakeTiff(2, .{ damaged, huge });
+    var after_handle = BufferHandle.init(&after);
+    try std.testing.expectError(error.Malformed, parse(std.testing.allocator, Source.fromBuffer(&after_handle), .little, 8, limits, .classic));
+    const before = fakeTiff(2, .{ huge, damaged });
+    var before_handle = BufferHandle.init(&before);
+    try std.testing.expectError(error.LimitExceededTagValueBytes, parse(std.testing.allocator, Source.fromBuffer(&before_handle), .little, 8, limits, .classic));
+    // Codes 14 and 15 parsed before as well, so the limit still wins.
+    var unassigned = damaged;
+    unassigned[2] = 14;
+    const kept = fakeTiff(2, .{ unassigned, huge });
+    var kept_handle = BufferHandle.init(&kept);
+    try std.testing.expectError(error.LimitExceededTagValueBytes, parse(std.testing.allocator, Source.fromBuffer(&kept_handle), .little, 8, limits, .classic));
 }
 
 // MFIC: allocation-failure sweep over ifd.parse — a classifier over the whole set of

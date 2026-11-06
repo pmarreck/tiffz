@@ -419,8 +419,15 @@ pub fn build(b: *std.Build) void {
     );
     dual_module_test_step.dependOn(&run_dual_module_tests.step);
 
+    // The parser module's own files (ifd, header, source, errors, limits)
+    // belong to tiffz-parser, not to the src/lib.zig test root, so their
+    // tests run only from a binary rooted at that module.
+    const parser_unit_tests = b.addTest(.{ .root_module = parser_module });
+    const run_parser_unit_tests = b.addRunArtifact(parser_unit_tests);
+
     const test_step = b.step("test", "Run unit, CLI, and fixture tests");
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_parser_unit_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_fixture_tests.step);
     test_step.dependOn(&run_writer_tests.step);

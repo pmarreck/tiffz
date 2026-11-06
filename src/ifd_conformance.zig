@@ -667,6 +667,23 @@ pub fn check(
                 .prev_tag = dir.entries[i - 1].tag,
             } });
         }
+        // A type no reader of this file can read faults any tag, private
+        // ones included: the code is the damage, not the field (validate,
+        // 2026-11-05). That is a code outside TIFF's 1..18, or a BigTIFF
+        // type (LONG8, SLONG8, IFD8: 16-18) in a classic file, which TIFF 6.0
+        // readers do not know. The parser skips such a field (TIFF 6.0
+        // p. 16), so this is the only record of it.
+        if (unreadableType(entry.raw_type, dir.offset_width)) {
+            try out.append(allocator, .{ .field_invalid = .{
+                .entry_index = index,
+                .tag = entry.tag,
+                .reason = .type,
+                .raw_type = entry.raw_type,
+                .raw_count = entry.count,
+                .raw_slot = rawSlot(entry, dir.offset_width, endian),
+            } });
+            continue;
+        }
         const rule = ruleFor(entry.tag) orelse continue;
         // A DNG row applies only in a DNG file, and only from the edition
         // that added its tag; with an unknown version, type and count rows
@@ -691,6 +708,17 @@ pub fn check(
             } });
         }
     }
+}
+
+/// TIFF 6.0 defines types 1-12 (pp. 15-16), TIFF Technical Note 1 adds IFD (13),
+/// and BigTIFF adds LONG8, SLONG8 and IFD8 (16-18). Codes 0, 14, 15 and
+/// anything above 18 were never assigned.
+fn unreadableType(raw_type: u16, width: ifd_mod.OffsetWidth) bool {
+    return switch (raw_type) {
+        1...13 => false,
+        16...18 => width == .classic,
+        else => true,
+    };
 }
 
 fn rawSlot(entry: Entry, width: ifd_mod.OffsetWidth, endian: Endian) u64 {
@@ -1965,6 +1993,45 @@ test "a palette image needs a ColorMap, and a transparency mask one bit per samp
     }
     var gray8 = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 8), inline16(tags.photometric, .short, 1, 1) };
     try expectFaults(&gray8, &.{});
+}
+
+test "an unassigned type code is a type fault on any tag, and a BigTIFF type in a classic file too" {
+    // One record at the entry, carrying the stored code, and nothing from
+    // the tag's own row: the type is the damage (validate, 2026-11-05).
+    for ([_]struct { tag: u16, raw: u16, fault: bool }{
+        .{ .tag = tags.strip_offsets, .raw = 0, .fault = true },
+        .{ .tag = tags.strip_offsets, .raw = 19, .fault = true },
+        .{ .tag = tags.photometric, .raw = 255, .fault = true },
+        .{ .tag = 40000, .raw = 99, .fault = true }, // private tag
+        .{ .tag = 40000, .raw = 14, .fault = true }, // never assigned
+        .{ .tag = 40000, .raw = 15, .fault = true },
+        .{ .tag = 40000, .raw = 16, .fault = true }, // LONG8 in classic
+        .{ .tag = 40000, .raw = 17, .fault = true }, // SLONG8
+        .{ .tag = 40000, .raw = 18, .fault = true }, // IFD8
+        .{ .tag = 40000, .raw = 13, .fault = false }, // TN1's IFD
+        .{ .tag = 40000, .raw = 12, .fault = false },
+    }) |case| {
+        var entry = inline16(case.tag, .short, 1, 7);
+        entry.raw_type = case.raw;
+        entry.field_type = ifd_mod.FieldType.fromU16(case.raw);
+        var entries = [_]Entry{entry};
+        if (case.fault) {
+            try expectFaults(&entries, &.{.{ .field_invalid = .{ .entry_index = 0, .tag = case.tag, .reason = .type, .raw_type = case.raw, .raw_count = 1, .raw_slot = 7 } }});
+        } else try expectFaults(&entries, &.{});
+    }
+    // In a BigTIFF the BigTIFF types are known.
+    for ([_]u16{ 16, 17, 18 }) |raw| {
+        var entry = inline16(40000, .short, 1, 7);
+        entry.raw_type = raw;
+        entry.field_type = ifd_mod.FieldType.fromU16(raw);
+        var entries = [_]Entry{entry};
+        var cached = [_]?[]u8{null};
+        const dir = Ifd{ .entries = &entries, .next_offset = 0, .offset_width = .big, .allocator = testing.allocator, .cached_values = &cached };
+        var out: std.ArrayListUnmanaged(Fault) = .empty;
+        defer out.deinit(testing.allocator);
+        try check(testing.allocator, &dir, .little, null, &out);
+        try testing.expectEqual(@as(usize, 0), out.items.len);
+    }
 }
 
 test "Predictor sample widths: 3 needs whole bytes (TN3 p. 2), chunky data one width (TIFF 6.0 p. 65)" {
