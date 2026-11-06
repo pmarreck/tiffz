@@ -137,9 +137,8 @@ const Kind = enum {
     /// or RATIONAL.
     short_or_rational,
     /// SMinSampleValue and SMaxSampleValue: "Type = the field type that best
-    /// matches the sample data" (TIFF 6.0 pp. 80-81), so no one defined type.
-    /// Only the unreadable-type fault applies until validate rules on what
-    /// "best matches" requires.
+    /// matches the sample data" (TIFF 6.0 pp. 80-81), the smallest type that
+    /// holds one sample (`bestMatchingType`).
     sample_typed,
     /// DNG "ASCII or BYTE", "Null-terminated UTF-8 encoded Unicode string":
     /// the last byte is NUL and the bytes before it are valid UTF-8; the
@@ -361,8 +360,8 @@ pub const rules = [_]Rule{
     .{ .tag = tags.target_printer, .kind = .ascii, .count = .any, .citation = "TIFF 6.0 pp. 15-16, 71" },
     .{ .tag = tags.extra_samples, .kind = .unsigned_short, .count = .any, .values = &.{.{ 0, 2 }}, .extras = &.{.channels_plus_extra_samples}, .citation = "TIFF 6.0 pp. 31-32, 77" },
     .{ .tag = tags.sample_format, .kind = .unsigned_short, .count = .samples_per_pixel, .values = &.{.{ 1, 4 }}, .citation = "TIFF 6.0 p. 80" },
-    .{ .tag = tags.s_min_sample_value, .kind = .sample_typed, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 80 (\"if the image has 3 SamplesPerPixel, 3 values must be specified\")" },
-    .{ .tag = tags.s_max_sample_value, .kind = .sample_typed, .count = .samples_per_pixel, .citation = "TIFF 6.0 pp. 80-81" },
+    .{ .tag = tags.s_min_sample_value, .kind = .sample_typed, .count = .samples_per_pixel, .citation = "TIFF 6.0 p. 80 (\"if the image has 3 SamplesPerPixel, 3 values must be specified\"); type: the smallest holding one sample (validate, 2026-11-05)" },
+    .{ .tag = tags.s_max_sample_value, .kind = .sample_typed, .count = .samples_per_pixel, .citation = "TIFF 6.0 pp. 80-81; type: the smallest holding one sample (validate, 2026-11-05)" },
     .{ .tag = tags.transfer_range, .kind = .unsigned_short, .count = .six, .citation = "TIFF 6.0 p. 86" },
     .{ .tag = tags.clip_path, .kind = .bytes, .count = .any, .citation = "PageMaker 6.0 TIFF Technical Notes p. 6" },
     .{ .tag = tags.x_clip_path_units, .kind = .integer32, .count = .one, .citation = "PageMaker 6.0 TIFF Technical Notes p. 9 (\"Type = DWORD\": unsigned 32-bit, so LONG; validate, 2026-11-05)" },
@@ -766,7 +765,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
         .long_or_rational => entry.field_type == .short or entry.field_type == .long or entry.field_type == .rational,
         .short_or_rational => entry.field_type == .short or entry.field_type == .rational,
         .utf8_string => entry.field_type == .ascii or entry.field_type == .byte,
-        .sample_typed => true,
+        .sample_typed => if (bestMatchingType(dir, endian)) |t| entry.field_type == t else true,
     };
     if (!type_ok) return .type;
 
@@ -1234,6 +1233,49 @@ fn allBitsIn(dir: *const Ifd, endian: Endian, allowed: []const u64) bool {
         if (std.mem.indexOfScalar(u64, allowed, bits) == null) return false;
     }
     return true;
+}
+
+/// The one field type that "best matches the sample data" (SMinSampleValue
+/// and SMaxSampleValue, TIFF 6.0 pp. 80-81): the smallest that holds a sample,
+/// so integer widths round up (validate, 2026-11-05). Null, and no check, for
+/// a mixed or malformed BitsPerSample or SampleFormat, SampleFormat 4 or
+/// private, a float that is not 32 or 64 bits (no TIFF type holds a half
+/// float or float24), and a 33- to 64-bit integer in a classic TIFF.
+fn bestMatchingType(dir: *const Ifd, endian: Endian) ?FieldType {
+    const bits = uniformValue(dir, tags.bits_per_sample, endian) orelse return null;
+    const format = uniformValue(dir, tags.sample_format, endian) orelse return null;
+    return switch (format) {
+        1, 2 => {
+            const signed = format == 2;
+            if (bits >= 1 and bits <= 8) return if (signed) .sbyte else .byte;
+            if (bits <= 16) return if (signed) .sshort else .short;
+            if (bits <= 32) return if (signed) .slong else .long;
+            if (bits <= 64 and dir.offset_width == .big) return if (signed) .slong8 else .long8;
+            return null;
+        },
+        3 => switch (bits) {
+            32 => .float,
+            64 => .double,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+/// The single value every element of `tag` holds, its default 1 when the
+/// tag is absent, or null when the elements differ or cannot be read.
+fn uniformValue(dir: *const Ifd, tag: u16, endian: Endian) ?u64 {
+    const k = indexOf(dir, tag) orelse return 1;
+    const entry = dir.entries[k];
+    if (entry.count == 0) return null;
+    const values = dir.entryValueSlice(k);
+    const first = element(values, entry.field_type, 0, endian) orelse return null;
+    var i: usize = 1;
+    while (i < entry.count) : (i += 1) {
+        const v = element(values, entry.field_type, i, endian) orelse return null;
+        if (v != first) return null;
+    }
+    return first;
 }
 
 /// Whether every BitsPerSample value (default 1) is a multiple of 8, and
@@ -2039,6 +2081,48 @@ test "an unassigned type code is a type fault on any tag, and a BigTIFF type in 
         defer out.deinit(testing.allocator);
         try check(testing.allocator, &dir, .little, null, &out);
         try testing.expectEqual(@as(usize, 0), out.items.len);
+    }
+}
+
+test "SMinSampleValue and SMaxSampleValue take the smallest type that holds a sample (TIFF 6.0 pp. 80-81)" {
+    // validate, 2026-11-05: integer widths round up; no check for other float
+    // widths, 64-bit integers in a classic TIFF, SampleFormat 4 or mixed widths.
+    const f32_one: u32 = @bitCast(@as(f32, 1.0));
+    for ([_]struct { bits: u32, format: ?u32, typ: FieldType, value: u32, fault: bool }{
+        .{ .bits = 12, .format = null, .typ = .short, .value = 0, .fault = false },
+        .{ .bits = 12, .format = null, .typ = .long, .value = 0, .fault = true },
+        .{ .bits = 8, .format = null, .typ = .byte, .value = 0, .fault = false },
+        .{ .bits = 8, .format = 1, .typ = .short, .value = 0, .fault = true },
+        .{ .bits = 17, .format = 1, .typ = .long, .value = 0, .fault = false },
+        .{ .bits = 16, .format = 2, .typ = .sshort, .value = 0, .fault = false },
+        .{ .bits = 16, .format = 2, .typ = .short, .value = 0, .fault = true },
+        .{ .bits = 32, .format = 3, .typ = .float, .value = f32_one, .fault = false },
+        .{ .bits = 32, .format = 3, .typ = .long, .value = 1, .fault = true },
+        // No single type: a half float, a classic 64-bit integer, SampleFormat 4.
+        .{ .bits = 16, .format = 3, .typ = .short, .value = 0, .fault = false },
+        .{ .bits = 64, .format = 1, .typ = .long, .value = 0, .fault = false },
+        .{ .bits = 8, .format = 4, .typ = .long, .value = 0, .fault = false },
+    }) |case| {
+        for ([_]u16{ tags.s_min_sample_value, tags.s_max_sample_value }) |tag| {
+            var with_format = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, case.bits), inline16(tags.sample_format, .short, 1, case.format orelse 1), inline16(tag, case.typ, 1, case.value) };
+            var without = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, case.bits), inline16(tag, case.typ, 1, case.value) };
+            const entries: []Entry = if (case.format != null) &with_format else &without;
+            const index: u32 = @intCast(entries.len - 1);
+            if (case.fault) {
+                try expectFaults(entries, &.{.{ .field_invalid = .{ .entry_index = index, .tag = tag, .reason = .type, .raw_type = @intFromEnum(case.typ), .raw_count = 1, .raw_slot = case.value } }});
+            } else try expectFaults(entries, &.{});
+        }
+    }
+    // A 64-bit integer has a type in BigTIFF: LONG8, and SLONG8 when signed.
+    for ([_]struct { typ: FieldType, fault: bool }{ .{ .typ = .long8, .fault = false }, .{ .typ = .long, .fault = true } }) |case| {
+        var entries = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 64), inline16(tags.s_min_sample_value, case.typ, 1, 0) };
+        var cached = [_]?[]u8{ null, null };
+        const dir = Ifd{ .entries = &entries, .next_offset = 0, .offset_width = .big, .allocator = testing.allocator, .cached_values = &cached };
+        var out: std.ArrayListUnmanaged(Fault) = .empty;
+        defer out.deinit(testing.allocator);
+        try check(testing.allocator, &dir, .little, null, &out);
+        try testing.expectEqual(@as(usize, if (case.fault) 1 else 0), out.items.len);
+        if (case.fault) try testing.expectEqual(Reason.type, out.items[0].field_invalid.reason);
     }
 }
 

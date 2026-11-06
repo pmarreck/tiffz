@@ -2833,8 +2833,9 @@ const row_cases = [_]struct { tag: u16, clean: RowField, corrupt: RowField, reas
     .{ .tag = 337, .clean = ascii("printer\x00"), .corrupt = ascii("printer"), .reason = 3, .seen = 0 },
     .{ .tag = 338, .clean = short(&.{0}), .corrupt = short(&.{3}), .reason = 3, .end_to_end = false, .seen = 0 }, // the gray builder has one sample; strike.tif covers it end to end
     .{ .tag = 339, .clean = short(&.{1}), .corrupt = short(&.{5}), .reason = 3, .seen = 0 },
-    .{ .tag = 340, .clean = short(&.{0}), .corrupt = short(&.{ 0, 0 }), .reason = 2, .seen = 0 },
-    .{ .tag = 341, .clean = .{ .typ = 1, .count = 1, .raw = &.{255} }, .corrupt = .{ .typ = 4, .count = 2, .raw = le32(&.{ 255, 255 }) }, .reason = 2, .seen = 1 },
+    // An 8-bit unsigned sample: BYTE "best matches" it (TIFF 6.0 pp. 80-81).
+    .{ .tag = 340, .clean = .{ .typ = 1, .count = 1, .raw = &.{0} }, .corrupt = .{ .typ = 1, .count = 2, .raw = &.{ 0, 0 } }, .reason = 2, .seen = 0 },
+    .{ .tag = 341, .clean = .{ .typ = 1, .count = 1, .raw = &.{255} }, .corrupt = short(&.{255}), .reason = 1, .seen = 1 },
     .{ .tag = 342, .clean = short(&.{ 0, 255, 0, 255, 0, 255 }), .corrupt = short(&.{ 0, 255, 0, 255, 0 }), .reason = 2, .seen = 0 },
     .{ .tag = 343, .clean = .{ .typ = 1, .count = 4, .raw = "\x00\x00\x00\x00" }, .corrupt = .{ .typ = 7, .count = 4, .raw = "\x00\x00\x00\x00" }, .reason = 1, .seen = 0 },
     .{ .tag = 344, .clean = long(&.{1000}), .corrupt = .{ .typ = 11, .count = 1, .raw = le32(&.{0}) }, .reason = 1, .seen = 0 },
