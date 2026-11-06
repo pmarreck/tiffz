@@ -2140,8 +2140,24 @@ fn wrapCfaJpeg(allocator: std.mem.Allocator, jpeg: []const u8) ![]u8 {
 }
 
 /// Classic little-endian TIFF holding `jpeg` as its one Compression=7 strip,
-/// with 8-bit samples. BitsPerSample moves out of line past one sample.
+/// with 8-bit samples.
 fn wrapJpeg(allocator: std.mem.Allocator, jpeg: []const u8, width: u32, height: u32, spp: u16, photometric: u16) ![]u8 {
+    return wrapJpegDepth(allocator, jpeg, width, height, spp, photometric, 8, .little);
+}
+
+/// Classic TIFF in either byte order holding `jpeg` as its one Compression=7
+/// strip with `bps`-bit samples. BitsPerSample moves out of line past two
+/// samples; a SHORT pair sits in the entry's first four bytes.
+fn wrapJpegDepth(
+    allocator: std.mem.Allocator,
+    jpeg: []const u8,
+    width: u32,
+    height: u32,
+    spp: u16,
+    photometric: u16,
+    bps: u16,
+    order: std.builtin.Endian,
+) ![]u8 {
     const ntags: usize = 9;
     const ifd_bytes = 2 + ntags * 12 + 4;
     const bps_off: u32 = @intCast(8 + ifd_bytes);
@@ -2149,31 +2165,43 @@ fn wrapJpeg(allocator: std.mem.Allocator, jpeg: []const u8, width: u32, height: 
     const strip_off: u32 = bps_off + bps_bytes;
     const buf = try allocator.alloc(u8, strip_off + jpeg.len);
     @memset(buf, 0);
-    buf[0] = 'I';
-    buf[1] = 'I';
-    putU16(buf, 2, 42);
-    putU32(buf, 4, 8);
-    putU16(buf, 8, @intCast(ntags));
-    const tags = [_]struct { tag: u16, typ: u16, count: u32 = 1, val: u32 }{
+    const mark: u8 = if (order == .little) 'I' else 'M';
+    buf[0] = mark;
+    buf[1] = mark;
+    std.mem.writeInt(u16, buf[2..4], 42, order);
+    std.mem.writeInt(u32, buf[4..8], 8, order);
+    std.mem.writeInt(u16, buf[8..10], @intCast(ntags), order);
+    const Entry = struct { tag: u16, typ: u16, count: u32 = 1, val: u32 = 0, shorts: ?[2]u16 = null };
+    const tags = [_]Entry{
         .{ .tag = 256, .typ = 4, .val = width },
         .{ .tag = 257, .typ = 4, .val = height },
-        .{ .tag = 258, .typ = 3, .count = spp, .val = if (spp > 2) bps_off else 8 | (if (spp == 2) @as(u32, 8) << 16 else 0) },
-        .{ .tag = 259, .typ = 3, .val = 7 },
-        .{ .tag = 262, .typ = 3, .val = photometric },
+        if (spp > 2)
+            .{ .tag = 258, .typ = 3, .count = spp, .val = bps_off }
+        else
+            .{ .tag = 258, .typ = 3, .count = spp, .shorts = .{ bps, if (spp == 2) bps else 0 } },
+        .{ .tag = 259, .typ = 3, .shorts = .{ 7, 0 } },
+        .{ .tag = 262, .typ = 3, .shorts = .{ photometric, 0 } },
         .{ .tag = 273, .typ = 4, .val = strip_off },
-        .{ .tag = 277, .typ = 3, .val = spp },
+        .{ .tag = 277, .typ = 3, .shorts = .{ spp, 0 } },
         .{ .tag = 278, .typ = 4, .val = height },
         .{ .tag = 279, .typ = 4, .val = @intCast(jpeg.len) },
     };
     for (tags, 0..) |entry, i| {
         const at = 10 + i * 12;
-        putU16(buf, at, entry.tag);
-        putU16(buf, at + 2, entry.typ);
-        putU32(buf, at + 4, entry.count);
-        putU32(buf, at + 8, entry.val);
+        std.mem.writeInt(u16, buf[at..][0..2], entry.tag, order);
+        std.mem.writeInt(u16, buf[at + 2 ..][0..2], entry.typ, order);
+        std.mem.writeInt(u32, buf[at + 4 ..][0..4], entry.count, order);
+        if (entry.shorts) |pair| {
+            std.mem.writeInt(u16, buf[at + 8 ..][0..2], pair[0], order);
+            std.mem.writeInt(u16, buf[at + 10 ..][0..2], pair[1], order);
+        } else {
+            std.mem.writeInt(u32, buf[at + 8 ..][0..4], entry.val, order);
+        }
     }
     var sample: u32 = 0;
-    while (sample < bps_bytes / 2) : (sample += 1) putU16(buf, bps_off + 2 * sample, 8);
+    while (sample < bps_bytes / 2) : (sample += 1) {
+        std.mem.writeInt(u16, buf[bps_off + 2 * sample ..][0..2], bps, order);
+    }
     @memcpy(buf[strip_off..], jpeg);
     return buf;
 }
@@ -2309,6 +2337,182 @@ test "DNG CFA compression 7: a non-mosaic SOF still reaches jpegz instead of a c
     }
     try std.testing.expect(saw_reach);
     try std.testing.expectEqual(@as(usize, 0), recorder.count(.unsupported_compression_skipped));
+}
+
+// Lossless JPEG streams from libjpeg-turbo 3.1.4 `cjpeg -lossless 1
+// -precision P -rgb` over a binary PPM whose sample i (raster order, R G B
+// interleaved) is (i * 4099 + 517) mod 2^P; `djpeg -pnm` returns the PPM
+// byte for byte. linear16 and linear12 are 4x2 frames, flat8 a 2x2 frame.
+const lossless_linear16_jpeg = [_]u8{
+    0xff, 0xd8, 0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xc3, 0x00, 0x11, 0x10, 0x00, 0x02, 0x00, 0x04, 0x03, 0x52, 0x11, 0x00, 0x47,
+    0x11, 0x00, 0x42, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x15, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x0f, 0xff, 0xda, 0x00, 0x0c,
+    0x03, 0x52, 0x00, 0x47, 0x00, 0x42, 0x00, 0x01, 0x00, 0x00, 0x81, 0x02, 0x44, 0x81, 0xe4, 0x41,
+    0x4c, 0x02, 0x58, 0x04, 0xb0, 0x09, 0x60, 0x12, 0xc0, 0x25, 0x80, 0x4b, 0x00, 0x96, 0x01, 0x2c,
+    0x02, 0x40, 0x11, 0x80, 0x23, 0x00, 0x46, 0xc0, 0x25, 0x80, 0x4b, 0x00, 0x96, 0x01, 0x2c, 0x02,
+    0x58, 0x04, 0xb0, 0x09, 0x60, 0x12, 0xc0, 0x27, 0xff, 0xd9,
+};
+const lossless_linear12_jpeg = [_]u8{
+    0xff, 0xd8, 0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xc3, 0x00, 0x11, 0x0c, 0x00, 0x02, 0x00, 0x04, 0x03, 0x52, 0x11, 0x00, 0x47,
+    0x11, 0x00, 0x42, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x16, 0x00, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x06, 0x0b, 0xff, 0xda, 0x00,
+    0x0c, 0x03, 0x52, 0x00, 0x47, 0x00, 0x42, 0x00, 0x01, 0x00, 0x00, 0xc8, 0x13, 0x20, 0x7c, 0x82,
+    0x92, 0x94, 0xa5, 0x29, 0x4a, 0x53, 0x49, 0x49, 0x48, 0x94, 0xa5, 0x29, 0x4a, 0x52, 0x9f, 0xff,
+    0xd9,
+};
+const lossless_flat8_jpeg = [_]u8{
+    0xff, 0xd8, 0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xc3, 0x00, 0x11, 0x08, 0x00, 0x02, 0x00, 0x02, 0x03, 0x52, 0x11, 0x00, 0x47,
+    0x11, 0x00, 0x42, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x16, 0x00, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x05, 0x07, 0xff, 0xda, 0x00,
+    0x0c, 0x03, 0x52, 0x00, 0x47, 0x00, 0x42, 0x00, 0x01, 0x00, 0x00, 0xc1, 0x30, 0x7c, 0x29, 0x29,
+    0x4d, 0x2a, 0x54, 0x92, 0x94, 0xff, 0x00, 0xff, 0xd9,
+};
+
+// The DNG CFA idiom: a 2x4 frame of two components, 16 samples for a 4x4
+// mosaic tile. Hand-built from lossless_cfa_jpeg's table (one 1-bit code
+// for difference 0) and SOS predictor 1, so every sample decodes to 128.
+const lossless_two_component_jpeg = [_]u8{
+    0xff, 0xd8,
+    0xff, 0xc3, 0x00, 0x0e, 0x08, 0x00, 0x04, 0x00, 0x02, 0x02, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00,
+    0xff, 0xc4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xda, 0x00, 0x0a, 0x02, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x00, // sixteen 1-bit codes, no padding
+    0xff, 0xd9,
+};
+
+/// Sample i of the PPMs the lossless fixtures were encoded from.
+fn ppmSample(i: usize, precision: u5) u16 {
+    return @intCast((i * 4099 + 517) % (@as(usize, 1) << precision));
+}
+
+/// Validate a one-strip file, then decode its strip into `dest`.
+fn validateAndDecodeStrip(allocator: std.mem.Allocator, bytes: []const u8, dest: []u8) !usize {
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try dec.validateAllStripsAndTiles(&ws);
+    return dec.decodeStrip(0, 0, dest, &ws);
+}
+
+test "DNG LinearRaw compression 7: a 16-bit three-component lossless strip is the encoded samples, in the file's byte order" {
+    const allocator = std.testing.allocator;
+    for ([_]std.builtin.Endian{ .little, .big }) |order| {
+        const bytes = try wrapJpegDepth(allocator, &lossless_linear16_jpeg, 4, 2, 3, 34892, 16, order);
+        defer allocator.free(bytes);
+        var dest: [64]u8 = undefined;
+        const n = try validateAndDecodeStrip(allocator, bytes, &dest);
+        try std.testing.expectEqual(@as(usize, 48), n);
+        for (0..24) |i| {
+            try std.testing.expectEqual(ppmSample(i, 16), std.mem.readInt(u16, dest[i * 2 ..][0..2], order));
+        }
+    }
+}
+
+test "DNG LinearRaw compression 7: 12-bit lossless samples are packed high bit first, rows on byte boundaries" {
+    const allocator = std.testing.allocator;
+    const bytes = try wrapJpegDepth(allocator, &lossless_linear12_jpeg, 4, 2, 3, 34892, 12, .little);
+    defer allocator.free(bytes);
+    var dest: [64]u8 = undefined;
+    const n = try validateAndDecodeStrip(allocator, bytes, &dest);
+    // 12 samples of 12 bits per row is 18 bytes, already byte-aligned.
+    try std.testing.expectEqual(@as(usize, 36), n);
+    var bit: usize = 0;
+    for (0..24) |i| {
+        const v = ppmSample(i, 12);
+        var b: u4 = 12;
+        while (b > 0) {
+            b -= 1;
+            const want: u1 = @intCast((v >> b) & 1);
+            const got: u1 = @intCast((dest[bit / 8] >> @intCast(7 - bit % 8)) & 1);
+            try std.testing.expectEqual(want, got);
+            bit += 1;
+        }
+    }
+}
+
+test "DNG CFA compression 7: a lossless frame of another shape fills the strip by total sample count" {
+    // A 2x2 three-component frame is 12 samples: two rows of a 6-wide mosaic
+    // ("Only the total sample counts need to match", DNG 1.6.0.0 p. 20).
+    const allocator = std.testing.allocator;
+    const bytes = try wrapJpegDepth(allocator, &lossless_flat8_jpeg, 6, 2, 1, 32803, 8, .little);
+    defer allocator.free(bytes);
+    var dest: [64]u8 = undefined;
+    const n = try validateAndDecodeStrip(allocator, bytes, &dest);
+    try std.testing.expectEqual(@as(usize, 12), n);
+    for (0..12) |i| try std.testing.expectEqual(@as(u8, @intCast(ppmSample(i, 8))), dest[i]);
+}
+
+test "DNG CFA compression 7: a total sample count other than the strip's is Malformed" {
+    const allocator = std.testing.allocator;
+    const bytes = try wrapJpegDepth(allocator, &lossless_flat8_jpeg, 6, 3, 1, 32803, 8, .little);
+    defer allocator.free(bytes);
+    var dest: [64]u8 = undefined;
+    try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
+}
+
+test "DNG LinearRaw compression 7: a sample wider than BitsPerSample is Malformed" {
+    const allocator = std.testing.allocator;
+    const bytes = try wrapJpegDepth(allocator, &lossless_linear16_jpeg, 4, 2, 3, 34892, 12, .little);
+    defer allocator.free(bytes);
+    var dest: [64]u8 = undefined;
+    try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
+}
+
+test "DNG LinearRaw compression 7: a lossy three-component frame is not stored samples" {
+    // Baseline YCbCr: jpegz converts it to RGB, so its output is not the
+    // file's samples. Reach, not a verdict on the file.
+    const allocator = std.testing.allocator;
+    const jpeg = try loadFile(allocator, "tests/fixtures/jpeg/zero_pad_16x16_420.jpg");
+    defer allocator.free(jpeg);
+    const bytes = try wrapJpegDepth(allocator, jpeg, 16, 16, 3, 34892, 8, .little);
+    defer allocator.free(bytes);
+    var dest: [1024]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedCompression, validateAndDecodeStrip(allocator, bytes, &dest));
+}
+
+// jpegz validates a two-component lossless stream but its decoder takes one
+// or three components (decode/lossless.zig). That is a limit of the checker,
+// so the strip is unsupported, never invalid. When jpegz decodes two
+// components this test fails and becomes a decode of sixteen samples of 128.
+test "DNG CFA compression 7: a two-component lossless frame jpegz cannot decode yet is unsupported, not invalid" {
+    const allocator = std.testing.allocator;
+    const bytes = try wrapJpegDepth(allocator, &lossless_two_component_jpeg, 4, 4, 1, 32803, 8, .little);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.UnsupportedCompression, validateRecording(allocator, bytes, &recorder));
+    for (recorder.findings.items) |finding| {
+        if (finding.source == .jpegz) try std.testing.expect(finding.verdict != .corrupt);
+    }
+}
+
+test "RGB compression 7: a validated stream jpegz has no decoder for is unsupported, not a payload failure" {
+    const allocator = std.testing.allocator;
+    const bytes = try wrapJpegDepth(allocator, &lossless_two_component_jpeg, 2, 4, 2, 2, 8, .little);
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    var dest: [64]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedCompression, dec.decodeStrip(0, 0, &dest, &ws));
+}
+
+test "BlackIsZero compression 7: a three-component frame stays outside the gray path" {
+    const allocator = std.testing.allocator;
+    const bytes = try wrapJpegDepth(allocator, &lossless_flat8_jpeg, 6, 2, 1, 1, 8, .little);
+    defer allocator.free(bytes);
+    var dest: [64]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedCompression, validateAndDecodeStrip(allocator, bytes, &dest));
 }
 
 test "validateAllStripsAndTiles rejects LZW EOD before declared pixel extent" {

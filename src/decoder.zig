@@ -1278,6 +1278,26 @@ pub const Decoder = struct {
         return total;
     }
 
+    /// The one BitsPerSample every sample shares, for a codec whose output has
+    /// a single depth (a JPEG frame has one precision). Absent means 1 (TIFF
+    /// 6.0 p. 29). Mixed depths are UnsupportedBitDepth, and a depth above 16
+    /// cannot hold a JPEG sample, so it is UnsupportedBitDepth too.
+    fn uniformBitsPerSample(self: *Decoder, dir: *const Ifd, samples: u16) errors.Error!u16 {
+        const entry = dir.get(tags.bits_per_sample) orelse return 1;
+        if (entry.field_type != .short) return error.UnsupportedTagType;
+        if (entry.count != 1 and entry.count != samples) return error.Malformed;
+        const first = try dir.arrayElementU64(tags.bits_per_sample, 0, self.endian, self.source);
+        var index: u16 = 1;
+        while (index < entry.count) : (index += 1) {
+            if (try dir.arrayElementU64(tags.bits_per_sample, index, self.endian, self.source) != first) {
+                return error.UnsupportedBitDepth;
+            }
+        }
+        if (first == 0) return error.Malformed;
+        if (first > 16) return error.UnsupportedBitDepth;
+        return @intCast(first);
+    }
+
     /// Common shared per-IFD metadata that both strip and tile
     /// predictors need. Read once per call.
     const PredictorMeta = struct {
@@ -1723,12 +1743,16 @@ pub const Decoder = struct {
                 // Lab) inside JPEG-in-TIFF are out of scope; the JPEG
                 // codec would need explicit colorspace handling.
                 const photo = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse return error.Malformed;
-                const cfa = photo == tags.photometric_color_filter_array;
-                // BlackIsZero is grayscale JPEG-in-TIFF, what libtiff and GDAL
-                // write for gray pages: one component whose samples are the
-                // stored values, decoded on the same checked path as CFA.
-                const single_component = cfa or photo == tags.photometric_black_is_zero;
-                if (photo != tags.photometric_rgb and photo != tags.photometric_ycbcr and !single_component) {
+                // DNG's raw photometrics, CFA and LinearRaw, store sensor or
+                // linear samples. BlackIsZero is grayscale JPEG-in-TIFF, what
+                // libtiff and GDAL write for gray pages. All three take the
+                // checked stored-sample path: the JPEG samples are the chunk's
+                // samples, unchanged.
+                const raw_samples = photo == tags.photometric_color_filter_array or
+                    photo == tags.photometric_linear_raw;
+                const gray = photo == tags.photometric_black_is_zero;
+                const stored_samples = raw_samples or gray;
+                if (photo != tags.photometric_rgb and photo != tags.photometric_ycbcr and !stored_samples) {
                     break :blk error.UnsupportedCompression;
                 }
 
@@ -1775,24 +1799,39 @@ pub const Decoder = struct {
                 }
                 if (corrupt or !validation.isValid()) break :blk error.JpegInTiffPayload;
 
-                if (single_component) {
-                    // Sensor mosaic or gray page: only a checked single-component
-                    // decode is stored samples. An unchecked variant keeps jpegz's
-                    // reach finding and does not become RGB. A multi-component
-                    // JPEG under photometric CFA or BlackIsZero is not one of these.
+                if (stored_samples) {
+                    // Only a checked decode is stored samples. An unchecked
+                    // variant keeps jpegz's reach finding and does not become RGB.
                     if (validation.codec_check != .decoded) break :blk error.UnsupportedCompression;
                     const img = compressions_jpeg.jpegz.decode(self.allocator, prepared.bytes) catch |e| switch (e) {
                         error.OutOfMemory => break :blk error.OutOfMemory,
+                        // jpegz validated the stream but has no decoder for its
+                        // variant: a limit of the checker, not a defect.
+                        error.NotImplemented => break :blk error.UnsupportedCompression,
                         else => break :blk error.JpegInTiffPayload,
                     };
                     defer self.allocator.free(img.pixels);
-                    if (img.layout != .grayscale or img.channels != 1) break :blk error.UnsupportedCompression;
-                    if (img.pixels.len > dest.len) break :blk error.DestTooSmall;
-                    if (img.pixels.len > self.limits.max_decompressed_strip_bytes) {
+                    // A gray page is one component. A raw IFD's lossless stream
+                    // may have another width, length or component count, "Only
+                    // the total sample counts need to match" (DNG 1.6.0.0 p. 20),
+                    // which storeSamples enforces row by row. Several components
+                    // must be lossless Huffman (the same page): a lossy decode of
+                    // several components may be color-converted, so it is not
+                    // stored samples.
+                    if (gray and (img.layout != .grayscale or img.channels != 1)) break :blk error.UnsupportedCompression;
+                    if (img.channels != 1 and validation.variant != .lossless_huffman) break :blk error.UnsupportedCompression;
+                    const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+                    const planar = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse tags.planar_chunky;
+                    const bps = self.uniformBitsPerSample(dir, samples) catch |e| break :blk e;
+                    const row_samples: usize = if (planar == tags.planar_separate)
+                        ext.width
+                    else
+                        @as(usize, ext.width) * samples;
+                    const written = compressions_jpeg.storeSamples(img, bps, row_samples, self.endian, dest) catch |e| break :blk e;
+                    if (written > self.limits.max_decompressed_strip_bytes) {
                         break :blk error.LimitExceededDecompressedStripBytes;
                     }
-                    @memcpy(dest[0..img.pixels.len], img.pixels);
-                    break :blk img.pixels.len;
+                    break :blk written;
                 }
 
                 const written = compressions_jpeg.decodePrepared(self.allocator, prepared.bytes, dest) catch |e| break :blk e;
