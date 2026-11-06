@@ -194,6 +194,70 @@
         };
         tiffzPkg = mkTiffz "ReleaseFast";
 
+        # Run one `zig build STEP` under the fleet test floor (ReleaseSafe) with
+        # the pinned dependency cache and codec flags. checks.test and
+        # checks.explore-parity share it, so their flags cannot drift.
+        mkZigCheck = { pname, step, extraFlags ? "", passed }: pkgs.stdenv.mkDerivation {
+          inherit pname;
+          version = "0.1.0";
+          src = self;
+
+          nativeBuildInputs = [ zig ]
+            ++ pkgs.lib.optionals isDarwin [
+              pkgs.darwin.cctools
+              pkgs.apple-sdk
+            ];
+
+          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib brotliPkg ];
+
+          dontConfigure = true;
+
+          buildPhase = ''
+            export HOME="$TMPDIR"
+            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR
+            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+            ${brotliEnv}
+            ${pkgs.lib.optionalString isDarwin ''
+              export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+            ''}
+            ${pkgs.lib.optionalString isLinux ''
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
+            ''}
+            export TERM=dumb
+            # FLEET FLOOR — tests run ReleaseSafe (fleet finding 2026-07-01).
+            # ReleaseFast compiles OUT the runtime safety checks (integer
+            # overflow, bounds, illegal cast), so a green ReleaseFast suite
+            # cannot observe UB: it passes *because* the check that would have
+            # failed it is gone. rarz was carrying three real crashers behind a
+            # fully green ReleaseFast suite.
+            #
+            # Enforced HERE, not as a per-module `.optimize` in build.zig: Zig
+            # honors per-module optimize, so pinning only the test module
+            # would leave imported library code at ReleaseFast. The command
+            # line flips the whole test compilation at once.
+            #
+            # Shipped artifact and benchmarks stay ReleaseFast.
+            timeout 600 zig build ${step} -Doptimize=ReleaseSafe ${zigTargetFlag} ${extraFlags} \
+              -Dlibjpeg-include=${jpegPkgs.libjpeg.dev}/include \
+              -Dlibjpeg-lib=${jpegPkgs.libjpeg.out}/lib \
+              -Dopenjpeg-include=${jpegPkgs.openjpeg.dev}/include/openjpeg-2.5 \
+              -Dopenjpeg-lib=${jpegPkgs.openjpeg.out}/lib \
+              -Dzlib-include=${jpegPkgs.zlib.dev}/include \
+              -Dzlib-lib=${jpegPkgs.zlib.out}/lib \
+              2>&1 || {
+              echo "Tests failed or timed out after 10 minutes"
+              exit 1
+            }
+          '';
+
+          installPhase = ''
+            mkdir -p $out
+            echo "${passed}" > $out/result
+          '';
+        };
+
       in {
         packages.default = tiffzPkg;
         packages.debug = mkTiffz "Debug";
@@ -337,65 +401,16 @@
           '';
         };
 
-        checks.test = pkgs.stdenv.mkDerivation {
-          pname = "tiffz-test";
-          version = "0.1.0";
-          src = self;
+        checks.test = mkZigCheck { pname = "tiffz-test"; step = "test"; passed = "tests passed"; };
 
-          nativeBuildInputs = [ zig ]
-            ++ pkgs.lib.optionals isDarwin [
-              pkgs.darwin.cctools
-              pkgs.apple-sdk
-            ];
-
-          buildInputs = [ jpegPkgs.libjpeg jpegPkgs.openjpeg jpegPkgs.zlib brotliPkg ];
-
-          dontConfigure = true;
-
-          buildPhase = ''
-            export HOME="$TMPDIR"
-            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-            mkdir -p $ZIG_GLOBAL_CACHE_DIR
-            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
-            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
-            ${brotliEnv}
-            ${pkgs.lib.optionalString isDarwin ''
-              export C_INCLUDE_PATH="${pkgs.apple-sdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
-            ''}
-            ${pkgs.lib.optionalString isLinux ''
-              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
-            ''}
-            export TERM=dumb
-            # FLEET FLOOR — tests run ReleaseSafe (fleet finding 2026-07-01).
-            # ReleaseFast compiles OUT the runtime safety checks (integer
-            # overflow, bounds, illegal cast), so a green ReleaseFast suite
-            # cannot observe UB: it passes *because* the check that would have
-            # failed it is gone. rarz was carrying three real crashers behind a
-            # fully green ReleaseFast suite.
-            #
-            # Enforced HERE, not as a per-module `.optimize` in build.zig: Zig
-            # honors per-module optimize, so pinning only the test module
-            # would leave imported library code at ReleaseFast. The command
-            # line flips the whole test compilation at once.
-            #
-            # Shipped artifact and benchmarks stay ReleaseFast.
-            timeout 600 zig build test -Doptimize=ReleaseSafe ${zigTargetFlag} \
-              -Dlibjpeg-include=${jpegPkgs.libjpeg.dev}/include \
-              -Dlibjpeg-lib=${jpegPkgs.libjpeg.out}/lib \
-              -Dopenjpeg-include=${jpegPkgs.openjpeg.dev}/include/openjpeg-2.5 \
-              -Dopenjpeg-lib=${jpegPkgs.openjpeg.out}/lib \
-              -Dzlib-include=${jpegPkgs.zlib.dev}/include \
-              -Dzlib-lib=${jpegPkgs.zlib.out}/lib \
-              2>&1 || {
-              echo "Tests failed or timed out after 10 minutes"
-              exit 1
-            }
-          '';
-
-          installPhase = ''
-            mkdir -p $out
-            echo "tests passed" > $out/result
-          '';
+        # In-process corruption exploration: replaying the pinned floors plan
+        # through corruption_reader as a library must detect exactly the
+        # pinned cases (tests/explore/explore_test.zig).
+        checks.explore-parity = mkZigCheck {
+          pname = "tiffz-explore-parity";
+          step = "explore";
+          extraFlags = "-Dcorruption-reader-src=${corruption-reader}";
+          passed = "explore parity passed";
         };
 
         # Deterministic mutation fuzzer (Einstein outcome 5). Same ReleaseSafe

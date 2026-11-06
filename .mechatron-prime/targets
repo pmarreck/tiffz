@@ -8,3 +8,4 @@ checks.x86_64-linux.lerc-artifact-export
 checks.x86_64-linux.corruption-coverage
 checks.x86_64-linux.build-layout
 checks.x86_64-linux.convert
+checks.x86_64-linux.explore-parity

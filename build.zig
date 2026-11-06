@@ -419,6 +419,39 @@ pub fn build(b: *std.Build) void {
     );
     dual_module_test_step.dependOn(&run_dual_module_tests.step);
 
+    // In-process corruption exploration (tests/explore/explore_test.zig).
+    // corruption_reader is not a public package, so it is not in
+    // build.zig.zon: the flake passes its corruption-reader input's source
+    // tree, and plain `zig build` neither needs nor fetches it.
+    if (b.option([]const u8, "corruption-reader-src", "corruption_reader source tree, for `zig build explore`")) |cr_dir| {
+        const cr_module = b.createModule(.{
+            .root_source_file = .{ .cwd_relative = b.fmt("{s}/src/lib.zig", .{cr_dir}) },
+            .target = target,
+            .optimize = optimize,
+        });
+        const explore_options = b.addOptions();
+        explore_options.addOption([]const u8, "master", b.option([]const u8, "explore-master", "explore: master seed, decimal or 0x hex (empty runs the parity replay only)") orelse "");
+        explore_options.addOption([]const u8, "profile", b.option([]const u8, "explore-profile", "explore: harness profile name (sniper, bolter, shotgun, nuke, ...)") orelse "shotgun");
+        explore_options.addOption(u64, "first_round", b.option(u64, "explore-first-round", "explore: first round") orelse 0);
+        explore_options.addOption(u64, "rounds", b.option(u64, "explore-rounds", "explore: number of rounds") orelse 385);
+        const explore_module = b.createModule(.{
+            .root_source_file = b.path("tests/explore/explore_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        explore_module.addImport("tiffz", lib_module);
+        explore_module.addImport("corruption_reader", cr_module);
+        explore_module.addImport("explore_options", explore_options.createModule());
+        if (opt_zlib_inc.len > 0) explore_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
+        if (opt_zlib_lib_path.len > 0) explore_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
+        explore_module.linkSystemLibrary("z", .{});
+        const explore_tests = b.addTest(.{ .root_module = explore_module });
+        const run_explore_tests = b.addRunArtifact(explore_tests);
+        const explore_step = b.step("explore", "In-process corruption exploration: parity with the pinned floors, and -Dexplore-master runs");
+        explore_step.dependOn(&run_explore_tests.step);
+    }
+
     // The parser module's own files (ifd, header, source, errors, limits)
     // belong to tiffz-parser, not to the src/lib.zig test root, so their
     // tests run only from a binary rooted at that module.

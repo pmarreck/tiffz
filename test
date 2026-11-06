@@ -35,6 +35,9 @@ SYSTEM="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
 run_subtest "zig build test (sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.test" --print-out-paths --no-link
 
+run_subtest "in-process corruption exploration matches the pinned floors (sandboxed via nix)" \
+    nix build ".#checks.${SYSTEM}.explore-parity" --print-out-paths --no-link
+
 run_subtest "parser-only import and artifact closure (sandboxed via nix)" \
     nix build ".#checks.${SYSTEM}.parser-closure" --print-out-paths --no-link
 
