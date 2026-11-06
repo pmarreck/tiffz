@@ -1514,6 +1514,7 @@ pub const Decoder = struct {
         tags.compression_packbits,
         tags.compression_zstd,
         tags.compression_lerc,
+        tags.compression_dng_lossy_jpeg,
     };
 
     /// True iff `decodeBytes` has a real codec for this Compression code.
@@ -1728,8 +1729,9 @@ pub const Decoder = struct {
                 }
                 break :blk written;
             },
-            tags.compression_jpeg => blk: {
-                // JPEG-in-TIFF (Compression=7, TIFF Tech Note 2).
+            tags.compression_jpeg, tags.compression_dng_lossy_jpeg => blk: {
+                // JPEG-in-TIFF (Compression=7, TIFF Tech Note 2), and DNG's
+                // Lossy JPEG (34892, DNG 1.4.0.0; DNG 1.6.0.0 p. 20).
                 // Supports photometric=RGB (2), YCbCr (6), and the single-
                 // component BlackIsZero (1) and CFA (32803).
                 // CAVEAT: the cleanroom JPEG codec (jpegz.decode)
@@ -1748,11 +1750,25 @@ pub const Decoder = struct {
                 // libtiff and GDAL write for gray pages. All three take the
                 // checked stored-sample path: the JPEG samples are the chunk's
                 // samples, unchanged.
-                const raw_samples = photo == tags.photometric_color_filter_array or
-                    photo == tags.photometric_linear_raw;
-                const gray = photo == tags.photometric_black_is_zero;
+                //
+                // Lossy JPEG (34892) "is allowed for IFDs that use 8-bit integer
+                // data and one of the following PhotometricInterpretation values:
+                // 34892 (LinearRaw), 52527 (PhotometricMask)" (DNG 1.6.0.0 p. 20).
+                // It is a baseline JPEG read with a lossy decoder, so LinearRaw
+                // takes the color-converting path RGB and YCbCr take, and a mask
+                // is a one-component gray decode. Another photometric under
+                // 34892 is not decoded.
+                const lossy_dng = comp == tags.compression_dng_lossy_jpeg;
+                if (lossy_dng and photo != tags.photometric_linear_raw and photo != tags.photometric_mask) {
+                    break :blk error.UnsupportedCompression;
+                }
+                const raw_samples = !lossy_dng and (photo == tags.photometric_color_filter_array or
+                    photo == tags.photometric_linear_raw);
+                const gray = photo == tags.photometric_black_is_zero or (lossy_dng and photo == tags.photometric_mask);
                 const stored_samples = raw_samples or gray;
-                if (photo != tags.photometric_rgb and photo != tags.photometric_ycbcr and !stored_samples) {
+                const converted = photo == tags.photometric_rgb or photo == tags.photometric_ycbcr or
+                    (lossy_dng and photo == tags.photometric_linear_raw);
+                if (!converted and !stored_samples) {
                     break :blk error.UnsupportedCompression;
                 }
 

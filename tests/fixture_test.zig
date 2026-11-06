@@ -2158,10 +2158,11 @@ fn wrapJpegDepth(
     bps: u16,
     order: std.builtin.Endian,
 ) ![]u8 {
-    return wrapJpegFull(allocator, jpeg, width, height, spp, photometric, bps, order, null);
+    return wrapJpegFull(allocator, jpeg, width, height, spp, photometric, bps, order, null, 7);
 }
 
-/// wrapJpegDepth with an optional YCbCrSubSampling (530) entry.
+/// wrapJpegDepth with an optional YCbCrSubSampling (530) entry and a chosen
+/// Compression (7, or 34892 for DNG Lossy JPEG).
 fn wrapJpegFull(
     allocator: std.mem.Allocator,
     jpeg: []const u8,
@@ -2172,6 +2173,7 @@ fn wrapJpegFull(
     bps: u16,
     order: std.builtin.Endian,
     ycbcr_subsampling: ?[2]u16,
+    compression: u16,
 ) ![]u8 {
     const ntags: usize = if (ycbcr_subsampling == null) 9 else 10;
     const ifd_bytes = 2 + ntags * 12 + 4;
@@ -2194,7 +2196,7 @@ fn wrapJpegFull(
             .{ .tag = 258, .typ = 3, .count = spp, .val = bps_off }
         else
             .{ .tag = 258, .typ = 3, .count = spp, .shorts = .{ bps, if (spp == 2) bps else 0 } },
-        .{ .tag = 259, .typ = 3, .shorts = .{ 7, 0 } },
+        .{ .tag = 259, .typ = 3, .shorts = .{ compression, 0 } },
         .{ .tag = 262, .typ = 3, .shorts = .{ photometric, 0 } },
         .{ .tag = 273, .typ = 4, .val = strip_off },
         .{ .tag = 277, .typ = 3, .shorts = .{ spp, 0 } },
@@ -2579,7 +2581,7 @@ test "YCbCr compression 7: a 12-bit baseline strip validates and unpacks to the 
     // not jpegz's 48 bytes of host-order u16, so a copy of jpegz's buffer
     // fails the strip's extent and made a valid file read invalid.
     const allocator = std.testing.allocator;
-    const bytes = try wrapJpegFull(allocator, &baseline12_ycbcr_jpeg, 8, 8, 3, 6, 12, .little, .{ 1, 1 });
+    const bytes = try wrapJpegFull(allocator, &baseline12_ycbcr_jpeg, 8, 8, 3, 6, 12, .little, .{ 1, 1 }, 7);
     defer allocator.free(bytes);
     var dest: [512]u8 = undefined;
     const n = try validateAndDecodeStrip(allocator, bytes, &dest);
@@ -2639,6 +2641,67 @@ fn expectPackedRamp12(packed_samples: []const u8, tolerance: u32) !void {
             }
         }
     }
+}
+
+/// Compare an 8-bit chunk with the DNG lossy fixtures' source,
+/// 4x + 2y + 30c + 20 over a 16-pixel-wide grid of `channels` samples.
+fn expectRamp8(samples: []const u8, channels: usize, tolerance: u8) !void {
+    for (samples, 0..) |got, i| {
+        const c = i % channels;
+        const x = (i / channels) % 16;
+        const y = i / (channels * 16);
+        const want: u8 = @intCast(4 * x + 2 * y + 30 * c + 20);
+        if (@max(got, want) - @min(got, want) > tolerance) {
+            std.debug.print("sample (x {d}, y {d}, c {d}): got {d}, want {d}\n", .{ x, y, c, got, want });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+// DNG Lossy JPEG (Compression 34892, DNG 1.4.0.0): a baseline stream read with
+// a lossy decoder. Fixtures from tests/fixtures/jpeg/gen-dng-lossy.sh.
+test "DNG lossy JPEG 34892: a LinearRaw strip decodes through the color-converting path" {
+    const allocator = std.testing.allocator;
+    const jpeg = try loadFile(allocator, "tests/fixtures/jpeg/dng-lossy-linear-16x16.jpg");
+    defer allocator.free(jpeg);
+    const bytes = try wrapJpegFull(allocator, jpeg, 16, 16, 3, 34892, 8, .little, null, 34892);
+    defer allocator.free(bytes);
+    var dest: [1024]u8 = undefined;
+    const n = try validateAndDecodeStrip(allocator, bytes, &dest);
+    try std.testing.expectEqual(@as(usize, 16 * 16 * 3), n);
+    // libjpeg-turbo is within 2 of the source; allow jpegz two more steps.
+    try expectRamp8(dest[0..n], 3, 4);
+}
+
+test "DNG lossy JPEG 34892: a semantic mask strip is a one-component gray decode" {
+    const allocator = std.testing.allocator;
+    const jpeg = try loadFile(allocator, "tests/fixtures/jpeg/dng-lossy-mask-16x16.jpg");
+    defer allocator.free(jpeg);
+    const bytes = try wrapJpegFull(allocator, jpeg, 16, 16, 1, 52527, 8, .little, null, 34892);
+    defer allocator.free(bytes);
+    var dest: [512]u8 = undefined;
+    const n = try validateAndDecodeStrip(allocator, bytes, &dest);
+    try std.testing.expectEqual(@as(usize, 16 * 16), n);
+    try expectRamp8(dest[0..n], 1, 3);
+}
+
+test "DNG lossy JPEG 34892: another photometric is not decoded" {
+    // DNG 1.6.0.0 p. 20 allows 34892 under LinearRaw and PhotometricMask
+    // only; ifd_conformance names the fault in a DNG. The decoder does not
+    // guess what a gray or RGB 34892 stream means.
+    const allocator = std.testing.allocator;
+    const jpeg = try loadFile(allocator, "tests/fixtures/jpeg/dng-lossy-mask-16x16.jpg");
+    defer allocator.free(jpeg);
+    const bytes = try wrapJpegFull(allocator, jpeg, 16, 16, 1, 1, 8, .little, null, 34892);
+    defer allocator.free(bytes);
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    var dest: [512]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedCompression, dec.decodeStrip(0, 0, &dest, &ws));
 }
 
 test "BlackIsZero compression 7: a three-component frame stays outside the gray path" {
