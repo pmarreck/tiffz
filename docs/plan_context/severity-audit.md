@@ -193,3 +193,10 @@ Amendments 3 and 4 are unchanged. The table itself still waits for the owner's a
 - **Amendment 1's reading of "no specified decode" is withdrawn.** It now means the specification defines none.
 - **Admitted:** the DNG exactly-full Huffman table (Pentax K-x, K-r, Ricoh GR, DJI FC4382) is a KNOWN_DEFECT. jpegz emits 71 `huffman_table_full_all_ones` at KNOWN_DEFECT severity, and tiffz needs a repin.
 - **The owner, on unchecked payloads:** "we need to parse everything parseable." Every "unsupported" reach on a payload the specification defines is a work item, not an end state (`codec-reach.md`).
+
+## validate review of the re-grade, 2026-11-06
+
+- **Accepted,** including GeoTIFF Tier 1 and a missing PhotometricInterpretation becoming FAIL. The admitted Canon CR2 entry absorbs its exact presence sets, as recorded on November 5.
+- **Tiles in strip tags: FAIL by default.** TIFF 6.0 section 15 says the tile fields replace StripOffsets, StripByteCounts and RowsPerStrip, so the specification gives no decode for tile geometry addressed through the strip tags. libtiff's pics samples (quad-tile, cramps-tile) are test-suite files and are not producer evidence. Three independent files from a real producer, for example a pre-6.0 libtiff written to the Aldus tiling draft, would make it a KNOWN_DEFECT candidate.
+- **Rename** `tiled_geometry_via_strip_tags_tolerated` through Einstein: "tolerated" encodes acceptability.
+- **The two open rows** (rendering-metadata cross-field rows; DNG Chapter 3 rows that don't drive decoding) keep their shipped routing until evidence decides them. The evidence needed is a corruption campaign over fixtures carrying those tags, plus a producer survey of the corpus.
