@@ -106,6 +106,13 @@ The counts are on acb0c0aa. Since 12ae528f, a feature tiffz does not implement i
 
 4. **GDAL's zeroed byte counts.** `cog_strile_arrays_zeroified_when_possible.tif` (GDAL autotest) has TileByteCounts 0,0,0,0 with offsets 842, 953, 1070 and 1174. Its ghost header says `BLOCK_LEADER=SIZE_AS_UINT4`, and the 4 bytes before offset 842 hold 78, the tile's real size. GDAL reads the sizes from the leaders; libtiff refuses ("Invalid tile byte count") and so does tiffz (SourceTooShort). TIFF 6.0 has no zero-count chunk with data. Is this a GDAL extension tiffz should read (reach, like a codec), a WARN when the ghost header declares it, or FAIL as written? The second IFD's offset-0, count-0 tiles are GDAL's separate sparse convention (SPARSE_OK), with the same question.
 
+5. **GDAL's two "JPEG codestream taller than the last strip" files disagree, but not over the quirk.** Both files are reference-only: excluded, license unknown. Both are 20x19 Compression 7 pages with RowsPerStrip 16 and JPEGTables. In each, the last strip holds 3 rows but its SOF0 declares 4 (strip 1 at 653 in the gray file, at 1115 in the YCbCr file). libtiff accepts both.
+   - `tif_jpeg_ycbcr_too_big_last_stripe.tif` (YCbCr, 3 components) decodes and is `ok`. The extra row is tolerated as finding 13 (`final_strip_padding_tolerated`, a warning) at offset 1115.
+   - `tif_jpeg_too_big_last_stripe.tif` (BlackIsZero, 1 component) is `unsupported`: UnsupportedCompression at offset 460, which is strip 0. The walk stops before reaching the last strip, so the quirk is never judged. This is the abbreviated-stream reach gap listed for GDAL's JPEG-tables files. Strip 0's own SOF0 matches its strip: 16 rows by 20.
+
+   So the quirk has one verdict, a warning. Once the gray JPEG-tables gap is closed, the gray file should land on the same finding 13. Question for the audit: is a JPEG frame one row taller than its last strip (libtiff accepts it, and GDAL's writer produced it) the warning this file shows, or KNOWN_DEFECT once validate's registry admits the GDAL signature?
+
+
 ## validate review, 2026-11-05 14:51 (owner approval pending)
 
 ## Amendments
