@@ -2685,6 +2685,27 @@ test "DNG lossy JPEG 34892: a semantic mask strip is a one-component gray decode
     try expectRamp8(dest[0..n], 1, 3);
 }
 
+test "DNG lossy JPEG 34892: a damaged scan is JpegInTiffPayload with a corrupt jpegz finding" {
+    const allocator = std.testing.allocator;
+    const jpeg = try loadFile(allocator, "tests/fixtures/jpeg/dng-lossy-mask-16x16.jpg");
+    defer allocator.free(jpeg);
+    // Cut the scan short, keeping EOI: the entropy-coded data ends early.
+    const sos = std.mem.indexOf(u8, jpeg, &.{ 0xFF, 0xDA }) orelse return error.TestUnexpectedResult;
+    const scan_start = sos + 2 + std.mem.readInt(u16, jpeg[sos + 2 ..][0..2], .big);
+    const damaged = try std.mem.concat(allocator, u8, &.{ jpeg[0 .. scan_start + 8], &.{ 0xFF, 0xD9 } });
+    defer allocator.free(damaged);
+    const bytes = try wrapJpegFull(allocator, damaged, 16, 16, 1, 52527, 8, .little, null, 34892);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.JpegInTiffPayload, validateRecording(allocator, bytes, &recorder));
+    var saw = false;
+    for (recorder.findings.items) |finding| {
+        if (finding.source == .jpegz and finding.verdict == .corrupt) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
 test "DNG lossy JPEG 34892: another photometric is not decoded" {
     // DNG 1.6.0.0 p. 20 allows 34892 under LinearRaw and PhotometricMask
     // only; ifd_conformance names the fault in a DNG. The decoder does not
