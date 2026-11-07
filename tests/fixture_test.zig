@@ -4911,3 +4911,113 @@ test "DeferredReason: every reason is in the C header with the same value, and n
     }
     try std.testing.expectEqual(fields.len, std.mem.count(u8, header, "#define TIFFZ_PRESENCE_DEFERRED_"));
 }
+
+/// The finding-23 records `recorder` saw, as (IFD, kind, tag, start, length,
+/// file size, entry offset) from their 40-byte payloads.
+const ExtentRecord = struct { ifd: u32, kind: u16, tag: u16, start: u64, length: u64, file_size: u64, entry_offset: u64, byte_offset: ?u64 };
+
+fn extentRecords(recorder: *const FindingRecorder, out: []ExtentRecord) []ExtentRecord {
+    var n: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.extent_past_eof)) continue;
+        std.debug.assert(f.payload_len == tiffz.findings.extent_past_eof_payload_len);
+        std.debug.assert(f.verdict == .corrupt and f.offset_is_exact);
+        const p = f.payload_bytes;
+        out[n] = .{
+            .ifd = std.mem.readInt(u32, p[0..4], .little),
+            .kind = std.mem.readInt(u16, p[4..6], .little),
+            .tag = std.mem.readInt(u16, p[6..8], .little),
+            .start = std.mem.readInt(u64, p[8..16], .little),
+            .length = std.mem.readInt(u64, p[16..24], .little),
+            .file_size = std.mem.readInt(u64, p[24..32], .little),
+            .entry_offset = std.mem.readInt(u64, p[32..40], .little),
+            .byte_offset = f.byte_offset,
+        };
+        n += 1;
+    }
+    return out[0..n];
+}
+
+// validate, 2026-11-06 and 2026-11-07 (docs/plan_context/extent-past-eof.md):
+// a structure past the end of the file is one corrupt record, then the same
+// SourceShortRead stop as before.
+test "extent_past_eof: an IFD after the first whose entries run past the end is kind 1, then SourceShortRead" {
+    const allocator = std.testing.allocator;
+    const whole = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, 1, 0);
+    defer allocator.free(whole);
+    const ifd1: u32 = 8 + 2 + 9 * 12 + 4;
+    const cut = whole[0 .. ifd1 + 2 + 5 * 12]; // inside IFD 1's ten entries
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.SourceShortRead, validateRecording(allocator, cut, &recorder));
+    var buf: [4]ExtentRecord = undefined;
+    const got = extentRecords(&recorder, &buf);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqual(ExtentRecord{ .ifd = 1, .kind = 1, .tag = 0, .start = ifd1, .length = 2 + 10 * 12 + 4, .file_size = cut.len, .entry_offset = std.math.maxInt(u64), .byte_offset = ifd1 }, got[0]);
+    // Control: the whole file has no finding 23.
+    var clean = FindingRecorder.init(allocator);
+    defer clean.deinit();
+    try validateRecording(allocator, whole, &clean);
+    try std.testing.expectEqual(@as(usize, 0), extentRecords(&clean, &buf).len);
+}
+
+test "extent_past_eof: a file that ends inside a next-IFD pointer is kind 1, no longer the end of the chain" {
+    const allocator = std.testing.allocator;
+    const whole = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, 1, 0);
+    defer allocator.free(whole);
+    // Move IFD 1 to the end of the file and cut its next-IFD pointer.
+    const ifd1: u32 = 8 + 2 + 9 * 12 + 4;
+    const ifd1_len: usize = 2 + 10 * 12 + 4;
+    const moved = try allocator.alloc(u8, whole.len + ifd1_len - 2);
+    defer allocator.free(moved);
+    @memcpy(moved[0..whole.len], whole);
+    @memcpy(moved[whole.len..], whole[ifd1..][0 .. ifd1_len - 2]);
+    putU32(moved, 8 + 2 + 9 * 12, @intCast(whole.len)); // IFD 0's next pointer
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.SourceShortRead, validateRecording(allocator, moved, &recorder));
+    var buf: [4]ExtentRecord = undefined;
+    const got = extentRecords(&recorder, &buf);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqual(@as(u16, 1), got[0].kind);
+    try std.testing.expectEqual(@as(u64, whole.len), got[0].start);
+    try std.testing.expectEqual(@as(u64, ifd1_len), got[0].length);
+    try std.testing.expectEqual(@as(u64, moved.len), got[0].file_size);
+}
+
+test "extent_past_eof: a strip past the end of the file is kind 3, anchored on StripOffsets" {
+    const allocator = std.testing.allocator;
+    const bytes = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, 1, 0);
+    defer allocator.free(bytes);
+    // IFD 0's StripByteCounts (entry 8) grows from 2 to 1000.
+    const counts_entry: u32 = 8 + 2 + 8 * 12;
+    try std.testing.expectEqual(@as(u16, 279), std.mem.readInt(u16, bytes[counts_entry..][0..2], .little));
+    putU32(bytes, counts_entry + 8, 1000);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.SourceShortRead, validateRecording(allocator, bytes, &recorder));
+    var buf: [4]ExtentRecord = undefined;
+    const got = extentRecords(&recorder, &buf);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    const offsets_entry: u64 = 8 + 2 + 5 * 12;
+    const strip0_off: u64 = 8 + 2 + 9 * 12 + 4 + 2 + 10 * 12 + 4;
+    try std.testing.expectEqual(ExtentRecord{ .ifd = 0, .kind = 3, .tag = 273, .start = strip0_off, .length = 1000, .file_size = bytes.len, .entry_offset = offsets_entry, .byte_offset = offsets_entry }, got[0]);
+}
+
+test "extent_past_eof: IFD 0 past the end reaches a callback installed at open, then open fails" {
+    const allocator = std.testing.allocator;
+    const whole = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, 1, 0);
+    defer allocator.free(whole);
+    const cut = whole[0 .. 8 + 2 + 4 * 12]; // inside IFD 0's nine entries
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    var handle = tiffz.source.BufferHandle.init(cut);
+    try std.testing.expectError(error.SourceShortRead, tiffz.Decoder.openWithCallback(allocator, tiffz.Source.fromBuffer(&handle), .{}, &FindingRecorder.callback, @ptrCast(&recorder)));
+    var buf: [4]ExtentRecord = undefined;
+    const got = extentRecords(&recorder, &buf);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqual(ExtentRecord{ .ifd = 0, .kind = 1, .tag = 0, .start = 8, .length = 2 + 9 * 12 + 4, .file_size = cut.len, .entry_offset = std.math.maxInt(u64), .byte_offset = 8 }, got[0]);
+    // The plain open fails the same way.
+    var plain = tiffz.source.BufferHandle.init(cut);
+    try std.testing.expectError(error.SourceShortRead, tiffz.Decoder.open(allocator, tiffz.Source.fromBuffer(&plain)));
+}

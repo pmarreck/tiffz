@@ -119,6 +119,14 @@ pub const InfoFinding = enum(u32) {
     /// 2026-11-06; new requirement or reason values are registered with
     /// validate by note.
     tag_presence_invalid = 20,
+    /// A structure that declares more bytes than the file holds: an IFD (its
+    /// count, entries and next-IFD pointer), an out-of-line value array, or a
+    /// strip or tile (`ifd.ExtentPastEof`). Verdict corrupt; the walk stops
+    /// there with SourceShortRead. Payload: `extent_past_eof_payload_len`
+    /// bytes (docs/plan_context/extent-past-eof.md). The byte offset is the
+    /// declaring entry, else the declared start, exact. Numbered by validate
+    /// 2026-11-06. 21 and 22 are reserved (geokey_invalid, should_deviation).
+    extent_past_eof = 23,
     _,
 };
 
@@ -173,6 +181,9 @@ pub fn fromStrictVerdict(verdict: @import("jpegz").StrictVerdict) Verdict {
         .known_defect => .known_defect,
     };
 }
+
+/// Bytes in a finding-23 (`extent_past_eof`) payload.
+pub const extent_past_eof_payload_len = 40;
 
 /// Presence and exactness bits for the callback's scalar metadata fields.
 pub const MetadataFlags = struct {

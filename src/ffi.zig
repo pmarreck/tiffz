@@ -126,6 +126,29 @@ export fn tiffz_open_from_buffer(
     len: usize,
     out_status: ?*i32,
 ) callconv(.c) ?*Handle {
+    return openBuffer(bytes, len, null, null, out_status);
+}
+
+/// `tiffz_open_from_buffer` with the finding callback installed before IFD 0
+/// is parsed, so a record about IFD 0 (finding 23) reaches it even when
+/// open fails (validate, 2026-11-07).
+export fn tiffz_open_from_buffer_with_callback(
+    bytes: ?[*]const u8,
+    len: usize,
+    callback: findings_mod.Callback,
+    userdata: ?*anyopaque,
+    out_status: ?*i32,
+) callconv(.c) ?*Handle {
+    return openBuffer(bytes, len, callback, userdata, out_status);
+}
+
+fn openBuffer(
+    bytes: ?[*]const u8,
+    len: usize,
+    callback: findings_mod.Callback,
+    userdata: ?*anyopaque,
+    out_status: ?*i32,
+) ?*Handle {
     if (bytes == null and len != 0) {
         setOutStatus(out_status, 1);
         return null;
@@ -141,7 +164,7 @@ export fn tiffz_open_from_buffer(
     h.last_status = 0;
     h.last_message_len = 0;
     h.last_message[0] = 0;
-    h.decoder = Decoder.open(allocator, Source.fromBuffer(&h.buffer_handle)) catch |err| {
+    h.decoder = Decoder.openWithCallback(allocator, Source.fromBuffer(&h.buffer_handle), .{}, callback, userdata) catch |err| {
         h.workspace.deinit();
         allocator.destroy(h);
         setOutStatus(out_status, statusFromError(err));

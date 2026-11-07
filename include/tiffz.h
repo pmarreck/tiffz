@@ -155,6 +155,16 @@ void tiffz_set_finding_callback(
     tiffz_finding_callback_t callback,
     void *userdata);
 
+/* tiffz_open_from_buffer with `callback` installed before IFD 0 is parsed:
+   if IFD 0 runs past the end of the file, its finding 23 record is
+   delivered here and open then fails with status 9 (SourceShortRead). */
+tiffz_decoder_t *tiffz_open_from_buffer_with_callback(
+    const uint8_t *bytes,
+    size_t len,
+    tiffz_finding_callback_t callback,
+    void *userdata,
+    tiffz_status_t *out_status);
+
 /* Decode one IFD to packed 8-bit RGBA. On success `*out_pixels` is
  * width*height*4 bytes owned by the caller; free with tiffz_free. */
 tiffz_status_t tiffz_decode_rgba(

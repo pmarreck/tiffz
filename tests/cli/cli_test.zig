@@ -596,3 +596,31 @@ test "tiffz validate: a corrupt record outranks an unsupported refusal" {
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"code\":18,\"verdict\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "unsupported") == null);
 }
+
+test "tiffz validate reports an IFD 0 that runs past the end of the file as finding 23" {
+    // validate, 2026-11-07: the CLI opens with its finding callback already
+    // installed, so IFD 0's extent_past_eof record survives the failed open.
+    // Header, then IFD 0 declaring nine entries with only four present.
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var bytes = [_]u8{0} ** (8 + 2 + 4 * 12);
+    @memcpy(bytes[0..4], "II*\x00");
+    std.mem.writeInt(u32, bytes[4..8], 8, .little);
+    std.mem.writeInt(u16, bytes[8..10], 9, .little);
+    const path = "zig-out/cli-test-ifd0-past-eof.tif";
+    {
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, &bytes);
+    }
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    const r = try runCli(&.{ "validate", "--json", path });
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+    try std.testing.expectEqual(@as(?u8, 1), exitedCode(r.term));
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(r.stdout, "\"code\":23,"));
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"error\":9,") != null);
+    // IFD 0, kind 1, tag 0, start 8, length 2 + 9 * 12 + 4 = 114, file size 58.
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"payload_hex\":\"00000000" ++ "0100" ++ "0000" ++ "0800000000000000" ++ "7200000000000000" ++ "3a00000000000000" ++ "ffffffffffffffff\"") != null);
+}

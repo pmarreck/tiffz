@@ -668,16 +668,19 @@ static int validate_one(const char *path, int json) {
 		return EXIT_IO;
 	}
 
-	dec = tiffz_open_from_buffer(buf, len, &status);
+	/* The callback is installed before IFD 0 is parsed, so a record about IFD 0
+	   (finding 23) is kept even when open fails. */
+	dec = tiffz_open_from_buffer_with_callback(buf, len, on_finding, &findings, &status);
 	if (dec == NULL) {
+		int corrupt = has_corrupt(&findings);
 		if (json) {
-			FindingList empty = {0};
-			write_json(path, 0, status, 0, &empty, NULL);
+			write_json(path, 0, status, 0, &findings, NULL);
 		} else {
-			fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status, 0), path, tiffz_status_name(status));
+			fprintf(stderr, "%s  %s  (%s)\n", report_word(0, status, corrupt), path, tiffz_status_name(status));
 		}
+		findings_free(&findings);
 		free(buf);
-		return exit_for_status(status, 0);
+		return exit_for_status(status, corrupt);
 	}
 
 	tiffz_set_finding_callback(dec, on_finding, &findings);

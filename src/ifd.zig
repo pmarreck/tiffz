@@ -330,6 +330,47 @@ pub fn parse(
     limits: Limits,
     offset_width: OffsetWidth,
 ) errors.Error!Ifd {
+    return parseExtent(allocator, source, endian, offset, limits, offset_width, null);
+}
+
+/// A declared structure that runs past the end of the file: finding 23,
+/// `extent_past_eof` (docs/plan_context/extent-past-eof.md).
+pub const ExtentPastEof = struct {
+    pub const Kind = enum(u16) { entry_table = 1, value_array = 2, chunk = 3 };
+    kind: Kind,
+    /// The declaring tag: 0 for an entry table.
+    tag: u16,
+    start: u64,
+    /// Saturated at maxInt(u64) when count times size overflows.
+    length: u64,
+    file_size: u64,
+    /// The declaring entry's offset; null for an entry table.
+    entry_offset: ?u64,
+};
+
+/// Fill `extent` (when given) and return SourceShortRead.
+fn pastEnd(extent: ?*?ExtentPastEof, source: Source, detail: ExtentPastEof) errors.Error {
+    if (extent) |slot| {
+        var d = detail;
+        d.file_size = source.sizeOf() catch 0;
+        slot.* = d;
+    }
+    return error.SourceShortRead;
+}
+
+/// `parse`, also describing a declared extent past the end of the file in
+/// `extent` when it fails SourceShortRead for that reason. An IFD's declared
+/// extent is its count, entries and next-IFD pointer (TIFF 6.0 p. 14), so a
+/// file that ends inside the pointer is cut off too (validate, 2026-11-07).
+pub fn parseExtent(
+    allocator: Allocator,
+    source: Source,
+    endian: Endian,
+    offset: u64,
+    limits: Limits,
+    offset_width: OffsetWidth,
+    extent: ?*?ExtentPastEof,
+) errors.Error!Ifd {
     const count_bytes: usize = switch (offset_width) {
         .classic => 2,
         .big => 8,
@@ -347,9 +388,20 @@ pub fn parse(
         .big => header_mod.readU64(count_buf[0..8], endian),
     };
 
+    // The IFD's declared extent: count, entries and next-IFD pointer.
+    const next_bytes: usize = offset_width.pointerBytes();
+    const declared_table = std.math.mul(u64, entry_count_u64, entry_bytes) catch std.math.maxInt(u64);
+    const declared_ifd = declared_table +| count_bytes +| next_bytes;
+    if (endsPastFile(source, offset, declared_ifd)) return pastEnd(extent, source, .{
+        .kind = .entry_table,
+        .tag = 0,
+        .start = offset,
+        .length = declared_ifd,
+        .file_size = 0,
+        .entry_offset = null,
+    });
+
     if (entry_count_u64 > limits.max_tags_per_ifd) {
-        const table = std.math.mul(u64, entry_count_u64, entry_bytes) catch std.math.maxInt(u64);
-        if (endsPastFile(source, offset +| count_bytes, table)) return error.SourceShortRead;
         return error.LimitExceededTagCount;
     }
     // entry_count fits in u32 after the cap check.
@@ -403,13 +455,21 @@ pub fn parse(
                 .classic => header_mod.readU32(entry.raw_value_or_offset[0..4], endian),
                 .big => header_mod.readU64(&entry.raw_value_or_offset, endian),
             };
-            if (endsPastFile(source, value_offset, value_bytes)) return error.SourceShortRead;
+            if (endsPastFile(source, value_offset, value_bytes)) return pastEnd(extent, source, .{
+                .kind = .value_array,
+                .tag = entry.tag,
+                .start = value_offset,
+                .length = value_bytes,
+                .file_size = 0,
+                .entry_offset = offset + count_bytes + i * entry_bytes,
+            });
             return error.LimitExceededTagValueBytes;
         }
     }
 
-    // After the entries: next_ifd_offset (u32 classic, u64 big).
-    const next_bytes: usize = offset_width.pointerBytes();
+    // After the entries: next_ifd_offset (u32 classic, u64 big). The
+    // declared-extent check above has already failed a file that ends inside
+    // it; a source of unknown size still reads a cut pointer as 0.
     var next_buf: [8]u8 = undefined;
     const next_offset_pos = offset + count_bytes + entries_bytes_total;
     const n_got = source.readAt(next_buf[0..next_bytes], next_offset_pos) catch |err| return @import("source.zig").preserveReadError(err);
@@ -491,6 +551,14 @@ pub fn parse(
     }.lt);
 
     for (schedule) |slot| {
+        if (endsPastFile(source, slot.value_offset, slot.total_bytes)) return pastEnd(extent, source, .{
+            .kind = .value_array,
+            .tag = entries[slot.entry_index].tag,
+            .start = slot.value_offset,
+            .length = slot.total_bytes,
+            .file_size = 0,
+            .entry_offset = offset + count_bytes + slot.entry_index * entry_bytes,
+        });
         const buf = allocator.alloc(u8, slot.total_bytes) catch return error.OutOfMemory;
         errdefer allocator.free(buf);
         const vg = source.readAt(buf, slot.value_offset) catch |err| return @import("source.zig").preserveReadError(err);
@@ -703,6 +771,37 @@ test "ifd.parse: a declared extent past the end of the file is SourceShortRead, 
     try std.testing.expectError(error.SourceShortRead, parse(std.testing.allocator, Source.fromBuffer(&table_handle), .little, 8, limits, .classic));
     var full_handle = BufferHandle.init(&full);
     try std.testing.expectError(error.LimitExceededTagCount, parse(std.testing.allocator, Source.fromBuffer(&full_handle), .little, 8, limits, .classic));
+}
+
+test "ifd.parseExtent: each declared extent past the end of the file is described" {
+    const no_caps: Limits = .{};
+    const entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    // Kind 1: the entry table, two entries declared, the file ends inside the second.
+    const two = fakeTiff(2, .{ entry, entry });
+    var extent: ?ExtentPastEof = null;
+    var h1 = BufferHandle.init(two[0 .. 8 + 2 + 12 + 5]);
+    try std.testing.expectError(error.SourceShortRead, parseExtent(std.testing.allocator, Source.fromBuffer(&h1), .little, 8, no_caps, .classic, &extent));
+    try std.testing.expectEqual(ExtentPastEof{ .kind = .entry_table, .tag = 0, .start = 8, .length = 2 + 2 * 12 + 4, .file_size = 8 + 2 + 12 + 5, .entry_offset = null }, extent.?);
+    // Kind 1 again: the entries fit but the file ends inside the next-IFD
+    // pointer, which used to read as 0, the end of the chain.
+    extent = null;
+    var h2 = BufferHandle.init(two[0 .. two.len - 2]);
+    try std.testing.expectError(error.SourceShortRead, parseExtent(std.testing.allocator, Source.fromBuffer(&h2), .little, 8, no_caps, .classic, &extent));
+    try std.testing.expectEqual(ExtentPastEof.Kind.entry_table, extent.?.kind);
+    try std.testing.expectEqual(@as(u64, two.len - 2), extent.?.file_size);
+    // Kind 2: a SHORT array of 10 at offset 26 needs 20 bytes; 19 follow.
+    extent = null;
+    const short_value: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x1A, 0x00, 0x00, 0x00 };
+    const value_bytes = fakeTiff(1, .{short_value}) ++ [_]u8{0} ** 19;
+    var h3 = BufferHandle.init(&value_bytes);
+    try std.testing.expectError(error.SourceShortRead, parseExtent(std.testing.allocator, Source.fromBuffer(&h3), .little, 8, no_caps, .classic, &extent));
+    try std.testing.expectEqual(ExtentPastEof{ .kind = .value_array, .tag = 256, .start = 26, .length = 20, .file_size = value_bytes.len, .entry_offset = 10 }, extent.?);
+    // Control: the whole file present parses, and nothing is described.
+    extent = null;
+    var h4 = BufferHandle.init(&two);
+    var parsed = try parseExtent(std.testing.allocator, Source.fromBuffer(&h4), .little, 8, no_caps, .classic, &extent);
+    parsed.deinit();
+    try std.testing.expectEqual(@as(?ExtentPastEof, null), extent);
 }
 
 // MFIC: allocation-failure sweep over ifd.parse — a classifier over the whole set of

@@ -112,8 +112,10 @@ typedef void (*tiffz_finding_callback_t)(
 | `ifd_entries_unsorted` (17) | 20 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 preceding tag | per entry whose tag is not larger than the one before it (TIFF 6.0 p. 15); verdict corrupt |
 | `tag_field_invalid` (18) | 38 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 reason (1 type, 2 count, 3 value, 4 channel mismatch), u16 raw type, u64 raw count, u64 raw value/offset slot. Reason 4 adds 10 bytes (48 in all): u16 PhotometricInterpretation, u16 SamplesPerPixel used, u16 1 if stored or 0 if absent (default 1), u16 and u16 the channel counts allowed | per entry that breaks its tag's rule in `src/ifd_conformance.zig`; verdict corrupt |
 | `jpeg_segment_geometry_invalid` (19) | 44 bytes LE: u32 IFD index, u32 first violating segment, u64 TIFF entry offset, u64 SOF marker offset, u16 rule (1 RowsPerStrip, 2 TileWidth, 3 TileLength, 4 sampling factors, 5 separate-plane factors), u16 SOF type, u32 TIFF value, u32 required multiple or component (index << 16 | H << 8 | V), u32 violating segments, u32 examined segments | per Compression 7 IFD and rule whose JPEG frame headers disagree with RowsPerStrip, tile sizes, YCbCrSubSampling or PlanarConfiguration (TIFF Technical Note 2); byte offset is the first violating SOF; verdict corrupt |
+| `tag_presence_invalid` (20) | 24 bytes LE: u32 IFD index, u32 entry index (0xFFFFFFFF when anchored on the IFD), u64 anchor offset, u16 tag, u16 reason (1 required_absent, 2 excluded_present, 3 dependency_absent), u16 requirement (1 TIFF 6.0 baseline, 2 tile replacement, 3 tile dependency), u16 related tag | per field a claimed specification requires absent from, or excludes present in, an image IFD; an IFD located only by JPEGInterchangeFormat is deferred (reach, `presence_deferred`); byte offset is the anchor; verdict corrupt |
+| `extent_past_eof` (23) | 40 bytes LE: u32 IFD index, u16 kind (1 IFD, 2 value array, 3 strip or tile), u16 declaring tag (0 for an IFD), u64 declared start, u64 declared length (saturated), u64 file size, u64 entry offset (2^64 - 1 for an IFD) | once, at the first structure that declares more bytes than the file holds; the walk then stops with SourceShortRead; byte offset is the declaring entry, else the declared start; verdict corrupt |
 
-Codes 17 and 18 are tiffz's only native findings with a `corrupt` verdict.
+Codes 17 to 20 and 23 are tiffz's native findings with a `corrupt` verdict.
 They are proven TIFF violations (validate's ruling, 2026-11-03), so
 validation fails `Malformed` after the walk finishes; every page is still
 decoded. The finding's byte offset is the 12-byte (BigTIFF: 20-byte)
@@ -179,6 +181,8 @@ forward-compat unknowns.
 | `ifd_entries_unsorted`            | fail             | detail for the `Malformed` failure: "TIFF IFD entries out of tag order" |
 | `tag_field_invalid`               | fail             | detail for the `Malformed` failure: "TIFF tag has an invalid type, count or value" |
 | `jpeg_segment_geometry_invalid`   | fail             | detail for the `Malformed` failure: "JPEG-in-TIFF segment geometry disagrees with its TIFF fields" |
+| `tag_presence_invalid`            | fail             | detail for the `Malformed` failure: "TIFF field required or excluded by its specification is absent or present" |
+| `extent_past_eof`                 | fail             | detail for the SourceShortRead failure: "TIFF structure runs past the end of the file" |
 
 Notes on taxonomy:
 
@@ -313,6 +317,8 @@ pub const TiffzInfoFinding = enum(u32) {
     ifd_entries_unsorted = 17,
     tag_field_invalid = 18,
     jpeg_segment_geometry_invalid = 19,
+    tag_presence_invalid = 20,
+    extent_past_eof = 23,
     _, // forward-compat: new tiffz versions may introduce codes
 };
 
@@ -347,6 +353,8 @@ pub fn routeInfoFinding(finding: TiffzInfoFinding, payload_u32: ?u32) RoutedFind
         .ifd_entries_unsorted  => .{ .other = "TIFF IFD entries out of tag order" },
         .tag_field_invalid     => .{ .other = "TIFF tag has an invalid type, count or value" },
         .jpeg_segment_geometry_invalid => .{ .other = "JPEG-in-TIFF segment geometry disagrees with its TIFF fields" },
+        .tag_presence_invalid => .{ .other = "TIFF field required or excluded by its specification is absent or present" },
+        .extent_past_eof => .{ .other = "TIFF structure runs past the end of the file" },
         _                      => .{ .other = "unknown tiffz finding code" },
     };
 }

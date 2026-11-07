@@ -152,6 +152,20 @@ pub const Decoder = struct {
         source: Source,
         limits: Limits,
     ) errors.Error!Decoder {
+        return openWithCallback(allocator, source, limits, null, null);
+    }
+
+    /// `openWithLimits` with the finding callback installed from the start, so
+    /// a record about IFD 0 reaches it even when open fails: an IFD 0 that runs
+    /// past the end of the file emits finding 23 here, then open fails
+    /// SourceShortRead as before (validate, 2026-11-07).
+    pub fn openWithCallback(
+        allocator: Allocator,
+        source: Source,
+        limits: Limits,
+        cb: findings_mod.Callback,
+        userdata: ?*anyopaque,
+    ) errors.Error!Decoder {
         if (limits.max_ifd_depth < 1) return error.LimitExceededIfdDepth;
 
         const budget = allocator.create(parser.source.ByteBudget) catch return error.OutOfMemory;
@@ -171,7 +185,11 @@ pub const Decoder = struct {
         var ifd_parent: std.ArrayListUnmanaged(?usize) = .empty;
         errdefer ifd_parent.deinit(allocator);
 
-        var ifd0 = try ifd_mod.parse(allocator, metered, h.endian, h.ifd0_offset, limits, offset_width);
+        var ifd0_extent: ?ifd_mod.ExtentPastEof = null;
+        var ifd0 = ifd_mod.parseExtent(allocator, metered, h.endian, h.ifd0_offset, limits, offset_width, &ifd0_extent) catch |err| {
+            if (ifd0_extent) |e| emitExtentTo(cb, userdata, 0, e);
+            return err;
+        };
         errdefer ifd0.deinit();
         ifds.append(allocator, ifd0) catch return error.OutOfMemory;
         ifd_offsets.append(allocator, h.ifd0_offset) catch return error.OutOfMemory;
@@ -188,6 +206,8 @@ pub const Decoder = struct {
             .ifd_offsets = ifd_offsets,
             .ifd_parent = ifd_parent,
             .next_ifd_offset = ifd0.next_offset,
+            .finding_cb = cb,
+            .finding_userdata = userdata,
         };
     }
 
@@ -258,6 +278,58 @@ pub const Decoder = struct {
             null,
             false,
             payload,
+        );
+    }
+
+    /// Finding 23 for a structure that runs past the end of the file, through
+    /// `cb` (a no-op when null): verdict corrupt, the 40-byte payload of
+    /// docs/plan_context/extent-past-eof.md, anchored on the declaring entry or
+    /// else the declared start, exact. Static so open can emit it for IFD 0.
+    fn encodeExtent(ifd_index: u32, e: ifd_mod.ExtentPastEof, payload: *[findings_mod.extent_past_eof_payload_len]u8) void {
+        std.mem.writeInt(u32, payload[0..4], ifd_index, .little);
+        std.mem.writeInt(u16, payload[4..6], @intFromEnum(e.kind), .little);
+        std.mem.writeInt(u16, payload[6..8], e.tag, .little);
+        std.mem.writeInt(u64, payload[8..16], e.start, .little);
+        std.mem.writeInt(u64, payload[16..24], e.length, .little);
+        std.mem.writeInt(u64, payload[24..32], e.file_size, .little);
+        std.mem.writeInt(u64, payload[32..40], e.entry_offset orelse std.math.maxInt(u64), .little);
+    }
+
+    /// Finding 23 from a live decoder: the same record, with the per-IFD
+    /// flags `emitDetailed` adds.
+    fn emitExtentPastEof(self: *Decoder, ifd_index: u32, e: ifd_mod.ExtentPastEof) void {
+        var payload: [findings_mod.extent_past_eof_payload_len]u8 = undefined;
+        encodeExtent(ifd_index, e, &payload);
+        const anchor = e.entry_offset orelse e.start;
+        self.noteDiscrepancy(.@"error", anchor, "extent_past_eof");
+        self.emitDetailed(
+            .tiffz,
+            @intCast(@intFromEnum(findings_mod.InfoFinding.extent_past_eof)),
+            null,
+            .corrupt,
+            anchor,
+            null,
+            true,
+            &payload,
+        );
+    }
+
+    fn emitExtentTo(cb: findings_mod.Callback, userdata: ?*anyopaque, ifd_index: u32, e: ifd_mod.ExtentPastEof) void {
+        const callback = cb orelse return;
+        var payload: [findings_mod.extent_past_eof_payload_len]u8 = undefined;
+        encodeExtent(ifd_index, e, &payload);
+        const flags = findings_mod.MetadataFlags.byte_offset_present | findings_mod.MetadataFlags.offset_is_exact;
+        callback(
+            userdata,
+            @intFromEnum(findings_mod.SourceDecoder.tiffz),
+            @intCast(@intFromEnum(findings_mod.InfoFinding.extent_past_eof)),
+            0,
+            @intFromEnum(findings_mod.Verdict.corrupt),
+            e.entry_offset orelse e.start,
+            0,
+            flags,
+            &payload,
+            payload.len,
         );
     }
 
@@ -515,6 +587,24 @@ pub const Decoder = struct {
     /// A chunk over the compressed-bytes cap is a limit only when the file
     /// holds it; one that runs past the end of the file is SourceShortRead
     /// (validate, 2026-11-05: a declared extent past the file is not a limit).
+    /// Finding 23, kind 3: strip or tile `offset` + `byte_count` runs past the
+    /// end of the file. Emits the record, anchored on the offset array's entry
+    /// (validate, 2026-11-07), and returns SourceShortRead.
+    fn chunkPastEnd(self: *Decoder, dir: *const Ifd, ifd_index: usize, layout: ChunkLayout, offset: u64, byte_count: u64) errors.Error {
+        const entry = dir.get(layout.offsets_tag) orelse return error.SourceShortRead;
+        const entry_index: u32 = @intCast((@intFromPtr(entry) - @intFromPtr(dir.entries.ptr)) / @sizeOf(ifd_mod.Entry));
+        const ifd_offset = self.ifdFileOffset(ifd_index) orelse return error.SourceShortRead;
+        self.emitExtentPastEof(@intCast(ifd_index), .{
+            .kind = .chunk,
+            .tag = layout.offsets_tag,
+            .start = offset,
+            .length = byte_count,
+            .file_size = self.source.sizeOf() catch 0,
+            .entry_offset = conformance.entryOffset(ifd_offset, entry_index, dir.offset_width),
+        });
+        return error.SourceShortRead;
+    }
+
     fn compressedChunkTooLarge(self: *const Decoder, offset: u64, byte_count: u64) errors.Error {
         if (ifd_mod.endsPastFile(self.source, offset, byte_count)) return error.SourceShortRead;
         return error.LimitExceededCompressedStripBytes;
@@ -568,14 +658,17 @@ pub const Decoder = struct {
         const depth = linkedDepth(self, parent);
         if (depth > self.limits.max_ifd_depth) return self.noteLimit(error.LimitExceededIfdDepth, offset, prospective);
         const offset_width: ifd_mod.OffsetWidth = if (self.bigtiff) .big else .classic;
-        var parsed = ifd_mod.parse(
+        var extent: ?ifd_mod.ExtentPastEof = null;
+        var parsed = ifd_mod.parseExtent(
             self.allocator,
             self.source,
             self.endian,
             offset,
             self.limits,
             offset_width,
+            &extent,
         ) catch |err| {
+            if (extent) |e| self.emitExtentPastEof(@intCast(prospective), e);
             if (errors.isLimit(err)) return self.noteLimit(err, self.budget.last_offset, prospective);
             self.noteFileClaim(err, offset);
             return err;
@@ -1501,6 +1594,7 @@ pub const Decoder = struct {
 
         const offset = try dir.arrayElementU64(layout.offsets_tag, strip_index, self.endian, self.source);
         const byte_count_u64 = try dir.arrayElementU64(layout.counts_tag, strip_index, self.endian, self.source);
+        if (ifd_mod.endsPastFile(self.source, offset, byte_count_u64)) return self.chunkPastEnd(dir, ifd_index, layout, offset, byte_count_u64);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes) {
             return self.compressedChunkTooLarge(offset, byte_count_u64);
         }
@@ -1543,6 +1637,7 @@ pub const Decoder = struct {
 
         const offset = try dir.arrayElementU64(layout.offsets_tag, tile_index, self.endian, self.source);
         const byte_count_u64 = try dir.arrayElementU64(layout.counts_tag, tile_index, self.endian, self.source);
+        if (ifd_mod.endsPastFile(self.source, offset, byte_count_u64)) return self.chunkPastEnd(dir, ifd_index, layout, offset, byte_count_u64);
         if (byte_count_u64 > self.limits.max_compressed_strip_bytes) {
             return self.compressedChunkTooLarge(offset, byte_count_u64);
         }
