@@ -125,8 +125,15 @@ pub const InfoFinding = enum(u32) {
     /// there with SourceShortRead. Payload: `extent_past_eof_payload_len`
     /// bytes (docs/plan_context/extent-past-eof.md). The byte offset is the
     /// declaring entry, else the declared start, exact. Numbered by validate
-    /// 2026-11-06. 21 and 22 are reserved (geokey_invalid, should_deviation).
+    /// 2026-11-06. 21 is reserved (geokey_invalid).
     extent_past_eof = 23,
+    /// A "should" a writer ignored, from the DNG should-row queue and TIFF
+    /// Technical Note 3 (`ifd_conformance.ShouldRule`). Verdict valid; validate
+    /// maps it to INFO, and it never changes the result. Payload: 20 bytes,
+    /// `ifd_conformance.should_payload_len` (u32 IFD, u32 entry or
+    /// 0xFFFFFFFF, u64 anchor offset, u16 tag, u16 rule). Numbered by validate
+    /// 2026-11-06; layout approved 2026-11-07.
+    should_deviation = 22,
     _,
 };
 

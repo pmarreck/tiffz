@@ -401,7 +401,31 @@ pub const Decoder = struct {
             );
         }
         const required = self.checkIfdPresence(dir, ifd_index, ifd_offset);
+        try self.checkIfdShould(dir, ifd_index, ifd_offset, dng);
         return faults.items.len > 0 or required;
+    }
+
+    /// InfoFinding 22, `should_deviation`, for one IFD: a "should" a writer
+    /// ignored (`conformance.checkShould`). Verdict valid; it never fails
+    /// validation (validate maps it to INFO).
+    fn checkIfdShould(self: *Decoder, dir: *const Ifd, ifd_index: usize, ifd_offset: u64, dng: ?conformance.Dng) error{OutOfMemory}!void {
+        var rows: std.ArrayListUnmanaged(conformance.Should) = .empty;
+        defer rows.deinit(self.allocator);
+        try conformance.checkShould(self.allocator, dir, ifd_index, self.endian, dng, &rows);
+        for (rows.items) |row| {
+            const anchor = if (row.entry_index) |i| conformance.entryOffset(ifd_offset, i, dir.offset_width) else ifd_offset;
+            var buf: [conformance.should_payload_len]u8 = undefined;
+            self.emitDetailed(
+                .tiffz,
+                @intCast(@intFromEnum(findings_mod.InfoFinding.should_deviation)),
+                null,
+                .valid,
+                anchor,
+                null,
+                true,
+                conformance.encodeShould(row, @intCast(ifd_index), anchor, &buf),
+            );
+        }
     }
 
     /// `tag_presence_invalid` for one IFD (`ifd_presence`), emitted as a

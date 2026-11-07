@@ -4582,7 +4582,7 @@ test "Predictor 3: a 12-bit sample is a value fault on Predictor" {
 // libtiff refuses it, but TN3's "should" makes it a should-row, not a fault.
 // It is accepted with only the seed's own records today; when the INFO
 // should-row lands, this replay gains exactly that record.
-test "corruption replay: predictor3_deflate_fp32.tif bolter master 0x20261105 round 389 is accepted (Predictor 3 on integer data is a should-row)" {
+test "corruption replay: predictor3_deflate_fp32.tif bolter master 0x20261105 round 389 is accepted with one should-row (Predictor 3 on integer data, rule 17)" {
     const allocator = std.testing.allocator;
     const bytes = try loadFile(allocator, "tests/fixtures/predictor/predictor3_deflate_fp32.tif");
     defer allocator.free(bytes);
@@ -4594,8 +4594,23 @@ test "corruption replay: predictor3_deflate_fp32.tif bolter master 0x20261105 ro
     var mutated = FindingRecorder.init(allocator);
     defer mutated.deinit();
     try validateRecording(allocator, bytes, &mutated);
-    try std.testing.expectEqual(seed.findings.items.len, mutated.findings.items.len);
-    for (seed.findings.items, mutated.findings.items) |a, b| {
+    // SampleFormat's tag moves to the private range, so the samples default to
+    // integers under Predictor 3: the replay gains exactly one should-row,
+    // rule 17 on Predictor (validate, 2026-11-07), and nothing else changes.
+    var rows: usize = 0;
+    var kept: std.ArrayListUnmanaged(FindingRecorder.Record) = .empty;
+    defer kept.deinit(allocator);
+    for (mutated.findings.items) |f| {
+        if (f.source == .tiffz and f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.should_deviation)) {
+            rows += 1;
+            try std.testing.expectEqual(tiffz.findings.Verdict.valid, f.verdict);
+            try std.testing.expectEqual(@as(u16, 317), std.mem.readInt(u16, f.payload_bytes[16..18], .little));
+            try std.testing.expectEqual(@as(u16, 17), std.mem.readInt(u16, f.payload_bytes[18..20], .little));
+        } else try kept.append(allocator, f);
+    }
+    try std.testing.expectEqual(@as(usize, 1), rows);
+    try std.testing.expectEqual(seed.findings.items.len, kept.items.len);
+    for (seed.findings.items, kept.items) |a, b| {
         try std.testing.expectEqual(a.source, b.source);
         try std.testing.expectEqual(a.finding_code, b.finding_code);
         try std.testing.expectEqual(a.verdict, b.verdict);

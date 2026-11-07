@@ -36,6 +36,7 @@ const parser = @import("tiffz-parser");
 const ifd_mod = parser.ifd;
 const header_mod = parser.header;
 const tags = parser.tags;
+const dng_usage = @import("dng_usage.zig");
 
 const Endian = header_mod.Endian;
 const Ifd = ifd_mod.Ifd;
@@ -552,6 +553,10 @@ pub const Dng = struct {
     /// or null when the entry is malformed, which leaves the version unknown
     /// (validate D2, 2026-11-04).
     version: ?u32,
+    /// Packed DNGBackwardVersion, or DNGVersion with its last two bytes zero
+    /// when absent (its documented default); null when either is malformed.
+    /// Only the should-rows read it (rules 16 and 18).
+    backward: ?u32 = null,
     /// The raw IFD's ColorPlanes (`colorPlanes`), for the Tier 3 counts; null
     /// when it cannot be derived, which leaves them unconstrained.
     color_planes: ?u32 = null,
@@ -565,17 +570,24 @@ pub const Dng = struct {
     /// malformed (its own fault).
     pub fn fromIfd0(dir: *const Ifd, endian: Endian) ?Dng {
         const index = indexOf(dir, tags.dng_version) orelse return null;
+        const version = packedVersion(dir, index, endian) orelse return .{ .version = null };
+        const backward = if (indexOf(dir, tags.dng_backward_version)) |b| packedVersion(dir, b, endian) else version & 0xFFFF0000;
+        return .{ .version = version, .backward = backward };
+    }
+
+    /// Four unsigned 8-bit values packed major first, or null.
+    fn packedVersion(dir: *const Ifd, index: usize, endian: Endian) ?u32 {
         const entry = dir.entries[index];
-        if (entry.count != 4) return .{ .version = null };
+        if (entry.count != 4) return null;
         const bytes = dir.entryValueSlice(index);
         var packed_version: u32 = 0;
         var i: usize = 0;
         while (i < 4) : (i += 1) {
-            const b = element(bytes, entry.field_type, i, endian) orelse return .{ .version = null };
-            if (b > 255) return .{ .version = null };
+            const b = element(bytes, entry.field_type, i, endian) orelse return null;
+            if (b > 255) return null;
             packed_version = (packed_version << 8) | @as(u32, @intCast(b));
         }
-        return .{ .version = packed_version };
+        return packed_version;
     }
 
     /// Closed value lists apply to a known version up to the cited edition:
@@ -1613,6 +1625,235 @@ pub fn encodePayload(fault: Fault, ifd_index: u32, entry_offset: u64, buf: *[max
             return buf[0..max_payload_len];
         },
     }
+}
+
+// ---- should-rows: InfoFinding 22, should_deviation ----
+//
+// A "should" a writer ignored. Never a fault: the file still conforms, and
+// validate maps the record to INFO (validate, 2026-11-06 and 2026-11-07;
+// docs/plan_context/dng-batch.md). Rule numbers follow the should-row queue;
+// 3, 7, 8, 9, 11, 12 and 15 are unused (dropped, or already faults).
+
+pub const ShouldRule = enum(u16) {
+    /// NewSubFileType is not one of DNG's values (DNG 1.6.0.0 pp. 13, 18).
+    new_subfile_type = 1,
+    /// DNGVersion 1.6.a.b with (a, b) not (0, 0): "this tag should contain
+    /// the bytes: 1, 6, 0, 0" (p. 21).
+    dng_version_build = 2,
+    /// A mirrored Orientation (2, 4, 5, 7): "writers should not use them"
+    /// for TIFF-EP compatibility (p. 20).
+    mirrored_orientation = 4,
+    /// A LensInfo minimum f-stop of 0/n: unknown f-stops "should be encoded
+    /// as 0/0" (LensInfo).
+    lens_info_zero_f_stop = 5,
+    /// CFALayout 2-5 with DefaultScale factors that do not differ by 2.0
+    /// ("should usually differ by a factor of 2.0", DefaultScale).
+    default_scale_cfa_layout = 6,
+    /// An enhanced IFD that is not LinearRaw, not 16-bit unsigned or 16, 24
+    /// or 32-bit float, or has no EnhanceParams (p. 15).
+    enhanced_ifd = 10,
+    /// A NUL before the final NUL of a DNG UTF-8 string (validate D4).
+    utf8_inner_nul = 13,
+    /// A tag outside its Usage IFD (validate D7; `dng_usage`).
+    outside_usage_ifd = 14,
+    /// The first construct newer than DNGBackwardVersion but not newer than
+    /// DNGVersion (DNGBackwardVersion, p. 21).
+    newer_than_backward_version = 16,
+    /// Predictor 3 with a SampleFormat other than 3: "This predictor should
+    /// only be applied to floating point data" (Adobe Photoshop TIFF
+    /// Technical Note 3, p. 2). Any TIFF, not only DNG.
+    predictor_3_sample_format = 17,
+    /// The first construct newer than DNGVersion itself.
+    newer_than_dng_version = 18,
+};
+
+/// One should-row record. `entry_index` null anchors it on the IFD.
+pub const Should = struct { entry_index: ?u32, tag: u16, rule: ShouldRule };
+
+/// Bytes in a finding-22 payload: u32 IFD, u32 entry (0xFFFFFFFF for the IFD),
+/// u64 anchor offset, u16 tag, u16 rule.
+pub const should_payload_len = 20;
+
+pub fn encodeShould(s: Should, ifd_index: u32, anchor: u64, buf: *[should_payload_len]u8) []const u8 {
+    std.mem.writeInt(u32, buf[0..4], ifd_index, .little);
+    std.mem.writeInt(u32, buf[4..8], s.entry_index orelse 0xFFFF_FFFF, .little);
+    std.mem.writeInt(u64, buf[8..16], anchor, .little);
+    std.mem.writeInt(u16, buf[16..18], s.tag, .little);
+    std.mem.writeInt(u16, buf[18..20], @intFromEnum(s.rule), .little);
+    return buf;
+}
+
+/// The edition that introduced a construct an entry uses, beyond its tag:
+/// NewSubFileType, PhotometricInterpretation and Compression values DNG
+/// added after 1.0.0.0 (pp. 13, 18-19). Null for a value that dates from 1.0.
+fn valueEdition(dir: *const Ifd, index: usize, endian: Endian) ?u32 {
+    const entry = dir.entries[index];
+    if (entry.count != 1) return null;
+    const v = element(dir.entryValueSlice(index), entry.field_type, 0, endian) orelse return null;
+    return switch (entry.tag) {
+        tags.new_subfile_type => switch (v) {
+            0x10001 => 0x01020000,
+            4, 5 => 0x01040000,
+            8, 9, 16 => 0x01050000,
+            0x10004 => 0x01060000,
+            else => null,
+        },
+        tags.photometric => switch (v) {
+            tags.photometric_depth => 0x01050000,
+            tags.photometric_mask => 0x01060000,
+            else => null,
+        },
+        tags.compression => switch (v) {
+            8, 34892 => 0x01040000,
+            52546 => 0x01070000,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+/// A rendered preview: NewSubFileType 10001.H, or 1 with photometric 1, 2 or 6.
+fn renderedPreview(dir: *const Ifd, endian: Endian) bool {
+    return switch (role(dir, endian)) {
+        .alternative_preview => true,
+        .preview_or_reduced => switch (scalar(dir, tags.photometric, endian) orelse return false) {
+            1, 2, 6 => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn outsideUsage(usage: dng_usage.Usage, dir: *const Ifd, ifd_index: usize, endian: Endian) bool {
+    const r = role(dir, endian);
+    return switch (usage) {
+        // tiffz does not walk camera profile IFDs yet, so this is IFD 0.
+        .ifd0, .ifd0_or_camera_profile => ifd_index != 0,
+        .raw, .raw_or_enhanced => renderedPreview(dir, endian),
+        .preview => r == .raw,
+        .semantic_mask => r != .semantic_mask,
+        .ifd0_or_enhanced => ifd_index != 0 and r != .enhanced,
+        .enhanced => r != .enhanced,
+        .any => false,
+    };
+}
+
+/// Exactly one value differs from the other by a factor of 2.0.
+fn factorOfTwo(h: [2]u64, v: [2]u64) bool {
+    if (h[1] == 0 or v[1] == 0) return false;
+    const hv = @as(u128, h[0]) * v[1];
+    const vh = @as(u128, v[0]) * h[1];
+    return hv == 2 * vh or vh == 2 * hv;
+}
+
+/// The should-rows of IFD `ifd_index`, appended to `out` in entry order, then
+/// the IFD-wide rules (10, 16, 18).
+pub fn checkShould(
+    allocator: std.mem.Allocator,
+    dir: *const Ifd,
+    ifd_index: usize,
+    endian: Endian,
+    dng: ?Dng,
+    out: *std.ArrayListUnmanaged(Should),
+) error{OutOfMemory}!void {
+    // Rule 17 holds for any TIFF.
+    if (indexOf(dir, tags.predictor)) |p| {
+        if (scalar(dir, tags.predictor, endian) == 3 and uniformValue(dir, tags.sample_format, endian) != 3) {
+            try out.append(allocator, .{ .entry_index = @intCast(p), .tag = tags.predictor, .rule = .predictor_3_sample_format });
+        }
+    }
+    const d = dng orelse return;
+    const version = d.version;
+    var newer_than_backward: ?Should = null;
+    var newer_than_version: ?Should = null;
+    for (dir.entries, 0..) |entry, i| {
+        const index: u32 = @intCast(i);
+        const at: Should = .{ .entry_index = index, .tag = entry.tag, .rule = .new_subfile_type };
+        const bytes = dir.entryValueSlice(i);
+        switch (entry.tag) {
+            // A NewSubFileType tiffz cannot read is its own fault, not this row.
+            tags.new_subfile_type => if (scalar(dir, tags.new_subfile_type, endian) != null and role(dir, endian) == .unknown) {
+                try out.append(allocator, at);
+            },
+            tags.dng_version => if (version) |v| {
+                if (v >> 16 == 0x0106 and v & 0xFFFF != 0) try out.append(allocator, .{ .entry_index = index, .tag = entry.tag, .rule = .dng_version_build });
+            },
+            tags.orientation => switch (scalar(dir, tags.orientation, endian) orelse 0) {
+                2, 4, 5, 7 => try out.append(allocator, .{ .entry_index = index, .tag = entry.tag, .rule = .mirrored_orientation }),
+                else => {},
+            },
+            tags.lens_info => if (entry.field_type == .rational and entry.count == 4) {
+                for ([_]usize{ 2, 3 }) |k| {
+                    const r = rationalAt(bytes, k, endian) orelse continue;
+                    if (r[0] == 0 and r[1] != 0) {
+                        try out.append(allocator, .{ .entry_index = index, .tag = entry.tag, .rule = .lens_info_zero_f_stop });
+                        break;
+                    }
+                }
+            },
+            tags.cfa_layout => if (scalar(dir, tags.cfa_layout, endian)) |layout| if (layout >= 2 and layout <= 5) {
+                if (indexOf(dir, tags.default_scale)) |s| {
+                    const se = dir.entries[s];
+                    const sb = dir.entryValueSlice(s);
+                    if (se.field_type == .rational and se.count == 2) {
+                        if (rationalAt(sb, 0, endian)) |h| if (rationalAt(sb, 1, endian)) |v| if (!factorOfTwo(h, v)) {
+                            try out.append(allocator, .{ .entry_index = @intCast(s), .tag = tags.default_scale, .rule = .default_scale_cfa_layout });
+                        };
+                    }
+                } else {
+                    // The default 1.0, 1.0 does not differ by 2.0.
+                    try out.append(allocator, .{ .entry_index = index, .tag = entry.tag, .rule = .default_scale_cfa_layout });
+                }
+            },
+            else => {},
+        }
+        if (ruleFor(entry.tag)) |rule| {
+            if (rule.kind == .utf8_string and bytes.len > 1 and (version == null or rule.since == null or version.? >= rule.since.?)) {
+                if (std.mem.indexOfScalar(u8, bytes[0 .. bytes.len - 1], 0) != null) {
+                    try out.append(allocator, .{ .entry_index = index, .tag = entry.tag, .rule = .utf8_inner_nul });
+                }
+            }
+        }
+        if (dng_usage.of(entry.tag)) |usage| {
+            if (outsideUsage(usage, dir, ifd_index, endian)) try out.append(allocator, .{ .entry_index = index, .tag = entry.tag, .rule = .outside_usage_ifd });
+        }
+        // Rules 16 and 18: the edition of the tag, or of the value it holds.
+        if (version) |v| {
+            var edition: u32 = 0;
+            if (ruleFor(entry.tag)) |rule| if (rule.since) |since| {
+                edition = since;
+            };
+            if (valueEdition(dir, i, endian)) |e| edition = @max(edition, e);
+            if (edition > v) {
+                if (newer_than_version == null) newer_than_version = .{ .entry_index = index, .tag = entry.tag, .rule = .newer_than_dng_version };
+            } else if (d.backward) |b| if (edition > b) {
+                if (newer_than_backward == null) newer_than_backward = .{ .entry_index = index, .tag = entry.tag, .rule = .newer_than_backward_version };
+            };
+        }
+    }
+    if (role(dir, endian) == .enhanced) {
+        if (enhancedDeviation(dir, endian)) |s| try out.append(allocator, s);
+    }
+    if (newer_than_backward) |s| try out.append(allocator, s);
+    if (newer_than_version) |s| try out.append(allocator, s);
+}
+
+/// Rule 10, at the first deviation in the order the text gives them.
+fn enhancedDeviation(dir: *const Ifd, endian: Endian) ?Should {
+    if (indexOf(dir, tags.photometric)) |p| {
+        if (scalar(dir, tags.photometric, endian) == tags.photometric_color_filter_array) {
+            return .{ .entry_index = @intCast(p), .tag = tags.photometric, .rule = .enhanced_ifd };
+        }
+    }
+    const format = uniformValue(dir, tags.sample_format, endian);
+    const bits = uniformValue(dir, tags.bits_per_sample, endian);
+    const encoding_ok = if (format == 1) bits == 16 else if (format == 3) (bits == 16 or bits == 24 or bits == 32) else false;
+    if (!encoding_ok) {
+        const at = indexOf(dir, tags.bits_per_sample);
+        return .{ .entry_index = if (at) |a| @intCast(a) else null, .tag = tags.bits_per_sample, .rule = .enhanced_ifd };
+    }
+    if (indexOf(dir, tags.enhance_params) == null) return .{ .entry_index = null, .tag = tags.enhance_params, .rule = .enhanced_ifd };
+    return null;
 }
 
 // ---- tests ----
@@ -3081,4 +3322,179 @@ test "entry offsets and payload layout" {
     try testing.expectEqualSlices(u8, &.{ 0x12, 0x01, 3, 0, 3, 0 }, invalid[16..22]);
     try testing.expectEqual(@as(u64, 1), std.mem.readInt(u64, invalid[22..30], .little));
     try testing.expectEqual(@as(u64, 257), std.mem.readInt(u64, invalid[30..38], .little));
+}
+
+// ---- should-row tests ----
+
+fn shouldsOf(entries: []Entry, cached: []?[]u8, ifd_index: usize, dng: ?Dng) !std.ArrayListUnmanaged(Should) {
+    const dir = Ifd{
+        .entries = entries,
+        .next_offset = 0,
+        .offset_width = .classic,
+        .allocator = testing.allocator,
+        .cached_values = cached,
+    };
+    var out: std.ArrayListUnmanaged(Should) = .empty;
+    try checkShould(testing.allocator, &dir, ifd_index, .little, dng, &out);
+    return out;
+}
+
+/// `entries` (inline values only, unless `cached` says otherwise) give exactly
+/// the should-rows `expected`.
+fn expectShould(entries: []Entry, cached: ?[]?[]u8, ifd_index: usize, dng: ?Dng, expected: []const Should) !void {
+    var none = [_]?[]u8{null} ** 16;
+    var out = try shouldsOf(entries, cached orelse none[0..entries.len], ifd_index, dng);
+    defer out.deinit(testing.allocator);
+    testing.expectEqualDeep(expected, out.items) catch |err| {
+        std.debug.print("got {any}\n", .{out.items});
+        return err;
+    };
+}
+
+/// A 1.6.0.0 file whose backward version is also 1.6.0.0, so no construct is
+/// newer than either (rules 16 and 18 have their own contexts below).
+const dng_v1_6: Dng = .{ .version = Dng.cited, .backward = Dng.cited };
+
+test "should rule 17: Predictor 3 with integer samples, in any TIFF" {
+    var p3 = [_]Entry{inline16(tags.predictor, .short, 1, 3)};
+    try expectShould(&p3, null, 0, null, &.{.{ .entry_index = 0, .tag = tags.predictor, .rule = .predictor_3_sample_format }});
+    var p3_float = [_]Entry{ inline16(tags.predictor, .short, 1, 3), inline16(tags.sample_format, .short, 1, 3) };
+    try expectShould(&p3_float, null, 0, null, &.{});
+    var p2 = [_]Entry{inline16(tags.predictor, .short, 1, 2)};
+    try expectShould(&p2, null, 0, null, &.{});
+}
+
+test "should rule 1: a NewSubFileType DNG does not define" {
+    var two = [_]Entry{inline16(tags.new_subfile_type, .long, 1, 2)};
+    try expectShould(&two, null, 1, dng_v1_6, &.{.{ .entry_index = 0, .tag = tags.new_subfile_type, .rule = .new_subfile_type }});
+    try expectShould(&two, null, 1, null, &.{}); // not a DNG
+    for ([_]u32{ 0, 1, 4, 5, 8, 9, 16, 0x10001, 0x10004 }) |v| {
+        var ok = [_]Entry{inline16(tags.new_subfile_type, .long, 1, v)};
+        var none = [_]?[]u8{null};
+        var out = try shouldsOf(&ok, &none, 1, .{ .version = 0x01060000, .backward = 0x01060000 });
+        defer out.deinit(testing.allocator);
+        for (out.items) |s| try testing.expect(s.rule != .new_subfile_type);
+    }
+}
+
+test "should rule 2: a 1.6 DNGVersion with a build number" {
+    var v1601 = [_]Entry{inline16(tags.dng_version, .byte, 4, 0x01000601)};
+    try expectShould(&v1601, null, 0, .{ .version = 0x01060001, .backward = 0x01060000 }, &.{.{ .entry_index = 0, .tag = tags.dng_version, .rule = .dng_version_build }});
+    var v1600 = [_]Entry{inline16(tags.dng_version, .byte, 4, 0x00000601)};
+    try expectShould(&v1600, null, 0, .{ .version = 0x01060000, .backward = 0x01060000 }, &.{});
+}
+
+test "should rule 4: a mirrored Orientation" {
+    for ([_]u32{ 1, 2, 3, 4, 5, 6, 7, 8 }) |v| {
+        var e = [_]Entry{inline16(tags.orientation, .short, 1, v)};
+        const mirrored = v == 2 or v == 4 or v == 5 or v == 7;
+        const want: []const Should = if (mirrored) &.{.{ .entry_index = 0, .tag = tags.orientation, .rule = .mirrored_orientation }} else &.{};
+        try expectShould(&e, null, 0, dng_v1_6, want);
+    }
+}
+
+test "should rule 5: a LensInfo f-stop of 0/n instead of 0/0" {
+    var zero_n = [_]u8{ 24, 0, 0, 0, 1, 0, 0, 0, 70, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 28, 0, 0, 0, 10, 0, 0, 0 };
+    var zero_zero = zero_n;
+    zero_zero[20] = 0; // value 2 becomes 0/0
+    var e = [_]Entry{inline16(tags.lens_info, .rational, 4, 0)};
+    var c1 = [_]?[]u8{&zero_n};
+    try expectShould(&e, &c1, 0, dng_v1_6, &.{.{ .entry_index = 0, .tag = tags.lens_info, .rule = .lens_info_zero_f_stop }});
+    var c2 = [_]?[]u8{&zero_zero};
+    try expectShould(&e, &c2, 0, dng_v1_6, &.{});
+}
+
+test "should rule 6: CFALayout 2-5 with DefaultScale factors that do not differ by 2" {
+    var halves = [_]u8{ 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0 }; // 1, 1/2
+    var equal = [_]u8{ 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 }; // 1, 1
+    var e = [_]Entry{ inline16(tags.cfa_layout, .short, 1, 2), inline16(tags.default_scale, .rational, 2, 0) };
+    var c_halves = [_]?[]u8{ null, &halves };
+    try expectShould(&e, &c_halves, 1, dng_v1_6, &.{});
+    var c_equal = [_]?[]u8{ null, &equal };
+    try expectShould(&e, &c_equal, 1, dng_v1_6, &.{.{ .entry_index = 1, .tag = tags.default_scale, .rule = .default_scale_cfa_layout }});
+    var no_scale = [_]Entry{inline16(tags.cfa_layout, .short, 1, 3)};
+    try expectShould(&no_scale, null, 1, dng_v1_6, &.{.{ .entry_index = 0, .tag = tags.cfa_layout, .rule = .default_scale_cfa_layout }});
+    var square = [_]Entry{inline16(tags.cfa_layout, .short, 1, 1)};
+    try expectShould(&square, null, 1, dng_v1_6, &.{});
+}
+
+test "should rule 10: an enhanced IFD that is not LinearRaw, 16-bit or float, or lacks EnhanceParams" {
+    const nst = inline16(tags.new_subfile_type, .long, 1, 16);
+    var cfa = [_]Entry{ nst, inline16(tags.bits_per_sample, .short, 1, 16), inline16(tags.photometric, .short, 1, tags.photometric_color_filter_array) };
+    try expectShould(&cfa, null, 1, dng_v1_6, &.{.{ .entry_index = 2, .tag = tags.photometric, .rule = .enhanced_ifd }});
+    var eight = [_]Entry{ nst, inline16(tags.bits_per_sample, .short, 1, 8), inline16(tags.photometric, .short, 1, tags.photometric_linear_raw) };
+    try expectShould(&eight, null, 1, dng_v1_6, &.{.{ .entry_index = 1, .tag = tags.bits_per_sample, .rule = .enhanced_ifd }});
+    var no_params = [_]Entry{ nst, inline16(tags.bits_per_sample, .short, 1, 16), inline16(tags.photometric, .short, 1, tags.photometric_linear_raw) };
+    try expectShould(&no_params, null, 1, dng_v1_6, &.{.{ .entry_index = null, .tag = tags.enhance_params, .rule = .enhanced_ifd }});
+    var params = "sharpen\x00".*;
+    var good = [_]Entry{ nst, inline16(tags.bits_per_sample, .short, 1, 16), inline16(tags.photometric, .short, 1, tags.photometric_linear_raw), inline16(tags.enhance_params, .ascii, 8, 0) };
+    var c_good = [_]?[]u8{ null, null, null, &params };
+    try expectShould(&good, &c_good, 1, dng_v1_6, &.{});
+}
+
+test "should rule 13: a NUL inside a DNG UTF-8 string" {
+    var inner = "ab\x00cd\x00".*;
+    var clean = "abcde\x00".*;
+    var e = [_]Entry{inline16(tags.localized_camera_model, .byte, 6, 0)};
+    var c1 = [_]?[]u8{&inner};
+    try expectShould(&e, &c1, 0, dng_v1_6, &.{.{ .entry_index = 0, .tag = tags.localized_camera_model, .rule = .utf8_inner_nul }});
+    var c2 = [_]?[]u8{&clean};
+    try expectShould(&e, &c2, 0, dng_v1_6, &.{});
+}
+
+test "should rule 14: a tag outside its Usage IFD, in the clear cases only" {
+    // An "IFD 0" tag (UniqueCameraModel) in another IFD.
+    var model = "Cam\x00".*;
+    var ifd0_tag = [_]Entry{inline16(tags.unique_camera_model, .ascii, 4, 0)};
+    var c_model = [_]?[]u8{&model};
+    try expectShould(&ifd0_tag, &c_model, 2, dng_v1_6, &.{.{ .entry_index = 0, .tag = tags.unique_camera_model, .rule = .outside_usage_ifd }});
+    try expectShould(&ifd0_tag, &c_model, 0, dng_v1_6, &.{});
+    // A "Raw IFD" tag (BlackLevel) in a rendered preview, but not in a reduced raw image.
+    var rendered = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 1), inline16(tags.photometric, .short, 1, 2), inline16(tags.black_level, .short, 1, 0) };
+    try expectShould(&rendered, null, 1, dng_v1_6, &.{.{ .entry_index = 2, .tag = tags.black_level, .rule = .outside_usage_ifd }});
+    var reduced_raw = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 1), inline16(tags.photometric, .short, 1, tags.photometric_linear_raw), inline16(tags.black_level, .short, 1, 0) };
+    try expectShould(&reduced_raw, null, 1, dng_v1_6, &.{});
+    // A "Preview IFD" tag (PreviewColorSpace) in the raw IFD.
+    var raw_preview_tag = [_]Entry{inline16(tags.preview_color_space, .long, 1, 1)};
+    try expectShould(&raw_preview_tag, null, 1, dng_v1_6, &.{.{ .entry_index = 0, .tag = tags.preview_color_space, .rule = .outside_usage_ifd }});
+}
+
+test "should rules 16 and 18: constructs newer than DNGBackwardVersion, and than DNGVersion" {
+    // SemanticName (1.6.0.0) in a file declaring 1.4.0.0: newer than DNGVersion (18).
+    var name = "sky\x00".*;
+    var mask = [_]Entry{ inline16(tags.new_subfile_type, .long, 1, 0x10004), inline16(tags.semantic_name, .ascii, 4, 0) };
+    var c_mask = [_]?[]u8{ null, &name };
+    try expectShould(&mask, &c_mask, 1, .{ .version = 0x01040000, .backward = 0x01040000 }, &.{.{ .entry_index = 0, .tag = tags.new_subfile_type, .rule = .newer_than_dng_version }});
+    // EnhanceParams (1.5.0.0) in a 1.6.0.0 file whose backward version is 1.4.0.0 (16).
+    var params = "sharpen\x00".*;
+    var enhanced = [_]Entry{ inline16(tags.enhance_params, .ascii, 8, 0) };
+    var c_enh = [_]?[]u8{&params};
+    var out = try shouldsOf(&enhanced, &c_enh, 0, .{ .version = 0x01060000, .backward = 0x01040000 });
+    defer out.deinit(testing.allocator);
+    var saw16 = false;
+    for (out.items) |s| {
+        try testing.expect(s.rule != .newer_than_dng_version);
+        if (s.rule == .newer_than_backward_version) saw16 = true;
+    }
+    try testing.expect(saw16);
+    // Nothing newer than either: no record.
+    var plain = [_]Entry{inline16(tags.orientation, .short, 1, 1)};
+    try expectShould(&plain, null, 0, .{ .version = 0x01060000, .backward = 0x01060000 }, &.{});
+}
+
+test "dng_usage: every DNG row has a Usage class and every Usage tag a DNG row" {
+    for (rules) |rule| {
+        if (rule.since == null) continue;
+        if (dng_usage.of(rule.tag) == null) {
+            std.debug.print("DNG row {d} has no Usage class\n", .{rule.tag});
+            return error.TestExpectedEqual;
+        }
+    }
+    for (dng_usage.table) |e| {
+        const rule = ruleFor(e.tag) orelse {
+            std.debug.print("Usage tag {d} has no DNG row\n", .{e.tag});
+            return error.TestExpectedEqual;
+        };
+        try testing.expect(rule.since != null);
+    }
 }
