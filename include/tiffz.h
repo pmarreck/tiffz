@@ -119,6 +119,9 @@ typedef int32_t tiffz_finding_verdict_t;
 #define TIFFZ_FINDING_BYTE_OFFSET_PRESENT UINT32_C(2)
 #define TIFFZ_FINDING_HOST_OFFSET_PRESENT UINT32_C(4)
 #define TIFFZ_FINDING_OFFSET_IS_EXACT UINT32_C(8)
+/* The record comes from an IFD the walk reached only after a stopping error;
+ * payload and verdict are unchanged. */
+#define TIFFZ_FINDING_AFTER_STOP UINT32_C(16)
 
 typedef void (*tiffz_finding_callback_t)(
     void *userdata,

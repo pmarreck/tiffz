@@ -99,6 +99,9 @@ pub const Decoder = struct {
     /// How many IFDs, in walk order, have had their directory rules checked
     /// by the current validation walk; a stop checks the rest.
     rules_checked: usize = 0,
+    /// True while `checkUnreachedConformance` runs: every record emitted
+    /// then carries `MetadataFlags.after_stop`.
+    after_stop_pass: bool = false,
     pending_subifd_read: usize = 0,
     /// Next materialized IFD whose tag 330 list has not been queued.
     subifd_scan: usize = 0,
@@ -269,6 +272,7 @@ pub const Decoder = struct {
         if (byte_offset != null) flags |= findings_mod.MetadataFlags.byte_offset_present;
         if (host_byte_offset != null) flags |= findings_mod.MetadataFlags.host_offset_present;
         if (offset_is_exact) flags |= findings_mod.MetadataFlags.offset_is_exact;
+        if (self.after_stop_pass) flags |= findings_mod.MetadataFlags.after_stop;
         cb(
             self.finding_userdata,
             @intFromEnum(source_decoder),
@@ -709,9 +713,14 @@ pub const Decoder = struct {
 
     /// After a stopping error, check the directory rules of every parsed IFD
     /// the walk did not reach, in walk order. Best effort: running out of
-    /// memory here ends the pass and keeps the original error.
+    /// memory here ends the pass and keeps the original error. Its records
+    /// carry `MetadataFlags.after_stop` (owner, option B; validate
+    /// numbered the bit 2026-11-06), so a matcher can scope a signature to
+    /// the walk that was reached.
     fn checkUnreachedConformance(self: *Decoder) void {
         if (self.ifds.items.len == 0) return;
+        self.after_stop_pass = true;
+        defer self.after_stop_pass = false;
         const dng = self.dngContext();
         var i = self.rules_checked;
         while (i < self.ifds.items.len) : (i += 1) {

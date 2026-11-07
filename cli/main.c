@@ -262,6 +262,8 @@ static void write_json(
 			fprintf(stdout, ",\"offset\":%llu", (unsigned long long)f->byte_offset);
 		if (f->flags & TIFFZ_FINDING_HOST_OFFSET_PRESENT)
 			fprintf(stdout, ",\"host_offset\":%llu", (unsigned long long)f->host_offset);
+		if (f->flags & TIFFZ_FINDING_AFTER_STOP)
+			fputs(",\"after_stop\":true", stdout);
 		if (f->payload_len > 0) {
 			fputs(",\"payload_hex\":", stdout);
 			write_payload_hex(stdout, f->payload, f->payload_len);

@@ -128,4 +128,20 @@ is clean, so the stopping error is shown to be the same:
 - a decode stop (IFD 0 Deflate that is not zlib) with Orientation 9 in
   IFD 1;
 - a graph error (IFD 1's next-IFD offset past the end of the file);
-- a strip-count limit stop, where IFD 1's fault is not reported.
+- a strip-count limit stop. IFD 1's fault was not reported at first;
+  validate reversed that on 2026-11-05, so it is reported after a limit too.
+
+## Option B: the after_stop flag (2026-11-06)
+
+The owner chose option B, and validate numbered the bit on 2026-11-06:
+`MetadataFlags.after_stop`, 1 << 4 (`TIFFZ_FINDING_AFTER_STOP` in
+include/tiffz.h). Every record emitted by `checkUnreachedConformance`
+carries it. Payloads and verdicts are unchanged, and the CLI's JSON adds
+`"after_stop":true` to those records.
+
+Controls:
+- The three tests above also require every IFD 1 record to carry the flag.
+- A control file with the same Orientation 9 fault and no stop reports
+  the record from the walk itself, with the flag clear on every record.
+- A parity test requires every `MetadataFlags` bit to appear in
+  include/tiffz.h with the same value, and the header to define no other.

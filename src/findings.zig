@@ -172,6 +172,11 @@ pub const MetadataFlags = struct {
     pub const byte_offset_present: u32 = 1 << 1;
     pub const host_offset_present: u32 = 1 << 2;
     pub const offset_is_exact: u32 = 1 << 3;
+    /// The record comes from an IFD the walk reached only after a stopping
+    /// error: the directory rules of every parsed IFD still run then
+    /// (docs/plan_context/reach-gap.md). Payloads and verdicts are
+    /// unchanged. Numbered by validate 2026-11-06.
+    pub const after_stop: u32 = 1 << 4;
 };
 
 /// Preserve a strict facade finding's own outcome instead of deriving one from

@@ -638,6 +638,7 @@ const FindingRecorder = struct {
         byte_offset: ?u64,
         host_byte_offset: ?u64,
         offset_is_exact: bool,
+        after_stop: bool,
         payload_u32: ?u32, // decoded from a 4-byte little-endian payload, else null
         payload_u32_2: ?u32, // second LE u32 (bytes 4..8) for 8-byte payloads, else null
         payload_len: usize,
@@ -696,6 +697,7 @@ const FindingRecorder = struct {
             else
                 null,
             .offset_is_exact = (metadata_flags & tiffz.findings.MetadataFlags.offset_is_exact) != 0,
+            .after_stop = (metadata_flags & tiffz.findings.MetadataFlags.after_stop) != 0,
             .payload_u32 = payload_u32,
             .payload_u32_2 = payload_u32_2,
             .payload_len = payload_len,
@@ -3826,6 +3828,16 @@ fn conformanceHits(recorder: *const FindingRecorder, ifd: u32, tag: u16) usize {
     return hits;
 }
 
+/// The `conformanceHits` records that carry MetadataFlags.after_stop.
+fn afterStopHits(recorder: *const FindingRecorder, ifd: u32, tag: u16) usize {
+    var hits: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid) or !f.after_stop) continue;
+        if (std.mem.readInt(u32, f.payload_bytes[0..4], .little) == ifd and std.mem.readInt(u16, f.payload_bytes[16..18], .little) == tag) hits += 1;
+    }
+    return hits;
+}
+
 fn validateWithLimits(allocator: std.mem.Allocator, bytes: []const u8, recorder: *FindingRecorder, limits: tiffz.Limits) !void {
     var handle = tiffz.source.BufferHandle.init(bytes);
     const src = tiffz.Source.fromBuffer(&handle);
@@ -3853,6 +3865,7 @@ test "IFD-entry rules: a directory fault after a decode stop is still reported, 
         defer recorder.deinit();
         if (validateRecording(allocator, bytes, &recorder)) |_| return error.TestUnexpectedResult else |err| stops[k] = err;
         try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
+        try std.testing.expectEqual(conformanceHits(&recorder, 1, 274), afterStopHits(&recorder, 1, 274));
     }
     try std.testing.expectEqual(stops[0], stops[1]);
 }
@@ -3868,6 +3881,7 @@ test "IFD-entry rules: after a graph error, the IFDs parsed before it are checke
         defer recorder.deinit();
         if (validateRecording(allocator, bytes, &recorder)) |_| return error.TestUnexpectedResult else |err| stops[k] = err;
         try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
+        try std.testing.expectEqual(conformanceHits(&recorder, 1, 274), afterStopHits(&recorder, 1, 274));
     }
     try std.testing.expectEqual(stops[0], stops[1]);
 }
@@ -3884,9 +3898,25 @@ test "IFD-entry rules: after a limit stop, the directory rules still run for the
         defer recorder.deinit();
         try std.testing.expectError(error.LimitExceededStripCount, validateWithLimits(allocator, bytes, &recorder, .{ .max_strips_or_tiles = 0 }));
         try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
+        try std.testing.expectEqual(conformanceHits(&recorder, 1, 274), afterStopHits(&recorder, 1, 274));
     }
 }
 
+test "IFD-entry rules: a directory fault the walk reaches carries no after_stop flag" {
+    // The control for the three tests above: the same file with no stop.
+    // IFD 1's Orientation 9 is reported by the walk itself, so its record
+    // has MetadataFlags.after_stop clear, and validation still fails
+    // Malformed once the walk ends.
+    const allocator = std.testing.allocator;
+    const bytes = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, 9, 0);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
+    try std.testing.expectEqual(@as(usize, 1), conformanceHits(&recorder, 1, 274));
+    try std.testing.expectEqual(@as(usize, 0), afterStopHits(&recorder, 1, 274));
+    for (recorder.findings.items) |f| try std.testing.expect(!f.after_stop);
+}
 
 test "IFD-entry faults: every clean seed validates without a directory-rule finding" {
     const allocator = std.testing.allocator;
@@ -4543,4 +4573,25 @@ test "Predictor 3 at 8 bits decodes, as float and as integer data" {
         try std.testing.expectEqual(@as(usize, 64), got.len);
         for (got, 0..) |b, k| try std.testing.expectEqual(@as(u8, @truncate(3 * k)), b);
     }
+}
+
+// include/tiffz.h and findings.MetadataFlags must name the same bits: each
+// Zig flag `name` has `#define TIFFZ_FINDING_NAME UINT32_C(value)` and the
+// header has no flag the Zig side lacks.
+test "MetadataFlags: every flag is in the C header with the same value, and no other" {
+    const allocator = std.testing.allocator;
+    const header = try loadFile(allocator, "include/tiffz.h");
+    defer allocator.free(header);
+    const decls = @typeInfo(tiffz.findings.MetadataFlags).@"struct".decls;
+    inline for (decls) |decl| {
+        var upper: [64]u8 = undefined;
+        const name = std.ascii.upperString(&upper, decl.name);
+        var want_buf: [128]u8 = undefined;
+        const want = try std.fmt.bufPrint(&want_buf, "#define TIFFZ_FINDING_{s} UINT32_C({d})\n", .{ name, @field(tiffz.findings.MetadataFlags, decl.name) });
+        if (std.mem.indexOf(u8, header, want) == null) {
+            std.debug.print("include/tiffz.h lacks: {s}", .{want});
+            return error.TestExpectedEqual;
+        }
+    }
+    try std.testing.expectEqual(decls.len, std.mem.count(u8, header, "#define TIFFZ_FINDING_"));
 }
