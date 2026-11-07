@@ -2871,6 +2871,85 @@ test "Compression 34676 (SGILog): a strip cut short fails" {
     try std.testing.expect(std.meta.isError(validateAndDecodeStrip(allocator, bytes, &dest)));
 }
 
+// Fixtures from tests/fixtures/sgilog/gen24.c: libtiff 4.7.2's own SGILog24
+// encoder writes them (tiffcp has no option for it) and its decodes are the
+// -none oracles. libtiff's L carries bit 12 of the uv index (a 0xffd mask
+// where 0xffc fits the documented form, src/compressions/sgilog.zig), so
+// its L may be 1 above tiffz's; u and v must match exactly.
+fn expectLogLuv24MatchesOracle(coded_path: []const u8, oracle_path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const coded = try loadFile(allocator, coded_path);
+    defer allocator.free(coded);
+    const oracle = try loadFile(allocator, oracle_path);
+    defer allocator.free(oracle);
+    var got: [2048]u8 = undefined;
+    var want: [2048]u8 = undefined;
+    const n = try validateAndDecodeStrip(allocator, coded, &got);
+    const m = try validateAndDecodeStrip(allocator, oracle, &want);
+    try std.testing.expectEqual(@as(usize, 37 * 5 * 6), n);
+    try std.testing.expectEqual(m, n);
+    // Samples come out in each file's own byte order; tiffcp writes its
+    // oracle in the host's, so the two can differ.
+    const got_order: std.builtin.Endian = if (coded[0] == 'I') .little else .big;
+    const want_order: std.builtin.Endian = if (oracle[0] == 'I') .little else .big;
+    var off_by_one: usize = 0;
+    var i: usize = 0;
+    while (i < n) : (i += 6) {
+        const got_l = std.mem.readInt(i16, got[i..][0..2], got_order);
+        const want_l = std.mem.readInt(i16, want[i..][0..2], want_order);
+        try std.testing.expect(want_l - got_l == 0 or want_l - got_l == 1);
+        if (want_l != got_l) off_by_one += 1;
+        for ([_]usize{ 2, 4 }) |at| {
+            try std.testing.expectEqual(std.mem.readInt(i16, want[i + at ..][0..2], want_order), std.mem.readInt(i16, got[i + at ..][0..2], got_order));
+        }
+    }
+    // The ramp crosses squares with and without bit 12 set, so both cases run.
+    try std.testing.expect(off_by_one > 0 and off_by_one < n / 6);
+}
+
+test "Compression 34677 (SGILog24): LogLuv24 decodes to libtiff's L, u and v and validates" {
+    try expectLogLuv24MatchesOracle("tests/fixtures/sgilog/logluv24-37x5.tif", "tests/fixtures/sgilog/logluv24-37x5-none.tif");
+    try expectLogLuv24MatchesOracle("tests/fixtures/sgilog/logluv24-37x5-be.tif", "tests/fixtures/sgilog/logluv24-37x5-be-none.tif");
+}
+
+test "Compression 34677 (SGILog24): an index past the table and a short strip fail" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/sgilog/logluv24-37x5.tif");
+    defer allocator.free(bytes);
+    var dest: [2048]u8 = undefined;
+    // The strip starts at offset 8 (StripOffsets, one LONG). The first
+    // pixel's 14-bit index becomes 0x3FFF, past the table's 16289 squares.
+    const so = std.mem.indexOf(u8, bytes, &.{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00 }) orelse return error.TestUnexpectedResult;
+    const strip = std.mem.readInt(u32, bytes[so + 8 ..][0..4], .little);
+    const saved = bytes[strip + 1 ..][0..2].*;
+    bytes[strip + 1] |= 0x3F;
+    bytes[strip + 2] = 0xFF;
+    try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
+    bytes[strip + 1 ..][0..2].* = saved;
+    // StripByteCounts shrunk by 4: the last pixel is incomplete.
+    const at = std.mem.indexOf(u8, bytes, &.{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00 }) orelse return error.TestUnexpectedResult;
+    const count = std.mem.readInt(u32, bytes[at + 8 ..][0..4], .little);
+    std.mem.writeInt(u32, bytes[at + 8 ..][0..4], count - 4, .little);
+    try std.testing.expect(std.meta.isError(validateAndDecodeStrip(allocator, bytes, &dest)));
+}
+
+test "Compression 34677 (SGILog24): a LogL directory is not decoded" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/sgilog/logl-37x5.tif");
+    defer allocator.free(bytes);
+    // Compression (tag 259, one SHORT) 34676 becomes 34677.
+    const at = std.mem.indexOf(u8, bytes, &.{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x74, 0x87 }) orelse return error.TestUnexpectedResult;
+    bytes[at + 8] = 0x75;
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    var dest: [512]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedCompression, dec.decodeStrip(0, 0, &dest, &ws));
+}
+
 test "BlackIsZero compression 7: a three-component frame stays outside the gray path" {
     const allocator = std.testing.allocator;
     const bytes = try wrapJpegDepth(allocator, &lossless_flat8_jpeg, 6, 2, 1, 1, 8, .little);

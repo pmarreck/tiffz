@@ -1512,6 +1512,7 @@ pub const Decoder = struct {
         tags.compression_next,
         tags.compression_thunderscan,
         tags.compression_sgilog,
+        tags.compression_sgilog24,
         tags.compression_ccitt_t4,
         tags.compression_ccitt_t6,
         tags.compression_lzw,
@@ -1662,18 +1663,18 @@ pub const Decoder = struct {
                 }
                 break :blk written;
             },
-            tags.compression_sgilog => blk: {
-                // SGILog (34676) decoded to the 16-bit signed samples its
-                // directory declares: LogL with one sample or LogLuv with three,
-                // chunky. Other layouts (a float or 8-bit RGB reading, or
-                // planes) are not decoded.
+            tags.compression_sgilog, tags.compression_sgilog24 => blk: {
+                // SGILog (34676) and SGILog24 (34677) decoded to the 16-bit
+                // signed samples the directory declares: LogL with one sample
+                // (34676 only) or LogLuv with three, chunky. Other layouts (a
+                // float or 8-bit RGB reading, or planes) are not decoded.
                 const photo = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse return error.Malformed;
                 const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
                 const planar = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse tags.planar_chunky;
-                const kind: compressions_sgilog.Kind = if (photo == tags.photometric_log_l and samples == 1)
+                const kind: compressions_sgilog.Kind = if (comp == tags.compression_sgilog and photo == tags.photometric_log_l and samples == 1)
                     .log_l
                 else if (photo == tags.photometric_log_luv and samples == 3)
-                    .log_luv
+                    if (comp == tags.compression_sgilog24) .log_luv24 else .log_luv
                 else
                     break :blk error.UnsupportedCompression;
                 if (planar != tags.planar_chunky) break :blk error.UnsupportedCompression;
@@ -2261,7 +2262,7 @@ test "decodeStrip: uncompressed RGB single strip" {
 // classify unsupported. Oracles are hand-derived from the dispatch switch, so
 // adding a codec to one side without the other fails here.
 test "compressionSupported: classifier over supported / never-supported / unknown codes" {
-    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 50000, 34887, 34892 };
+    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 34887, 34892 };
     for (supported) |c| {
         try std.testing.expect(Decoder.compressionSupported(c));
     }
