@@ -216,9 +216,10 @@ test "classic JPEG finding verdict follows jpegz's classification over every cod
     // implementation: any fail is corrupt; recovered truncation and restart
     // faults are corrupt at any severity (BDFN, 2026-11-03: a fault the
     // decoder works around is corrupt or a known defect, never a warning);
-    // all-zero Huffman padding, and any finding at known_defect severity that
-    // is not corrupt class, is a known defect (validate 2026-11-06: a known
-    // defect is independent of WARN and FAIL); an unknown marker leaves the
+    // all-zero Huffman padding, an exactly full Huffman table (jpegz 71, the
+    // owner admitted it 2026-11-06), and any finding at known_defect severity
+    // that is not corrupt class, is a known defect at any severity (validate
+    // 2026-11-06: a known defect is independent of WARN and FAIL); an unknown marker leaves the
     // result indeterminate, as do the two validateAny meta-findings. An
     // unchecked JFIF version is a WARN-class deviation, so valid (validate
     // 2026-11-05). Everything else a decoder recovers from is valid. A jpegz change to any of these fails here.
@@ -228,13 +229,14 @@ test "classic JPEG finding verdict follows jpegz's classification over every cod
     const C = jpegz.FindingCode;
     const always_corrupt = [_]C{ .missing_eoi, .insufficient_data, .restart_marker_missing, .restart_marker_unexpected };
     const indeterminate = [_]C{ .unknown_marker, .unrecognized_container, .jxl_validator_unavailable };
+    const known_defect_codes = [_]C{ .entropy_padding_zero_bits, .huffman_table_full_all_ones };
     inline for (@typeInfo(C).@"enum".fields) |field| {
         const code: C = @field(C, field.name);
         inline for (@typeInfo(jpegz.Severity).@"enum".fields) |sev_field| {
             const severity: jpegz.Severity = @field(jpegz.Severity, sev_field.name);
             const expected: Verdict = if (severity == .fail or comptime contains(&always_corrupt, code))
                 .corrupt
-            else if (severity == .known_defect or code == .entropy_padding_zero_bits)
+            else if (severity == .known_defect or comptime contains(&known_defect_codes, code))
                 .known_defect
             else if (comptime contains(&indeterminate, code))
                 .indeterminate

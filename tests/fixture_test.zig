@@ -2435,6 +2435,64 @@ test "DNG LinearRaw compression 7: a 16-bit three-component lossless strip is th
     }
 }
 
+/// lossless_linear16_jpeg with `extra` unused codes of length 2 added to
+/// its DHT (BITS[2] 1 -> 1 + extra, symbols 0x00 and 0x01 appended). Its
+/// table has one 1-bit and one 2-bit code, so one extra code fills the code
+/// space exactly (the last code is the all-ones codeword, as in Pentax,
+/// Ricoh and DJI DNGs) and two oversubscribe it. The scan never starts a
+/// code with 11, so the decode is unchanged.
+fn linear16WithExtraCodes(allocator: std.mem.Allocator, extra: u8) ![]u8 {
+    const src = &lossless_linear16_jpeg;
+    const dht = std.mem.indexOf(u8, src, &.{ 0xff, 0xc4, 0x00, 0x15 }) orelse return error.TestUnexpectedResult;
+    const values_end = dht + 2 + 0x15; // marker, then the 0x15-byte segment
+    const out = try allocator.alloc(u8, src.len + extra);
+    @memcpy(out[0..values_end], src[0..values_end]);
+    for (0..extra) |k| out[values_end + k] = @intCast(k);
+    @memcpy(out[values_end + extra ..], src[values_end..]);
+    out[dht + 3] += extra; // segment length
+    try std.testing.expectEqual(@as(u8, 1), out[dht + 6]); // BITS[2]
+    out[dht + 6] += extra;
+    return out;
+}
+
+// jpegz 71 huffman_table_full_all_ones (validate approved 2026-11-06; the
+// owner admitted the pattern): an exactly full DHT is a known defect that
+// still decodes, and an oversubscribed one stays corrupt.
+test "DNG LinearRaw compression 7: an exactly full Huffman table is a known defect and decodes; one code more is corrupt" {
+    const allocator = std.testing.allocator;
+    const full = try linear16WithExtraCodes(allocator, 1);
+    defer allocator.free(full);
+    const bytes = try wrapJpegDepth(allocator, full, 4, 2, 3, 34892, 16, .little);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try validateRecording(allocator, bytes, &recorder);
+    var saw = false;
+    for (recorder.findings.items) |finding| {
+        if (finding.source != .jpegz) continue;
+        try std.testing.expect(finding.verdict != .corrupt);
+        if (finding.finding_code == @intFromEnum(tiffz.jpegz.FindingCode.huffman_table_full_all_ones)) {
+            try std.testing.expectEqual(tiffz.findings.Verdict.known_defect, finding.verdict);
+            saw = true;
+        }
+    }
+    try std.testing.expect(saw);
+    var dest: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 48), try validateAndDecodeStrip(allocator, bytes, &dest));
+    for (0..24) |i| try std.testing.expectEqual(ppmSample(i, 16), std.mem.readInt(u16, dest[i * 2 ..][0..2], .little));
+
+    const over = try linear16WithExtraCodes(allocator, 2);
+    defer allocator.free(over);
+    const over_bytes = try wrapJpegDepth(allocator, over, 4, 2, 3, 34892, 16, .little);
+    defer allocator.free(over_bytes);
+    var over_recorder = FindingRecorder.init(allocator);
+    defer over_recorder.deinit();
+    try std.testing.expect(std.meta.isError(validateRecording(allocator, over_bytes, &over_recorder)));
+    for (over_recorder.findings.items) |finding| {
+        if (finding.source == .jpegz) try std.testing.expect(finding.finding_code != @intFromEnum(tiffz.jpegz.FindingCode.huffman_table_full_all_ones));
+    }
+}
+
 test "DNG LinearRaw compression 7: 12-bit lossless samples are packed high bit first, rows on byte boundaries" {
     const allocator = std.testing.allocator;
     const bytes = try wrapJpegDepth(allocator, &lossless_linear12_jpeg, 4, 2, 3, 34892, 12, .little);
