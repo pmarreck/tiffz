@@ -1683,6 +1683,8 @@ pub const Decoder = struct {
         tags.compression_zstd,
         tags.compression_lerc,
         tags.compression_dng_lossy_jpeg,
+        tags.compression_jpegxl,
+        tags.compression_dng_jpegxl,
     };
 
     /// True iff `decodeBytes` has a real codec for this Compression code.
@@ -2103,6 +2105,64 @@ pub const Decoder = struct {
                 }
                 break :blk written;
             },
+            tags.compression_jpegxl, tags.compression_dng_jpegxl => blk: {
+                // JPEG XL (50002, GDAL and libtiff; 52546, DNG 1.7): each strip
+                // or tile is one JPEG XL stream holding the chunk's samples.
+                // libjxlz validates it, its findings are forwarded, then the
+                // first frame is decoded and stored as an uncompressed chunk
+                // holds it. The frame must have the chunk's width, length,
+                // sample count and depth. Float samples, extra channels the
+                // decoder cannot return, and a build without JPEG XL are reach.
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
+                if (got < byte_count) break :blk error.SourceShortRead;
+
+                var validation = compressions_jpeg.jpegz.jpegxl.validate(self.allocator, scratch, compressions_jpeg.jpegz.jpegxl.default_options) catch break :blk error.OutOfMemory;
+                defer validation.deinit(self.allocator);
+                var corrupt = false;
+                for (validation.findings.items) |finding| {
+                    const verdict = findings_mod.strictFindingVerdict(finding);
+                    if (verdict == .corrupt) corrupt = true;
+                    const source: findings_mod.SourceDecoder = switch (finding.source) {
+                        .jpegz => .jpegz,
+                        .jp2z => .jp2z,
+                        .libjxlz => .libjxlz,
+                    };
+                    const host_offset = if (finding.offset) |leaf| offset +| leaf else null;
+                    self.emitDetailed(
+                        source,
+                        @intCast(finding.leaf_code),
+                        if (finding.code) |code| @intCast(@intFromEnum(code)) else null,
+                        verdict,
+                        finding.offset,
+                        host_offset,
+                        finding.offset_is_exact and host_offset != null,
+                        finding.detail orelse &.{},
+                    );
+                }
+                if (corrupt) break :blk error.JpegInTiffPayload;
+
+                var decoded = compressions_jpeg.jpegz.jpegxl.decode(self.allocator, scratch) catch |e| switch (e) {
+                    error.OutOfMemory => break :blk error.OutOfMemory,
+                    error.NotImplemented, error.UnsupportedPrecision => break :blk error.UnsupportedCompression,
+                    error.TruncatedStream, error.BackendError => break :blk error.JpegInTiffPayload,
+                };
+                defer decoded.deinit(self.allocator);
+                if (decoded.extra_channels_dropped != 0) break :blk error.UnsupportedCompression;
+                const img = decoded.image;
+                const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+                const planar = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse tags.planar_chunky;
+                const chunk_samples: u16 = if (planar == tags.planar_separate) 1 else samples;
+                const bps = self.uniformBitsPerSample(dir, samples) catch |e| break :blk e;
+                if (img.width != ext.width or img.height != ext.rows or img.channels != chunk_samples or img.bits_per_sample != bps) {
+                    break :blk error.Malformed;
+                }
+                const written = compressions_jpeg.storeSamples(img, bps, @as(usize, ext.width) * chunk_samples, self.endian, dest) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
             else => error.UnsupportedCompression,
         };
     }
@@ -2422,7 +2482,7 @@ test "decodeStrip: uncompressed RGB single strip" {
 // classify unsupported. Oracles are hand-derived from the dispatch switch, so
 // adding a codec to one side without the other fails here.
 test "compressionSupported: classifier over supported / never-supported / unknown codes" {
-    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 34887, 34892 };
+    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 50002, 52546, 34887, 34892 };
     for (supported) |c| {
         try std.testing.expect(Decoder.compressionSupported(c));
     }
@@ -2433,7 +2493,6 @@ test "compressionSupported: classifier over supported / never-supported / unknow
         34712, // JPEG2000-in-TIFF
         34925, // LZMA2
         50001, // WebP
-        50002, // JPEG XL (libtiff)
         0xFFFF,
     };
     for (unsupported) |c| {

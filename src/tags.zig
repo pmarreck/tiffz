@@ -69,6 +69,8 @@ pub const compression_sgilog: u16 = 34676;   // SGILog LogL and LogLuv32 (libtif
 pub const compression_sgilog24: u16 = 34677; // SGILog24, LogLuv24 (libtiff tif_luv.c)
 pub const compression_zstd: u16 = 50000;     // GDAL/libtiff extension, M12
 pub const compression_lerc: u16 = 34887;     // Esri LERC (GDAL/libtiff), M12
+pub const compression_jpegxl: u16 = 50002;   // JPEG XL (GDAL/libtiff)
+pub const compression_dng_jpegxl: u16 = 52546; // JPEG XL (DNG 1.7)
 
 /// LercParameters tag (private). Two u32 values:
 /// [codec_version, add_compression] where add_compression ∈

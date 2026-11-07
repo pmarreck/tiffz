@@ -5021,3 +5021,102 @@ test "extent_past_eof: IFD 0 past the end reaches a callback installed at open, 
     var plain = tiffz.source.BufferHandle.init(cut);
     try std.testing.expectError(error.SourceShortRead, tiffz.Decoder.open(allocator, tiffz.Source.fromBuffer(&plain)));
 }
+
+// JPEG XL strips from tests/fixtures/jpegxl/gen.sh: libjxl's cjxl encodes
+// each raster losslessly (djxl returns it exactly), so the formulas below
+// are the oracle.
+fn jxlGray8(x: usize, y: usize) u8 {
+    return @intCast((x * 13 + y * 31) % 256);
+}
+fn jxlRgb8(x: usize, y: usize, c: usize) u8 {
+    return @intCast(switch (c) {
+        0 => (x * 20 + y) % 256,
+        1 => (y * 40 + x) % 256,
+        else => (x * y * 7) % 256,
+    });
+}
+fn jxlGray12(x: usize, y: usize) u16 {
+    return @intCast((x * 397 + y * 1021) % 4096);
+}
+
+test "Compression 50002 (JPEG XL): 8-bit gray and RGB strips validate and decode to their sources" {
+    const allocator = std.testing.allocator;
+    {
+        const bytes = try loadFile(allocator, "tests/fixtures/jpegxl/gray8-16x8.tif");
+        defer allocator.free(bytes);
+        var dest: [256]u8 = undefined;
+        try std.testing.expectEqual(@as(usize, 16 * 8), try validateAndDecodeStrip(allocator, bytes, &dest));
+        for (0..8) |y| for (0..16) |x| try std.testing.expectEqual(jxlGray8(x, y), dest[y * 16 + x]);
+    }
+    {
+        const bytes = try loadFile(allocator, "tests/fixtures/jpegxl/rgb8-12x6.tif");
+        defer allocator.free(bytes);
+        var dest: [256]u8 = undefined;
+        try std.testing.expectEqual(@as(usize, 12 * 6 * 3), try validateAndDecodeStrip(allocator, bytes, &dest));
+        for (0..6) |y| for (0..12) |x| for (0..3) |c| try std.testing.expectEqual(jxlRgb8(x, y, c), dest[(y * 12 + x) * 3 + c]);
+    }
+}
+
+test "Compression 50002 (JPEG XL): a 12-bit strip is packed high bit first, rows on byte boundaries" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/jpegxl/gray12-10x4.tif");
+    defer allocator.free(bytes);
+    var dest: [64]u8 = undefined;
+    // Ten 12-bit samples are 120 bits, 15 bytes per row.
+    try std.testing.expectEqual(@as(usize, 15 * 4), try validateAndDecodeStrip(allocator, bytes, &dest));
+    var want: [60]u8 = @splat(0);
+    for (0..4) |y| {
+        for (0..10) |x| {
+            const bit = y * 120 + x * 12;
+            const v = jxlGray12(x, y);
+            for (0..12) |b| {
+                if ((v >> @intCast(11 - b)) & 1 == 1) {
+                    const at = bit + b;
+                    want[at / 8] |= @as(u8, 0x80) >> @intCast(at % 8);
+                }
+            }
+        }
+    }
+    try std.testing.expectEqualSlices(u8, &want, dest[0..60]);
+}
+
+test "Compression 52546 (DNG 1.7 JPEG XL) decodes the same strip" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/jpegxl/gray8-16x8.tif");
+    defer allocator.free(bytes);
+    const at = std.mem.indexOf(u8, bytes, &.{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x52, 0xc3 }) orelse return error.TestUnexpectedResult;
+    std.mem.writeInt(u16, bytes[at + 8 ..][0..2], 52546, .little);
+    var dest: [256]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 16 * 8), try validateAndDecodeStrip(allocator, bytes, &dest));
+    for (0..8) |y| for (0..16) |x| try std.testing.expectEqual(jxlGray8(x, y), dest[y * 16 + x]);
+}
+
+test "Compression 50002 (JPEG XL): a cut stream, and a frame that disagrees with the directory, fail" {
+    const allocator = std.testing.allocator;
+    var dest: [256]u8 = undefined;
+    {
+        // StripByteCounts shortened by 20: the codestream ends early.
+        const bytes = try loadFile(allocator, "tests/fixtures/jpegxl/rgb8-12x6.tif");
+        defer allocator.free(bytes);
+        const at = std.mem.indexOf(u8, bytes, &.{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00 }) orelse return error.TestUnexpectedResult;
+        const n = std.mem.readInt(u32, bytes[at + 8 ..][0..4], .little);
+        std.mem.writeInt(u32, bytes[at + 8 ..][0..4], n - 20, .little);
+        try std.testing.expect(std.meta.isError(validateAndDecodeStrip(allocator, bytes, &dest)));
+    }
+    {
+        // BitsPerSample 12 becomes 16: the frame's depth no longer matches.
+        const bytes = try loadFile(allocator, "tests/fixtures/jpegxl/gray12-10x4.tif");
+        defer allocator.free(bytes);
+        const at = std.mem.indexOf(u8, bytes, &.{ 0x02, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00 }) orelse return error.TestUnexpectedResult;
+        bytes[at + 8] = 16;
+        try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
+    }
+    {
+        // ImageWidth 16 becomes 15: the frame is wider than the strip.
+        const bytes = try loadFile(allocator, "tests/fixtures/jpegxl/gray8-16x8.tif");
+        defer allocator.free(bytes);
+        const at = std.mem.indexOf(u8, bytes, &.{ 0x00, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00 }) orelse return error.TestUnexpectedResult;
+        bytes[at + 8] = 15;
+        try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
+    }
+}

@@ -12,6 +12,13 @@ pub fn build(b: *std.Build) void {
         "Optimization mode (default: ReleaseFast)",
     ) orelse .ReleaseFast;
 
+    // Brotli for jpegz's JPEG XL leg: libjxlz reads Brotli-compressed container
+    // metadata, and its static library leaves linking to each final artifact
+    // (libjxlz build.zig). The flake exports BROTLI_LIB_DIR. Windows builds
+    // have no Brotli in nixpkgs, as jpegz notes, so they do not link it.
+    const brotli_lib_dir = b.graph.environ_map.get("BROTLI_LIB_DIR");
+    const link_brotli = target.result.os.tag != .windows;
+
     // Parser-only public module for container classifiers such as rawz. This
     // target deliberately receives no codec imports or linked libraries.
     const parser_module = b.addModule("tiffz-parser", .{
@@ -219,6 +226,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_inc.len > 0) tiffz_named_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) tiffz_named_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     tiffz_named_module.linkSystemLibrary("z", .{});
+    if (link_brotli) linkBrotli(tiffz_named_module, brotli_lib_dir);
     tiffz_named_module.addImport("lzwz", lzwz_mod);
     tiffz_named_module.addImport("jpegz", jpegz_mod);
     tiffz_named_module.addImport("zstd", zstdz_mod);
@@ -291,6 +299,7 @@ pub fn build(b: *std.Build) void {
     if (opt_openjpeg_lib.len > 0) cli.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     cli.root_module.linkLibrary(lib);
     cli.root_module.linkSystemLibrary("z", .{});
+    if (link_brotli) linkBrotli(cli.root_module, brotli_lib_dir);
     b.installArtifact(cli);
     const install_cli = b.addInstallArtifact(cli, .{});
 
@@ -308,6 +317,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_inc.len > 0) unit_tests_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) unit_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     unit_tests_module.linkSystemLibrary("z", .{});
+    if (link_brotli) linkBrotli(unit_tests_module, brotli_lib_dir);
     unit_tests_module.addImport("lzwz", lzwz_mod);
     unit_tests_module.addImport("jpegz", jpegz_mod);
     unit_tests_module.addImport("zstd", zstdz_mod);
@@ -343,6 +353,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_inc.len > 0) fixture_tests_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) fixture_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     fixture_tests_module.linkSystemLibrary("z", .{});
+    if (link_brotli) linkBrotli(fixture_tests_module, brotli_lib_dir);
     const fixture_tests = b.addTest(.{ .root_module = fixture_tests_module });
     const run_fixture_tests = b.addRunArtifact(fixture_tests);
 
@@ -357,6 +368,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_inc.len > 0) writer_tests_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) writer_tests_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     writer_tests_module.linkSystemLibrary("z", .{});
+    if (link_brotli) linkBrotli(writer_tests_module, brotli_lib_dir);
     const writer_tests = b.addTest(.{ .root_module = writer_tests_module });
     const run_writer_tests = b.addRunArtifact(writer_tests);
 
@@ -375,6 +387,7 @@ pub fn build(b: *std.Build) void {
     if (opt_zlib_inc.len > 0) fuzz_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
     if (opt_zlib_lib_path.len > 0) fuzz_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
     fuzz_module.linkSystemLibrary("z", .{});
+    if (link_brotli) linkBrotli(fuzz_module, brotli_lib_dir);
     const fuzz_tests = b.addTest(.{ .root_module = fuzz_module });
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
     const fuzz_step = b.step("fuzz", "Run the deterministic mutation fuzzer");
@@ -446,6 +459,7 @@ pub fn build(b: *std.Build) void {
         if (opt_zlib_inc.len > 0) explore_module.addIncludePath(.{ .cwd_relative = opt_zlib_inc });
         if (opt_zlib_lib_path.len > 0) explore_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib_path });
         explore_module.linkSystemLibrary("z", .{});
+        if (link_brotli) linkBrotli(explore_module, brotli_lib_dir);
         const explore_tests = b.addTest(.{ .root_module = explore_module });
         const run_explore_tests = b.addRunArtifact(explore_tests);
         const explore_step = b.step("explore", "In-process corruption exploration: parity with the pinned floors, and -Dexplore-master runs");
@@ -495,4 +509,12 @@ fn mechaPlatform(t: std.Target) struct { pf: []const u8, variant: []const u8 } {
         if (std.mem.eql(u8, os, p[0]) and std.mem.eql(u8, arch, p[1])) return .{ .pf = p[2], .variant = variant };
     }
     unreachable;
+}
+
+/// Link Brotli's three libraries into `mod` (see `link_brotli` in `build`).
+fn linkBrotli(mod: *std.Build.Module, lib_dir: ?[]const u8) void {
+    if (lib_dir) |dir| mod.addLibraryPath(.{ .cwd_relative = dir });
+    mod.linkSystemLibrary("brotlienc", .{});
+    mod.linkSystemLibrary("brotlidec", .{});
+    mod.linkSystemLibrary("brotlicommon", .{});
 }
