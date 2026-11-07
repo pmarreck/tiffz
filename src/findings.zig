@@ -240,7 +240,8 @@ test "classic JPEG finding verdict follows jpegz's classification over every cod
     // faults are corrupt at any severity (BDFN, 2026-11-03: a fault the
     // decoder works around is corrupt or a known defect, never a warning);
     // all-zero Huffman padding, an exactly full Huffman table (jpegz 71, the
-    // owner admitted it 2026-11-06), and any finding at known_defect severity
+    // owner admitted it 2026-11-06), Go 1.0's Se=0 sequential scan (jpegz 68),
+    // and any finding at known_defect severity
     // that is not corrupt class, is a known defect at any severity (validate
     // 2026-11-06: a known defect is independent of WARN and FAIL); an unknown marker leaves the
     // result indeterminate, as do the two validateAny meta-findings. An
@@ -252,7 +253,7 @@ test "classic JPEG finding verdict follows jpegz's classification over every cod
     const C = jpegz.FindingCode;
     const always_corrupt = [_]C{ .missing_eoi, .insufficient_data, .restart_marker_missing, .restart_marker_unexpected };
     const indeterminate = [_]C{ .unknown_marker, .unrecognized_container, .jxl_validator_unavailable };
-    const known_defect_codes = [_]C{ .entropy_padding_zero_bits, .huffman_table_full_all_ones };
+    const known_defect_codes = [_]C{ .entropy_padding_zero_bits, .huffman_table_full_all_ones, .sequential_scan_zero_se };
     inline for (@typeInfo(C).@"enum".fields) |field| {
         const code: C = @field(C, field.name);
         inline for (@typeInfo(jpegz.Severity).@"enum".fields) |sev_field| {

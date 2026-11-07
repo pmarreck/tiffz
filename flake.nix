@@ -93,7 +93,7 @@
         #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-1qvWVhDwAiOO0OpIBwkP9TY9LTt6T+fHOEuSjXq1EOE=";
+        zigDepsHash = "sha256-RFnSeMAERmZmaNcC4mmni6XPVcm48C7rJ/ICnY2bbN8=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";
