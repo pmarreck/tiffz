@@ -39,7 +39,7 @@ Within one cost tier, the order follows corpus prevalence. Each codec gets the f
 1. **34892 DNG lossy JPEG** (done 2026-11-06). Baseline JPEG through jpegz. LinearRaw is color-converted like RGB and YCbCr, a PhotometricMask is a one-component gray decode, and any other photometric stays unsupported. The Adobe-converted Canon 5D Mark III raw IFD and the iPhone 12 Pro mask now decode.
 2. **2 CCITT modified Huffman** (done 2026-11-06). The T.4 one-dimensional decoder without EOL codes, rows byte-aligned. The fixture comes from libtiff's own encoder.
 3. **32766 NeXT and 32809 ThunderScan** (done 2026-11-06). No published specification; read as libtiff's tif_next.c and tif_thunder.c describe them, with libtiff's decodes as the fixture oracle. NeXT's 32766 is outside the Compression row's specified values and still a finding 18 value fault, a question with validate.
-4. **34676 / 34677 SGILog.** LogLuv decode to the stored form.
+4. **34676 / 34677 SGILog.** 34676 (LogL, LogLuv32) done 2026-11-06: per-row run-length byte planes, decoded to the 16-bit signed samples the directory declares. 34677 (LogLuv24) needs the (u, v) index table and is open.
 5. **50001 WebP, 34925 LZMA.** These need a codec package. A new sibling package, or a vendored C library in the zstdz pattern, is a dependency decision to record first.
 6. **34712 JPEG 2000 and 50002 / 52546 JPEG XL.** These go through jpegz's jp2z and libjxlz legs (INTENT: one jpegz instance per compilation), once exemplars exist.
 7. **6 OJPEG.** Only if the owner reopens it.

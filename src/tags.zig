@@ -49,6 +49,8 @@ pub const opcode_list_3: u16 = 51022;          // 0xC74E; UNDEFINED — opcode l
 
 /// CFA photometric code (tag 262 = 32803).
 pub const photometric_color_filter_array: u16 = 32803;
+pub const photometric_log_l: u16 = 32844;          // SGILog LogL (libtiff tif_luv.c)
+pub const photometric_log_luv: u16 = 32845;        // SGILog LogLuv (libtiff tif_luv.c)
 
 /// Compression scheme codes (tag 259).
 pub const compression_none: u16 = 1;
@@ -63,6 +65,7 @@ pub const compression_deflate_adobe: u16 = 32946;
 pub const compression_packbits: u16 = 32773;
 pub const compression_next: u16 = 32766;     // NeXT 2-bit gray RLE (libtiff tif_next.c)
 pub const compression_thunderscan: u16 = 32809; // ThunderScan 4-bit (libtiff tif_thunder.c)
+pub const compression_sgilog: u16 = 34676;   // SGILog LogL and LogLuv32 (libtiff tif_luv.c)
 pub const compression_zstd: u16 = 50000;     // GDAL/libtiff extension, M12
 pub const compression_lerc: u16 = 34887;     // Esri LERC (GDAL/libtiff), M12
 

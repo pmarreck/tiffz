@@ -2774,8 +2774,8 @@ fn expectMatchesOracle(coded_path: []const u8, oracle_path: []const u8) !void {
     defer allocator.free(coded);
     const oracle = try loadFile(allocator, oracle_path);
     defer allocator.free(oracle);
-    var got: [64]u8 = undefined;
-    var want: [64]u8 = undefined;
+    var got: [2048]u8 = undefined;
+    var want: [2048]u8 = undefined;
     var handle = tiffz.source.BufferHandle.init(coded);
     const src = tiffz.Source.fromBuffer(&handle);
     var dec = try tiffz.Decoder.open(allocator, src);
@@ -2835,6 +2835,40 @@ test "Compression 32766 (NeXT): the strip decodes and the Compression value is s
     defer recorder.deinit();
     try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
     try std.testing.expectEqual(@as(usize, 1), recorder.count(.tag_field_invalid));
+}
+
+// Fixtures from tests/fixtures/sgilog/gen.sh: libtiff 4.7.2 encodes them
+// (`tiffcp -c sgilog`) and its decodes are the -none oracles.
+test "Compression 34676 (SGILog): LogL decodes to libtiff's 16-bit samples and validates" {
+    try expectMatchesOracle("tests/fixtures/sgilog/logl-37x5.tif", "tests/fixtures/sgilog/logl-37x5-none.tif");
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/sgilog/logl-37x5.tif");
+    defer allocator.free(bytes);
+    var dest: [512]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 37 * 5 * 2), try validateAndDecodeStrip(allocator, bytes, &dest));
+}
+
+test "Compression 34676 (SGILog): LogLuv decodes to libtiff's L, u and v and validates" {
+    try expectMatchesOracle("tests/fixtures/sgilog/logluv-37x5.tif", "tests/fixtures/sgilog/logluv-37x5-none.tif");
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/sgilog/logluv-37x5.tif");
+    defer allocator.free(bytes);
+    var dest: [2048]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 37 * 5 * 6), try validateAndDecodeStrip(allocator, bytes, &dest));
+}
+
+test "Compression 34676 (SGILog): a strip cut short fails" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/sgilog/logl-37x5.tif");
+    defer allocator.free(bytes);
+    // Shrink StripByteCounts (tag 279, one LONG, as libtiff writes it) by 20:
+    // the strip ends before its last row is complete.
+    const at = std.mem.indexOf(u8, bytes, &.{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00 }) orelse return error.TestUnexpectedResult;
+    const count_at = at + 8;
+    const count = std.mem.readInt(u32, bytes[count_at..][0..4], .little);
+    std.mem.writeInt(u32, bytes[count_at..][0..4], count - 20, .little);
+    var dest: [512]u8 = undefined;
+    try std.testing.expect(std.meta.isError(validateAndDecodeStrip(allocator, bytes, &dest)));
 }
 
 test "BlackIsZero compression 7: a three-component frame stays outside the gray path" {

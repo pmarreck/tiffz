@@ -25,6 +25,7 @@ const compressions_none = @import("compressions/none.zig");
 const compressions_packbits = @import("compressions/packbits.zig");
 const compressions_next = @import("compressions/next.zig");
 const compressions_thunderscan = @import("compressions/thunderscan.zig");
+const compressions_sgilog = @import("compressions/sgilog.zig");
 const lzwz = @import("lzwz");
 const compressions_deflate = @import("compressions/deflate.zig");
 const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
@@ -1510,6 +1511,7 @@ pub const Decoder = struct {
         tags.compression_ccitt_rle,
         tags.compression_next,
         tags.compression_thunderscan,
+        tags.compression_sgilog,
         tags.compression_ccitt_t4,
         tags.compression_ccitt_t6,
         tags.compression_lzw,
@@ -1655,6 +1657,37 @@ pub const Decoder = struct {
                     fill,
                     eol_byte_align,
                 ) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
+            tags.compression_sgilog => blk: {
+                // SGILog (34676) decoded to the 16-bit signed samples its
+                // directory declares: LogL with one sample or LogLuv with three,
+                // chunky. Other layouts (a float or 8-bit RGB reading, or
+                // planes) are not decoded.
+                const photo = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse return error.Malformed;
+                const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+                const planar = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse tags.planar_chunky;
+                const kind: compressions_sgilog.Kind = if (photo == tags.photometric_log_l and samples == 1)
+                    .log_l
+                else if (photo == tags.photometric_log_luv and samples == 3)
+                    .log_luv
+                else
+                    break :blk error.UnsupportedCompression;
+                if (planar != tags.planar_chunky) break :blk error.UnsupportedCompression;
+                if ((self.uniformBitsPerSample(dir, samples) catch |e| break :blk e) != 16) break :blk error.UnsupportedBitDepth;
+                const format_entry = dir.get(tags.sample_format) orelse break :blk error.UnsupportedBitDepth;
+                var index: u16 = 0;
+                while (index < format_entry.count) : (index += 1) {
+                    const format = dir.arrayElementU64(tags.sample_format, index, self.endian, self.source) catch |e| break :blk e;
+                    if (format != 2) break :blk error.UnsupportedBitDepth;
+                }
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = compressions_sgilog.decode(scratch, dest, ext.width, ext.rows, kind, self.endian) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -2228,7 +2261,7 @@ test "decodeStrip: uncompressed RGB single strip" {
 // classify unsupported. Oracles are hand-derived from the dispatch switch, so
 // adding a codec to one side without the other fails here.
 test "compressionSupported: classifier over supported / never-supported / unknown codes" {
-    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 50000, 34887, 34892 };
+    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 50000, 34887, 34892 };
     for (supported) |c| {
         try std.testing.expect(Decoder.compressionSupported(c));
     }
