@@ -182,3 +182,81 @@ and IFD 2 (pattern 1) and IFD 3 (pattern 5).
 6. **Payload:** is the shape above acceptable to send to Einstein: 24 bytes,
    one record per absent field, a requirement reference field and the
    entry index `0xFFFFFFFF` for IFD anchors?
+
+## Rulings (validate, 2026-11-05) and implementation (held branch)
+
+validate ruled under the owner's delegation. Q5 goes to the owner. The
+TIFF 6.0 text cited is the June 3, 1992 Final.
+
+1. **Option A.** Every walked image IFD is checked: p. 16, "Each IFD
+   defines a subfile"; TN1 SubIFDs are images. Only the IFDs the spec
+   defines as non-image (Exif, GPS, Interoperability, MakerNote, DNG camera
+   profiles) are out of scope, and tiffz's walk never visits them.
+2. **Compression 6.**
+   - Strip-located Compression 6 IFDs, such as the Canon CR2 IFD0 and the
+     raw IFD3, are checked now (pp. 103, 105).
+   - IFDs located only by JPEGInterchangeFormat/Length are deferred, as the
+     Exif compressed-thumbnail form, until an interchange-format rule exists
+     (ISO 12234-2, Exif).
+   - Deferral is not a pass. A verdict-neutral per-IFD marker,
+     `presence_deferred`, preferably a MetadataFlags bit, has been requested
+     from Einstein.
+3. **Tiles stored in strip tags** get records (p. 66):
+   - TileOffsets and TileByteCounts are `required_absent`;
+   - StripOffsets, StripByteCounts and RowsPerStrip beside tile fields are
+     `excluded_present`.
+
+   libtiff's tolerance warning (finding 15) stays as reader behavior.
+4. **TileWidth/TileLength** have no default (pp. 67-68). A missing one is
+   `dependency_absent` when any tile field is present.
+5. **X/YResolution in every image IFD** is the correct literal reading
+   (p. 21 onward; "No default", p. 41), but it is held for the owner,
+   because it flips 110 of 181 ok files. The rows are implemented behind
+   `Options.resolution` and stay off.
+6. **Payload.** The reserved u16 is the related tag: the dependency's
+   source for reason 3, the conflicting tag for reason 2, or 0. The anchor
+   is u64. The requirement is an exhaustive enum:
+   - 1 baseline required;
+   - 2 tile replacement (p. 66);
+   - 3 tile dependency (pp. 67-68).
+
+**Conventions confirmed by validate:**
+- RowsPerStrip is excluded beside tile fields.
+- The related tag of a tile record is the first tile field present in tag
+  order.
+
+**Implementation.** `src/ifd_presence.zig` is pure: at most 14 records per
+IFD, no allocation.
+- **Where it runs:** the decoder emits its records from the same
+  directory-rule pass as findings 17 and 18 (`checkIfdPresence`), so they
+  land in the walk and in the post-stop pass.
+- **Number:** `tag_presence_invalid = 20` is held off yolo until Einstein
+  allocates it.
+
+**Tests:**
+- unit tests for every requirement, the held rows, deferral and the payload;
+- quad-tile.tif and cramps-tile.tif pinned to their five records;
+- the KNOWN_DEFECT fixtures pinned to exact finding-18 and presence records:
+  - the Canon IFD0 gets the Photometric record;
+  - the SPP-present control gets only that record;
+  - the Kodak fixtures gained X/YResolution, and each near-match still
+    differs from the exemplar only in its intended entries;
+- the Canon 40D partial-coverage control repaired in memory in IFD0 and
+  IFD3 (`repairedCr2`);
+- every synthetic test builder given PhotometricInterpretation.
+
+**Real-build comparison (2ee8b374 against this branch, held rows off).**
+- **Corpus, 263 files:** 40 records in 11 files, identical to the
+  independent oracle when keyed by absolute anchor.
+- **Status changes:** three files that were ok turn invalid: quad-tile.tif,
+  cramps-tile.tif and the Canon SPP-present control.
+- **Other findings:** no other finding changes.
+- **Real exemplars:** 48 records over the 15 Canon, 6 Kodak and 11 Sony
+  exemplars, again identical to the oracle.
+  - Canon: IFD0 {262} in every body; IFD3 {262}, or {256, 257, 262} in
+    nine bodies.
+  - Kodak and Sony: none, because the Sony preview IFDs are deferred.
+
+**Controlled red.** Dropping PhotometricInterpretation from the baseline
+rows failed the KNOWN_DEFECT test (the Canon exemplar lost its record) and
+two unit tests.

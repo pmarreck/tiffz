@@ -37,6 +37,7 @@ const predictors_mod = @import("predictors.zig");
 const findings_mod = @import("findings.zig");
 const conformance = @import("ifd_conformance.zig");
 const jpeg_geometry = @import("jpeg_geometry.zig");
+const presence = @import("ifd_presence.zig");
 
 /// One tag 330 value plus the directory that named it. The parent index is
 /// how a pointer back at an ancestor is told from a second name for a page
@@ -319,7 +320,31 @@ pub const Decoder = struct {
                 conformance.encodePayload(fault, @intCast(ifd_index), entry_offset, &buf),
             );
         }
-        return faults.items.len > 0;
+        const required = self.checkIfdPresence(dir, ifd_index, ifd_offset);
+        return faults.items.len > 0 or required;
+    }
+
+    /// `tag_presence_invalid` for one IFD (`ifd_presence`), emitted as a
+    /// corrupt finding per record; true if any. The X/YResolution rows stay
+    /// off until the owner signs off (validate, 2026-11-05).
+    fn checkIfdPresence(self: *Decoder, dir: *const Ifd, ifd_index: usize, ifd_offset: u64) bool {
+        const result = presence.check(dir, .{ .resolution = false });
+        for (result.items()) |record| {
+            const anchor = if (record.entry_index) |i| conformance.entryOffset(ifd_offset, i, dir.offset_width) else ifd_offset;
+            self.noteDiscrepancy(.@"error", anchor, "tag_presence_invalid");
+            var buf: [presence.payload_len]u8 = undefined;
+            self.emitDetailed(
+                .tiffz,
+                @intCast(@intFromEnum(findings_mod.InfoFinding.tag_presence_invalid)),
+                null,
+                .corrupt,
+                anchor,
+                null,
+                true,
+                presence.encodePayload(record, @intCast(ifd_index), anchor, &buf),
+            );
+        }
+        return result.len > 0;
     }
 
     fn emitU32(self: *Decoder, finding: findings_mod.InfoFinding, value: u32) void {
@@ -2319,7 +2344,7 @@ test "decodeStrip: compression=6 (OJPEG, never supported) rejected as Unsupporte
 /// One uncompressed gray strip. Dimensions above 65535 are stored as LONG
 /// so the declared raster, not the on-disk payload, is what the limit sees.
 fn writeGrayStrip(buf: []u8, width: u32, length: u32, payload_len: usize) usize {
-    const ntags: usize = 6;
+    const ntags: usize = 7;
     const strip_at: u32 = @intCast(8 + 2 + ntags * 12 + 4);
     @memset(buf, 0);
     buf[0] = 'I';
@@ -2337,6 +2362,7 @@ fn writeGrayStrip(buf: []u8, width: u32, length: u32, payload_len: usize) usize 
         .{ .tag = 257, .typ = dimType(length), .val = length },
         .{ .tag = 258, .typ = 3, .val = 8 },
         .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 262, .typ = 3, .val = 1 },
         .{ .tag = 273, .typ = 4, .val = strip_at },
         .{ .tag = 279, .typ = 4, .val = @intCast(payload_len) },
     };
@@ -2354,7 +2380,7 @@ fn writeGrayStrip(buf: []u8, width: u32, length: u32, payload_len: usize) usize 
 /// One uncompressed 8-bit gray tile. Image size and tile size are independent
 /// so the tile-dimension cap can reject a padded tile while the page stays inside it.
 fn writeGrayTile(buf: []u8, image_w: u32, image_h: u32, tile_w: u32, tile_h: u32, payload_len: usize) usize {
-    const ntags: usize = 8;
+    const ntags: usize = 9;
     const tile_at: u32 = @intCast(8 + 2 + ntags * 12 + 4);
     @memset(buf, 0);
     buf[0] = 'I';
@@ -2367,6 +2393,7 @@ fn writeGrayTile(buf: []u8, image_w: u32, image_h: u32, tile_w: u32, tile_h: u32
         .{ .tag = 257, .typ = 3, .val = image_h },
         .{ .tag = 258, .typ = 3, .val = 8 },
         .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 262, .typ = 3, .val = 1 },
         .{ .tag = 322, .typ = 3, .val = tile_w },
         .{ .tag = 323, .typ = 3, .val = tile_h },
         .{ .tag = 324, .typ = 4, .val = tile_at },
@@ -2387,8 +2414,8 @@ fn writeGrayTile(buf: []u8, image_w: u32, image_h: u32, tile_w: u32, tile_h: u32
 /// nested 1×1 gray page. `child_stored` is that child's strip length: one byte
 /// matches the declared pixel, zero is short of it. The child is not on the chain.
 fn writeGrayParentAndChild(buf: []u8, child_stored: u32) usize {
-    const parent_bytes: u32 = 2 + 7 * 12 + 4;
-    const child_bytes: u32 = 2 + 6 * 12 + 4;
+    const parent_bytes: u32 = 2 + 8 * 12 + 4;
+    const child_bytes: u32 = 2 + 7 * 12 + 4;
     const parent_ifd: u32 = 8;
     const parent_strip: u32 = parent_ifd + parent_bytes;
     const child_ifd: u32 = parent_strip + 1;
@@ -2406,6 +2433,7 @@ fn writeGrayParentAndChild(buf: []u8, child_stored: u32) usize {
         .{ .tag = 257, .typ = 3, .val = 1 },
         .{ .tag = 258, .typ = 3, .val = 8 },
         .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 262, .typ = 3, .val = 1 },
         .{ .tag = 273, .typ = 4, .val = parent_strip },
         .{ .tag = 279, .typ = 4, .val = 1 },
         .{ .tag = 330, .typ = 4, .val = child_ifd },
@@ -2425,6 +2453,7 @@ fn writeGrayParentAndChild(buf: []u8, child_stored: u32) usize {
         .{ .tag = 257, .typ = 3, .val = 1 },
         .{ .tag = 258, .typ = 3, .val = 8 },
         .{ .tag = 259, .typ = 3, .val = 1 },
+        .{ .tag = 262, .typ = 3, .val = 1 },
         .{ .tag = 273, .typ = 4, .val = child_strip },
         .{ .tag = 279, .typ = 4, .val = child_stored },
     };
@@ -2451,19 +2480,20 @@ fn writeClassicEntry(buf: []u8, at: usize, tag: u16, typ: u16, count: u32, val: 
 /// the count is 1, its inline LONG is `sub_off`. No child directory is written.
 fn writeGrayParentPointingAt(buf: []u8, sub_off: u32, sub_count: u32) usize {
     const ifd: u32 = 8;
-    const strip: u32 = ifd + 2 + 7 * 12 + 4;
+    const strip: u32 = ifd + 2 + 8 * 12 + 4;
     const total: usize = @as(usize, strip) + 1;
     @memset(buf[0..total], 0);
     buf[0] = 'I';
     buf[1] = 'I';
     std.mem.writeInt(u16, buf[2..4], 42, .little);
     std.mem.writeInt(u32, buf[4..8], ifd, .little);
-    std.mem.writeInt(u16, buf[ifd..][0..2], 7, .little);
+    std.mem.writeInt(u16, buf[ifd..][0..2], 8, .little);
     const rows = [_]struct { tag: u16, typ: u16, count: u32, val: u32 }{
         .{ .tag = 256, .typ = 3, .count = 1, .val = 1 },
         .{ .tag = 257, .typ = 3, .count = 1, .val = 1 },
         .{ .tag = 258, .typ = 3, .count = 1, .val = 8 },
         .{ .tag = 259, .typ = 3, .count = 1, .val = 1 },
+        .{ .tag = 262, .typ = 3, .count = 1, .val = 1 },
         .{ .tag = 273, .typ = 4, .count = 1, .val = strip },
         .{ .tag = 279, .typ = 4, .count = 1, .val = 1 },
         .{ .tag = 330, .typ = 4, .count = sub_count, .val = sub_off },
@@ -2477,8 +2507,8 @@ fn writeGrayParentPointingAt(buf: []u8, sub_off: u32, sub_count: u32) usize {
 
 /// IFD0 and IFD1 are chained. Both tag 330 values name one child page.
 fn writeTwoParentsSharingChild(buf: []u8) usize {
-    const ifd_bytes: u32 = 2 + 7 * 12 + 4;
-    const child_bytes: u32 = 2 + 6 * 12 + 4;
+    const ifd_bytes: u32 = 2 + 8 * 12 + 4;
+    const child_bytes: u32 = 2 + 7 * 12 + 4;
     const ifd0: u32 = 8;
     const ifd1: u32 = ifd0 + ifd_bytes;
     const child: u32 = ifd1 + ifd_bytes;
@@ -2492,38 +2522,39 @@ fn writeTwoParentsSharingChild(buf: []u8) usize {
     std.mem.writeInt(u16, buf[2..4], 42, .little);
     std.mem.writeInt(u32, buf[4..8], ifd0, .little);
 
-    std.mem.writeInt(u16, buf[ifd0..][0..2], 7, .little);
+    std.mem.writeInt(u16, buf[ifd0..][0..2], 8, .little);
     const parent_rows = [_]struct { tag: u16, val: u32 }{
         .{ .tag = 256, .val = 1 },
         .{ .tag = 257, .val = 1 },
         .{ .tag = 258, .val = 8 },
         .{ .tag = 259, .val = 1 },
+        .{ .tag = 262, .val = 1 },
     };
     for (parent_rows, 0..) |row, i| {
         const typ: u16 = if (row.tag == 273 or row.tag == 279 or row.tag == 330) 4 else 3;
         writeClassicEntry(buf, @as(usize, ifd0) + 2 + i * 12, row.tag, typ, 1, row.val);
     }
-    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 4 * 12, 273, 4, 1, strip0);
-    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 5 * 12, 279, 4, 1, 1);
-    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 6 * 12, 330, 4, 1, child);
-    std.mem.writeInt(u32, buf[@as(usize, ifd0) + 2 + 7 * 12 ..][0..4], ifd1, .little);
+    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 5 * 12, 273, 4, 1, strip0);
+    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 6 * 12, 279, 4, 1, 1);
+    writeClassicEntry(buf, @as(usize, ifd0) + 2 + 7 * 12, 330, 4, 1, child);
+    std.mem.writeInt(u32, buf[@as(usize, ifd0) + 2 + 8 * 12 ..][0..4], ifd1, .little);
 
-    std.mem.writeInt(u16, buf[ifd1..][0..2], 7, .little);
+    std.mem.writeInt(u16, buf[ifd1..][0..2], 8, .little);
     for (parent_rows, 0..) |row, i| {
         const typ: u16 = if (row.tag == 273 or row.tag == 279 or row.tag == 330) 4 else 3;
         writeClassicEntry(buf, @as(usize, ifd1) + 2 + i * 12, row.tag, typ, 1, row.val);
     }
-    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 4 * 12, 273, 4, 1, strip1);
-    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 5 * 12, 279, 4, 1, 1);
-    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 6 * 12, 330, 4, 1, child);
+    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 5 * 12, 273, 4, 1, strip1);
+    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 6 * 12, 279, 4, 1, 1);
+    writeClassicEntry(buf, @as(usize, ifd1) + 2 + 7 * 12, 330, 4, 1, child);
 
-    std.mem.writeInt(u16, buf[child..][0..2], 6, .little);
+    std.mem.writeInt(u16, buf[child..][0..2], 7, .little);
     for (parent_rows, 0..) |row, i| {
         const typ: u16 = if (row.tag == 273 or row.tag == 279 or row.tag == 330) 4 else 3;
         writeClassicEntry(buf, @as(usize, child) + 2 + i * 12, row.tag, typ, 1, row.val);
     }
-    writeClassicEntry(buf, @as(usize, child) + 2 + 4 * 12, 273, 4, 1, stripc);
-    writeClassicEntry(buf, @as(usize, child) + 2 + 5 * 12, 279, 4, 1, 1);
+    writeClassicEntry(buf, @as(usize, child) + 2 + 5 * 12, 273, 4, 1, stripc);
+    writeClassicEntry(buf, @as(usize, child) + 2 + 6 * 12, 279, 4, 1, 1);
     buf[strip0] = 0x11;
     buf[strip1] = 0x22;
     buf[stripc] = 0x5A;
@@ -2715,7 +2746,7 @@ test "tiles that are not multiples of 16 decode, and validation reports them" {
 
 test "SubIFD: an intact uncompressed child decodes to its byte and validates" {
     // Tag 330 is not a next-IFD link. Index 0 stays the parent; index 1 is the child.
-    var storage: [192]u8 = undefined;
+    var storage: [224]u8 = undefined;
     const n = writeGrayParentAndChild(&storage, 1);
     var handle = BufferHandle.init(storage[0..n]);
     const src = Source.fromBuffer(&handle);
@@ -2736,7 +2767,7 @@ test "SubIFD: an intact uncompressed child decodes to its byte and validates" {
 }
 
 test "SubIFD depth cap: one level keeps the parent and refuses the child" {
-    var storage: [192]u8 = undefined;
+    var storage: [224]u8 = undefined;
     const n = writeGrayParentAndChild(&storage, 1);
     var handle = BufferHandle.init(storage[0..n]);
     var limits = Limits.default;
@@ -2748,7 +2779,7 @@ test "SubIFD depth cap: one level keeps the parent and refuses the child" {
     try std.testing.expectError(error.LimitExceededIfdDepth, dec.validateAllStripsAndTiles(&ws));
     try std.testing.expect(dec.discrepancy == null);
     const progress = dec.limit_progress orelse return error.Bug;
-    try std.testing.expectEqual(@as(u64, 99), progress.offset);
+    try std.testing.expectEqual(@as(u64, 111), progress.offset);
     try std.testing.expectEqual(@as(u64, 1), progress.ifd_index);
     try std.testing.expect(progress.bytes > 0);
     var dest: [1]u8 = undefined;
@@ -2757,7 +2788,7 @@ test "SubIFD depth cap: one level keeps the parent and refuses the child" {
 }
 
 test "bytes-visited cap: the next read after open is a limit, with progress" {
-    var storage: [192]u8 = undefined;
+    var storage: [224]u8 = undefined;
     const n = writeGrayParentAndChild(&storage, 1);
     var handle = BufferHandle.init(storage[0..n]);
     var probe = try Decoder.open(std.testing.allocator, Source.fromBuffer(&handle));
@@ -2774,12 +2805,12 @@ test "bytes-visited cap: the next read after open is a limit, with progress" {
     try std.testing.expect(dec.discrepancy == null);
     const progress = dec.limit_progress orelse return error.Bug;
     try std.testing.expectEqual(opened, progress.bytes);
-    try std.testing.expectEqual(@as(u64, 99), progress.offset);
+    try std.testing.expectEqual(@as(u64, 111), progress.offset);
     try std.testing.expectEqual(@as(u64, 1), progress.ifd_index);
 }
 
 test "depth cap of zero refuses to open" {
-    var storage: [192]u8 = undefined;
+    var storage: [224]u8 = undefined;
     const n = writeGrayParentAndChild(&storage, 1);
     var handle = BufferHandle.init(storage[0..n]);
     var limits = Limits.default;
@@ -2798,7 +2829,7 @@ test "CCITT T.6 early EOFB surfaces EndOfFacsimileBlock and the row count" {
     const comp_at = 10 + 3 * 12 + 8;
     std.mem.writeInt(u16, storage[bits_at..][0..2], 1, .little);
     std.mem.writeInt(u16, storage[comp_at..][0..2], 4, .little);
-    const strip_at: usize = 8 + 2 + 6 * 12 + 4;
+    const strip_at: usize = 8 + 2 + 7 * 12 + 4;
     @memcpy(storage[strip_at..][0..payload.len], &payload);
 
     var handle = BufferHandle.init(storage[0..n]);
@@ -2818,7 +2849,7 @@ test "CCITT T.6 early EOFB surfaces EndOfFacsimileBlock and the row count" {
 
 test "SubIFD: a short uncompressed child is Malformed" {
     // The parent strip is a real pixel. The child declares 1×1 and stores nothing.
-    var storage: [192]u8 = undefined;
+    var storage: [224]u8 = undefined;
     const n = writeGrayParentAndChild(&storage, 0);
     var handle = BufferHandle.init(storage[0..n]);
     const src = Source.fromBuffer(&handle);
@@ -3004,7 +3035,7 @@ test "uncompressed complete strip: 1 trailing byte warns, one row plus a byte is
                 const found = dec.discrepancy orelse return error.TestUnexpectedResult;
                 try std.testing.expectEqual(ReportClass.warning, found.class);
                 try std.testing.expectEqualStrings("final_strip_padding_tolerated", found.type_name);
-                try std.testing.expectEqual(@as(?u64, 86), found.offset);
+                try std.testing.expectEqual(@as(?u64, 98), found.offset);
             }
         }
     }

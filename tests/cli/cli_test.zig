@@ -139,18 +139,19 @@ fn writeOverWidePage(path: []const u8) !void {
     const io = std.testing.io;
     const file = try std.Io.Dir.cwd().createFile(io, path, .{});
     defer file.close(io);
-    var buf: [87]u8 = @splat(0);
+    var buf: [99]u8 = @splat(0);
     buf[0] = 'I';
     buf[1] = 'I';
     std.mem.writeInt(u16, buf[2..4], 42, .little);
     std.mem.writeInt(u32, buf[4..8], 8, .little);
-    std.mem.writeInt(u16, buf[8..10], 6, .little);
+    std.mem.writeInt(u16, buf[8..10], 7, .little);
     const entries = [_]struct { tag: u16, typ: u16, val: u32 }{
         .{ .tag = 256, .typ = 4, .val = (1 << 30) + 1 },
         .{ .tag = 257, .typ = 3, .val = 1 },
         .{ .tag = 258, .typ = 3, .val = 8 },
         .{ .tag = 259, .typ = 3, .val = 1 },
-        .{ .tag = 273, .typ = 4, .val = 86 },
+        .{ .tag = 262, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = 98 },
         .{ .tag = 279, .typ = 4, .val = 1 },
     };
     for (entries, 0..) |entry, i| {
@@ -160,7 +161,7 @@ fn writeOverWidePage(path: []const u8) !void {
         std.mem.writeInt(u32, buf[at + 4 ..][0..4], 1, .little);
         std.mem.writeInt(u32, buf[at + 8 ..][0..4], entry.val, .little);
     }
-    buf[86] = 0x5A;
+    buf[98] = 0x5A;
     try file.writeStreamingAll(io, &buf);
 }
 
@@ -255,18 +256,19 @@ fn writeShortGrayPage(path: []const u8) !void {
     const io = std.testing.io;
     const file = try std.Io.Dir.cwd().createFile(io, path, .{});
     defer file.close(io);
-    var buf: [87]u8 = @splat(0);
+    var buf: [99]u8 = @splat(0);
     buf[0] = 'I';
     buf[1] = 'I';
     std.mem.writeInt(u16, buf[2..4], 42, .little);
     std.mem.writeInt(u32, buf[4..8], 8, .little);
-    std.mem.writeInt(u16, buf[8..10], 6, .little);
+    std.mem.writeInt(u16, buf[8..10], 7, .little);
     const entries = [_]struct { tag: u16, typ: u16, val: u32 }{
         .{ .tag = 256, .typ = 3, .val = 2 },
         .{ .tag = 257, .typ = 3, .val = 2 },
         .{ .tag = 258, .typ = 3, .val = 8 },
         .{ .tag = 259, .typ = 3, .val = 1 },
-        .{ .tag = 273, .typ = 4, .val = 86 },
+        .{ .tag = 262, .typ = 3, .val = 1 },
+        .{ .tag = 273, .typ = 4, .val = 98 },
         .{ .tag = 279, .typ = 4, .val = 1 },
     };
     for (entries, 0..) |entry, i| {
@@ -276,7 +278,7 @@ fn writeShortGrayPage(path: []const u8) !void {
         std.mem.writeInt(u32, buf[at + 4 ..][0..4], 1, .little);
         std.mem.writeInt(u32, buf[at + 8 ..][0..4], entry.val, .little);
     }
-    buf[86] = 0x5A;
+    buf[98] = 0x5A;
     try file.writeStreamingAll(io, &buf);
 }
 
@@ -303,7 +305,7 @@ test "tiffz validate: a short strip is invalid status 2, not a resource limit" {
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"error\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "limited") == null);
     try std.testing.expect(std.mem.indexOf(u8, j.stdout, "limit_offset") == null);
-    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"discrepancy\":{\"class\":\"error\",\"type\":\"Malformed\",\"offset\":86}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, j.stdout, "\"discrepancy\":{\"class\":\"error\",\"type\":\"Malformed\",\"offset\":98}") != null);
 }
 
 test "tiffz validate rejects a truncated header with exit 1" {
@@ -376,45 +378,74 @@ test "tiffz validate rejects the Canon 40D CR2 for its IFD0 BitsPerSample count"
     try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":16,"));
 }
 
-/// `withSamplesPerPixelInIfd0` in tests/fixture_test.zig, duplicated because
-/// this test module cannot import outside tests/cli: IFD0 rebuilt at the end
-/// of a copy with SamplesPerPixel `spp` inserted in tag order.
-fn withSamplesPerPixelInIfd0(allocator: std.mem.Allocator, bytes: []const u8, spp: u16) ![]u8 {
+// Duplicated from tests/fixture_test.zig: this test module cannot import
+// outside tests/cli.
+/// A SHORT entry for `withEntriesInIfd`.
+const Insert = struct { tag: u16, val: u16 };
+
+/// A copy of little-endian classic TIFF `bytes` whose main-chain IFD
+/// `chain_index` is rebuilt at the end of the file with the SHORT entries
+/// `inserts` merged in tag order, and the header (IFD 0) or the previous IFD's
+/// next-offset pointed at it. Every value keeps its absolute offset. Repairs
+/// the Canon CR2 IFDs in memory at test time.
+fn withEntriesInIfd(allocator: std.mem.Allocator, bytes: []const u8, chain_index: usize, inserts: []const Insert) ![]u8 {
     std.debug.assert(bytes[0] == 'I' and bytes[1] == 'I');
-    const ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    var link: usize = 4;
+    var ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    for (0..chain_index) |_| {
+        const count: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+        link = ifd + 2 + 12 * count;
+        ifd = std.mem.readInt(u32, bytes[link..][0..4], .little);
+        std.debug.assert(ifd != 0);
+    }
     const n: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
     const pad = bytes.len % 2;
     const at = bytes.len + pad;
-    const out = try allocator.alloc(u8, at + 2 + (n + 1) * 12 + 4);
+    const out = try allocator.alloc(u8, at + 2 + (n + inserts.len) * 12 + 4);
     @memcpy(out[0..bytes.len], bytes);
     if (pad == 1) out[bytes.len] = 0;
-    std.mem.writeInt(u16, out[at..][0..2], @intCast(n + 1), .little);
-    var placed = false;
+    std.mem.writeInt(u16, out[at..][0..2], @intCast(n + inserts.len), .little);
+    var next: usize = 0;
     var w: usize = at + 2;
-    for (0..n) |i| {
-        const entry = bytes[ifd + 2 + 12 * i ..][0..12];
-        const tag = std.mem.readInt(u16, entry[0..2], .little);
-        std.debug.assert(tag != 277);
-        if (!placed and tag > 277) {
-            std.mem.writeInt(u16, out[w..][0..2], 277, .little);
+    for (0..n + 1) |i| {
+        const tag: u32 = if (i < n) std.mem.readInt(u16, bytes[ifd + 2 + 12 * i ..][0..2], .little) else 0x10000;
+        while (next < inserts.len and inserts[next].tag < tag) : (next += 1) {
+            std.mem.writeInt(u16, out[w..][0..2], inserts[next].tag, .little);
             std.mem.writeInt(u16, out[w + 2 ..][0..2], 3, .little);
             std.mem.writeInt(u32, out[w + 4 ..][0..4], 1, .little);
-            std.mem.writeInt(u32, out[w + 8 ..][0..4], spp, .little);
+            std.mem.writeInt(u32, out[w + 8 ..][0..4], inserts[next].val, .little);
             w += 12;
-            placed = true;
         }
-        @memcpy(out[w..][0..12], entry);
+        if (i == n) break;
+        std.debug.assert(next >= inserts.len or inserts[next].tag != tag);
+        @memcpy(out[w..][0..12], bytes[ifd + 2 + 12 * i ..][0..12]);
         w += 12;
     }
-    std.debug.assert(placed);
+    std.debug.assert(next == inserts.len);
     @memcpy(out[w..][0..4], bytes[ifd + 2 + 12 * n ..][0..4]);
-    std.mem.writeInt(u32, out[4..8], @intCast(at), .little);
+    std.mem.writeInt(u32, out[link..][0..4], @intCast(at), .little);
     return out;
 }
 
+/// The Canon 40D CR2 with every IFD the walk checks made consistent, in
+/// memory: IFD0 gains SamplesPerPixel 3 and PhotometricInterpretation 6 (the
+/// YCbCr readers already assume for it), and the sRAW IFD3 gains ImageWidth
+/// and ImageLength from its own SOF3 frame header (1944 x 1296) and
+/// PhotometricInterpretation 1. That photometric is a placeholder consistent
+/// with the defaulted SamplesPerPixel and BitsPerSample, not a claim about
+/// the camera's data: IFD3 is Compression 6, which tiffz skips. If a later
+/// rule checks PhotometricInterpretation against the data, this control must
+/// switch to an honest value or stop being a passing control (validate,
+/// 2026-11-05).
+fn repairedCr2(allocator: std.mem.Allocator, original: []const u8) ![]u8 {
+    const step = try withEntriesInIfd(allocator, original, 0, &.{ .{ .tag = 262, .val = 6 }, .{ .tag = 277, .val = 3 } });
+    defer allocator.free(step);
+    return withEntriesInIfd(allocator, step, 3, &.{ .{ .tag = 256, .val = 1944 }, .{ .tag = 257, .val = 1296 }, .{ .tag = 262, .val = 1 } });
+}
+
 test "tiffz validate accepts CR2 partial coverage with exit 0 once IFD0 is consistent" {
-    // The control for the test above: the same 40D with SamplesPerPixel 3
-    // added to IFD0 at test time (no fixture bytes committed). It must pass
+    // The control for the test above: the same 40D with its IFDs made
+    // consistent at test time (`repairedCr2`; no fixture bytes committed). It must pass
     // for the right reason: partial coverage, no directory-rule finding.
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -430,7 +461,7 @@ test "tiffz validate accepts CR2 partial coverage with exit 0 once IFD0 is consi
         break :blk buf;
     };
     defer allocator.free(original);
-    const repaired = try withSamplesPerPixelInIfd0(allocator, original, 3);
+    const repaired = try repairedCr2(allocator, original);
     defer allocator.free(repaired);
 
     const path = "zig-out/cli-test-cr2-spp3.cr2";
@@ -448,7 +479,12 @@ test "tiffz validate accepts CR2 partial coverage with exit 0 once IFD0 is consi
     try std.testing.expectEqual(@as(?u8, 0), exitedCode(r.term));
     try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":18,"));
     try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":17,"));
+    try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":20,"));
     try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":16,"));
+    // Pinned exactly (validate, 2026-11-05): three multi_ifd_chain findings
+    // and the two skips, nothing else.
+    try std.testing.expectEqual(@as(usize, 3), countOccurrences(r.stdout, "\"code\":2,"));
+    try std.testing.expectEqual(@as(usize, 5), countOccurrences(r.stdout, "\"code\":"));
 }
 
 test "tiffz --help mentions dump" {

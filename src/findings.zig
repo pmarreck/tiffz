@@ -111,6 +111,14 @@ pub const InfoFinding = enum(u32) {
     /// see `jpeg_geometry.payload_len`. The finding's byte offset is the first
     /// violating segment's SOF marker, exact.
     jpeg_segment_geometry_invalid = 19,
+    /// A field a claimed specification requires is absent from an image IFD,
+    /// or one it excludes is present (`ifd_presence`). Verdict corrupt, as for
+    /// 17. One record per field per IFD. Payload: 24 bytes, see
+    /// `ifd_presence.payload_len`. The finding's byte offset is the anchor:
+    /// the IFD's offset, or the anchoring entry's. Numbered by validate
+    /// 2026-11-06; new requirement or reason values are registered with
+    /// validate by note.
+    tag_presence_invalid = 20,
     _,
 };
 

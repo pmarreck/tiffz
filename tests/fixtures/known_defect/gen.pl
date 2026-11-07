@@ -2,8 +2,9 @@
 # gen.pl OUTDIR: spec-built classic little-endian TIFFs for validate's
 # KNOWN_DEFECT registry controls (Kodak MinSampleValue, Canon CR2 IFD0
 # BitsPerSample). Each IFD is a list of [tag, type, [values]] or
-# [tag, 'ascii', "string"]; entries are written in ascending tag order and
-# values that do not fit in 4 bytes go out of line, word-aligned.
+# [tag, 'ascii', "string"]; RATIONAL (type 5) values are numerator,
+# denominator pairs. Entries are written in ascending tag order and values
+# that do not fit in 4 bytes go out of line, word-aligned.
 use strict; use warnings;
 my $out = shift or die "usage: gen.pl OUTDIR\n";
 my %size = (1 => 1, 2 => 1, 3 => 2, 4 => 4);
@@ -61,14 +62,17 @@ sub build {
 sub encode {
     my ($type, $v) = @_;
     return (2, $v . "\0", length($v) + 1) if $type eq 'ascii';
+    return (5, pack("V*", @$v), @$v / 2) if $type eq '5';
     my $f = { 1 => 'C', 3 => 'v', 4 => 'V' }->{$type};
     return ($type, pack("$f*", @$v), scalar @$v);
 }
-sub vlen { my ($t, $type, $v) = @{ $_[0] }; return $type eq 'ascii' ? length($v) + 1 : $size{$type} * @$v }
+sub vlen { my ($t, $type, $v) = @{ $_[0] }; return $type eq 'ascii' ? length($v) + 1 : $type eq '5' ? 4 * @$v : $size{$type} * @$v }
 
 sub write_file { my ($name, $bytes) = @_; open my $fh, '>:raw', "$out/$name" or die; print $fh $bytes; close $fh }
 
-# Kodak: 2x2 uncompressed YCbCr, no chroma subsampling, 8-bit.
+# Kodak: 2x2 uncompressed YCbCr, no chroma subsampling, 8-bit, with the
+# baseline XResolution and YResolution (72/1 inch), so the fixtures carry only
+# the MinSampleValue pattern (validate, 2026-11-05).
 sub kodak_entries {
     my (%o) = @_;
     my $spp = $o{spp} // 3;
@@ -78,7 +82,8 @@ sub kodak_entries {
         [278, 3, [2]], [279, 4, [4 * $spp]],
         [280, 3, [(0) x ($o{min_count} // 1)]],
         [281, 3, [(255) x ($o{max_count} // $spp)]],
-        [284, 3, [1]], [530, 3, [1, 1]],
+        [282, 5, [72, 1]], [283, 5, [72, 1]],
+        [284, 3, [1]], [296, 3, [2]], [530, 3, [1, 1]],
     );
     push @e, [338, 3, [(0) x ($spp - 3)]] if $spp > 3;
     return \@e;

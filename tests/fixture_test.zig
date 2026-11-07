@@ -1720,6 +1720,67 @@ fn expectFixtureValidatesWithFinding(
     try std.testing.expectEqual(@as(usize, 1), recorder.count(finding));
 }
 
+/// A libtiff file whose tiles sit in StripOffsets/StripByteCounts beside
+/// TileWidth and TileLength. The reader tolerance stays (finding 15 once), and
+/// TIFF 6.0 p. 66 ("Do not use both strip-oriented and tile-oriented fields")
+/// makes it invalid (validate, 2026-11-05): TileOffsets and TileByteCounts are
+/// required_absent, and each strip field is excluded_present, related to
+/// TileWidth, the first tile field present. Nothing else is reported.
+fn expectTilesInStripTags(fixture_path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, fixture_path);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
+    try std.testing.expectEqual(@as(usize, 1), recorder.count(.tiled_geometry_via_strip_tags));
+    const Want = struct { tag: u16, reason: u16, related: u16 };
+    const want = [_]Want{
+        .{ .tag = 324, .reason = 1, .related = 0 },
+        .{ .tag = 325, .reason = 1, .related = 0 },
+        .{ .tag = 273, .reason = 2, .related = 322 },
+        .{ .tag = 278, .reason = 2, .related = 322 },
+        .{ .tag = 279, .reason = 2, .related = 322 },
+    };
+    var got: usize = 0;
+    for (recorder.findings.items) |f| {
+        if (f.source != .tiffz) continue;
+        if (f.verdict == .corrupt and f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_presence_invalid)) {
+            std.debug.print("{s}: unexpected corrupt finding {d}\n", .{ fixture_path, f.finding_code });
+            return error.TestUnexpectedResult;
+        }
+        if (f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_presence_invalid)) continue;
+        const p = f.payload_bytes;
+        try std.testing.expectEqual(@as(usize, 24), f.payload_len);
+        try std.testing.expect(got < want.len);
+        const w = want[got];
+        try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, p[0..4], .little));
+        try std.testing.expectEqual(w.tag, std.mem.readInt(u16, p[16..18], .little));
+        try std.testing.expectEqual(w.reason, std.mem.readInt(u16, p[18..20], .little));
+        try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, p[20..22], .little)); // tile replacement
+        try std.testing.expectEqual(w.related, std.mem.readInt(u16, p[22..24], .little));
+        // IFD anchors carry no entry index; entry anchors locate the entry.
+        const entry_index = std.mem.readInt(u32, p[4..8], .little);
+        const anchor = std.mem.readInt(u64, p[8..16], .little);
+        // Both libtiff files are big-endian; read the header as stored.
+        const endian: std.builtin.Endian = if (bytes[0] == 'M') .big else .little;
+        const ifd0: usize = std.mem.readInt(u32, bytes[4..8], endian);
+        if (w.reason == 1) {
+            try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), entry_index);
+            try std.testing.expectEqual(@as(u64, ifd0), anchor);
+        } else {
+            const n = std.mem.readInt(u16, bytes[ifd0..][0..2], endian);
+            var at: ?usize = null;
+            for (0..n) |i| {
+                if (std.mem.readInt(u16, bytes[ifd0 + 2 + 12 * i ..][0..2], endian) == w.tag) at = ifd0 + 2 + 12 * i;
+            }
+            try std.testing.expectEqual(@as(?u64, at), anchor);
+        }
+        got += 1;
+    }
+    try std.testing.expectEqual(want.len, got);
+}
+
 /// Replace exactly one classic-TIFF IFD0 tag while preserving its value. Test
 /// mutations use this to classify layout presence/absence without fabricating
 /// unrelated decoder state.
@@ -1758,11 +1819,8 @@ fn replaceClassicIfd0Tag(bytes: []u8, old_tag: u16, new_tag: u16) !void {
     try std.testing.expectEqual(@as(usize, 1), replacements);
 }
 
-test "audit 1.0 [fixed]: cramps-tile.tif accepts tiled geometry via strip tags and emits finding 15 once" {
-    try expectFixtureValidatesWithFinding(
-        "tests/fixtures/labeled_good/cramps-tile.tif",
-        .tiled_geometry_via_strip_tags,
-    );
+test "audit 1.0 [fixed]: cramps-tile.tif stores tiles in strip tags: finding 15 once, and the tile presence records" {
+    try expectTilesInStripTags("tests/fixtures/labeled_good/cramps-tile.tif");
 }
 
 test "audit 1.0 [fixed]: bounded final-strip padding is accepted and emits finding 13 exactly once" {
@@ -1815,11 +1873,8 @@ test "audit 1.0 [fixed]: exact-extent clean-EOF LZW is accepted and emits findin
     );
 }
 
-test "audit 1.0 [fixed]: quad-tile.tif accepts tiled geometry via strip tags and emits finding 15 once" {
-    try expectFixtureValidatesWithFinding(
-        "tests/fixtures/labeled_good/quad-tile.tif",
-        .tiled_geometry_via_strip_tags,
-    );
+test "audit 1.0 [fixed]: quad-tile.tif stores tiles in strip tags: finding 15 once, and the tile presence records" {
+    try expectTilesInStripTags("tests/fixtures/labeled_good/quad-tile.tif");
 }
 
 test "warning 15 classifier rejects incomplete fallback arrays and partial canonical precedence" {
@@ -1888,42 +1943,67 @@ test "audit 1.0 [fixed]: ycbcr-cat.tif ACCEPTED via subsampling-aware extent gat
 // 2026-11-04 its IFD0 BitsPerSample count is a tag_field_invalid finding, so
 // the original is corrupt, and the must-accept contract is held by a copy
 // repaired in memory.
-/// A copy of little-endian classic TIFF `bytes` whose IFD0 is rebuilt at the
-/// end of the file with a SamplesPerPixel (277) SHORT entry of `spp` inserted
-/// in tag order, and the header pointed at it. Every value keeps its absolute
-/// offset. Repairs the Canon CR2 IFD0, which gives BitsPerSample three values
-/// but omits SamplesPerPixel (default 1), in memory at test time.
-fn withSamplesPerPixelInIfd0(allocator: std.mem.Allocator, bytes: []const u8, spp: u16) ![]u8 {
+/// A SHORT entry for `withEntriesInIfd`.
+const Insert = struct { tag: u16, val: u16 };
+
+/// A copy of little-endian classic TIFF `bytes` whose main-chain IFD
+/// `chain_index` is rebuilt at the end of the file with the SHORT entries
+/// `inserts` merged in tag order, and the header (IFD 0) or the previous IFD's
+/// next-offset pointed at it. Every value keeps its absolute offset. Repairs
+/// the Canon CR2 IFDs in memory at test time.
+fn withEntriesInIfd(allocator: std.mem.Allocator, bytes: []const u8, chain_index: usize, inserts: []const Insert) ![]u8 {
     std.debug.assert(bytes[0] == 'I' and bytes[1] == 'I');
-    const ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    var link: usize = 4;
+    var ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    for (0..chain_index) |_| {
+        const count: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+        link = ifd + 2 + 12 * count;
+        ifd = std.mem.readInt(u32, bytes[link..][0..4], .little);
+        std.debug.assert(ifd != 0);
+    }
     const n: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
     const pad = bytes.len % 2;
     const at = bytes.len + pad;
-    const out = try allocator.alloc(u8, at + 2 + (n + 1) * 12 + 4);
+    const out = try allocator.alloc(u8, at + 2 + (n + inserts.len) * 12 + 4);
     @memcpy(out[0..bytes.len], bytes);
     if (pad == 1) out[bytes.len] = 0;
-    std.mem.writeInt(u16, out[at..][0..2], @intCast(n + 1), .little);
-    var placed = false;
+    std.mem.writeInt(u16, out[at..][0..2], @intCast(n + inserts.len), .little);
+    var next: usize = 0;
     var w: usize = at + 2;
-    for (0..n) |i| {
-        const entry = bytes[ifd + 2 + 12 * i ..][0..12];
-        const tag = std.mem.readInt(u16, entry[0..2], .little);
-        std.debug.assert(tag != 277);
-        if (!placed and tag > 277) {
-            std.mem.writeInt(u16, out[w..][0..2], 277, .little);
+    for (0..n + 1) |i| {
+        const tag: u32 = if (i < n) std.mem.readInt(u16, bytes[ifd + 2 + 12 * i ..][0..2], .little) else 0x10000;
+        while (next < inserts.len and inserts[next].tag < tag) : (next += 1) {
+            std.mem.writeInt(u16, out[w..][0..2], inserts[next].tag, .little);
             std.mem.writeInt(u16, out[w + 2 ..][0..2], 3, .little);
             std.mem.writeInt(u32, out[w + 4 ..][0..4], 1, .little);
-            std.mem.writeInt(u32, out[w + 8 ..][0..4], spp, .little);
+            std.mem.writeInt(u32, out[w + 8 ..][0..4], inserts[next].val, .little);
             w += 12;
-            placed = true;
         }
-        @memcpy(out[w..][0..12], entry);
+        if (i == n) break;
+        std.debug.assert(next >= inserts.len or inserts[next].tag != tag);
+        @memcpy(out[w..][0..12], bytes[ifd + 2 + 12 * i ..][0..12]);
         w += 12;
     }
-    std.debug.assert(placed);
+    std.debug.assert(next == inserts.len);
     @memcpy(out[w..][0..4], bytes[ifd + 2 + 12 * n ..][0..4]);
-    std.mem.writeInt(u32, out[4..8], @intCast(at), .little);
+    std.mem.writeInt(u32, out[link..][0..4], @intCast(at), .little);
     return out;
+}
+
+/// The Canon 40D CR2 with every IFD the walk checks made consistent, in
+/// memory: IFD0 gains SamplesPerPixel 3 and PhotometricInterpretation 6 (the
+/// YCbCr readers already assume for it), and the sRAW IFD3 gains ImageWidth
+/// and ImageLength from its own SOF3 frame header (1944 x 1296) and
+/// PhotometricInterpretation 1. That photometric is a placeholder consistent
+/// with the defaulted SamplesPerPixel and BitsPerSample, not a claim about
+/// the camera's data: IFD3 is Compression 6, which tiffz skips. If a later
+/// rule checks PhotometricInterpretation against the data, this control must
+/// switch to an honest value or stop being a passing control (validate,
+/// 2026-11-05).
+fn repairedCr2(allocator: std.mem.Allocator, original: []const u8) ![]u8 {
+    const step = try withEntriesInIfd(allocator, original, 0, &.{ .{ .tag = 262, .val = 6 }, .{ .tag = 277, .val = 3 } });
+    defer allocator.free(step);
+    return withEntriesInIfd(allocator, step, 3, &.{ .{ .tag = 256, .val = 1944 }, .{ .tag = 257, .val = 1296 }, .{ .tag = 262, .val = 1 } });
 }
 
 /// The partial-coverage contract for the Canon 40D CR2 (Peter's 2026-08-27
@@ -1974,20 +2054,39 @@ test "CR2: the Canon 40D is corrupt for its IFD0 BitsPerSample count, and still 
     }
 }
 
-test "CR2 must-accept: the Canon 40D with SamplesPerPixel 3 added to IFD0 validates with two code-16 skips (partial coverage)" {
+test "CR2 must-accept: the Canon 40D with its IFDs made consistent validates with two code-16 skips (partial coverage)" {
     const allocator = std.testing.allocator;
     const original = try loadFile(allocator, "tests/fixtures/cr2/canon_eos_40d_sraw2.cr2");
     defer allocator.free(original);
-    const bytes = try withSamplesPerPixelInIfd0(allocator, original, 3);
+    const bytes = try repairedCr2(allocator, original);
     defer allocator.free(bytes);
     var recorder = FindingRecorder.init(allocator);
     defer recorder.deinit();
     // The walk must ACCEPT (per Peter's 2026-08-27 partial-coverage ruling)…
     try validateRecording(allocator, bytes, &recorder);
-    // …name the two uncovered portions, and pass for the right reason: the
-    // repair leaves no directory-rule finding.
+    // …name the two uncovered portions, and pass for the right reason. The
+    // control is pinned to its exact findings (validate, 2026-11-05), so a
+    // new finding of any kind fails here and is re-pinned on purpose:
+    // multi_ifd_chain for IFDs 1-3 (payload: the IFD count so far) and the
+    // two code-16 skips. No directory-rule or presence finding.
     try expectCr2PartialCoverage(&recorder);
-    try std.testing.expectEqual(@as(usize, 0), countConformance(&recorder));
+    const Pinned = struct { code: tiffz.findings.InfoFinding, first: u32 };
+    const pinned = [_]Pinned{
+        .{ .code = .multi_ifd_chain, .first = 2 },
+        .{ .code = .multi_ifd_chain, .first = 3 },
+        .{ .code = .multi_ifd_chain, .first = 4 },
+        .{ .code = .unsupported_compression_skipped, .first = 0 },
+        .{ .code = .unsupported_compression_skipped, .first = 3 },
+    };
+    if (recorder.findings.items.len != pinned.len) {
+        for (recorder.findings.items) |f| std.debug.print("repaired 40D finding: source {s} code {d}\n", .{ @tagName(f.source), f.finding_code });
+        return error.TestUnexpectedResult;
+    }
+    for (recorder.findings.items, pinned) |f, want| {
+        try std.testing.expectEqual(tiffz.findings.SourceDecoder.tiffz, f.source);
+        try std.testing.expectEqual(@as(i32, @intCast(@intFromEnum(want.code))), f.finding_code);
+        try std.testing.expectEqual(@as(?u32, want.first), f.payload_u32);
+    }
 }
 
 test "YCbCr tiled chunky subsampled 2:2 (uncompressed 16x16, one tile) validates via .tile extent branch" {
@@ -4101,30 +4200,37 @@ test "ExtraSamples: strike.tif validates clean, and a count that leaves too few 
 // IFD0 BitsPerSample [8, 8, 8] with SamplesPerPixel absent. tiffz's findings
 // do not change: each file fails Malformed with exactly these finding-18
 // records (IFD index, tag, reason), and the near-matches still fail while
-// breaking the registry signature.
+// breaking the registry signature. Since the presence finding (validate,
+// 2026-11-05), each file is also pinned to its exact tag_presence_invalid
+// records (IFD index, tag, reason): the Canon IFD0 shape has no
+// PhotometricInterpretation, as the real CR2 IFD0 does not, and the Kodak
+// fixtures carry X/YResolution so they stay focused on MinSampleValue.
+const RecordKey = struct { ifd: u32, tag: u16, reason: u16 };
 const KnownDefectFixture = struct {
     path: []const u8,
-    faults: []const struct { ifd: u32, tag: u16, reason: u16 },
-    /// A passing control: validation succeeds and reports no finding 18.
-    passes: bool = false,
+    faults: []const RecordKey,
+    presence: []const RecordKey = &.{},
 };
+const canon_ifd0_photometric = [_]RecordKey{.{ .ifd = 0, .tag = 262, .reason = 1 }};
 const known_defect_fixtures = [_]KnownDefectFixture{
     .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-exemplar.tif", .faults = &.{.{ .ifd = 0, .tag = 280, .reason = 2 }} },
     .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-near-count2.tif", .faults = &.{.{ .ifd = 0, .tag = 280, .reason = 2 }} },
     .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-near-spp4.tif", .faults = &.{.{ .ifd = 0, .tag = 280, .reason = 2 }} },
     .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-near-max-short.tif", .faults = &.{ .{ .ifd = 0, .tag = 280, .reason = 2 }, .{ .ifd = 0, .tag = 281, .reason = 2 } } },
-    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-exemplar.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }} },
-    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-8-8-16.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }} },
-    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-count2.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }} },
-    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-subifd.tif", .faults = &.{.{ .ifd = 1, .tag = 258, .reason = 2 }} },
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-exemplar.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }}, .presence = &canon_ifd0_photometric },
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-8-8-16.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }}, .presence = &canon_ifd0_photometric },
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-count2.tif", .faults = &.{.{ .ifd = 0, .tag = 258, .reason = 2 }}, .presence = &canon_ifd0_photometric },
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-near-subifd.tif", .faults = &.{.{ .ifd = 1, .tag = 258, .reason = 2 }}, .presence = &.{.{ .ifd = 1, .tag = 262, .reason = 1 }} },
     // Three YCbCr IFDs, MinSampleValue count 3 in IFD0 and count 1 in IFDs 1 and 2: the
     // signature is per IFD, so only the faulty IFDs are reported.
     .{ .path = "tests/fixtures/known_defect/kodak-minsamplevalue-near-one-ifd-sound.tif", .faults = &.{ .{ .ifd = 1, .tag = 280, .reason = 2 }, .{ .ifd = 2, .tag = 280, .reason = 2 } } },
-    // Passing control: the Canon IFD0 shape with SamplesPerPixel 3 written.
-    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-control-spp-present.tif", .faults = &.{}, .passes = true },
+    // Count-rule control: the Canon IFD0 shape with SamplesPerPixel 3 written
+    // has no finding 18, only the Photometric presence record (validate,
+    // 2026-11-05: it stays a control for the count rule).
+    .{ .path = "tests/fixtures/known_defect/canon-cr2-ifd0-bps-control-spp-present.tif", .faults = &.{}, .presence = &canon_ifd0_photometric },
 };
 
-test "KNOWN_DEFECT controls: each synthetic exemplar and near-match fails with exactly its finding-18 records, and each passing control validates" {
+test "KNOWN_DEFECT controls: each synthetic exemplar, near-match and control fails with exactly its finding-18 and presence records" {
     const allocator = std.testing.allocator;
     for (known_defect_fixtures) |fixture| {
         const bytes = try loadFile(allocator, fixture.path);
@@ -4132,37 +4238,43 @@ test "KNOWN_DEFECT controls: each synthetic exemplar and near-match fails with e
         var recorder = FindingRecorder.init(allocator);
         defer recorder.deinit();
         const result = validateRecording(allocator, bytes, &recorder);
-        if (fixture.passes) {
-            result catch |err| {
-                std.debug.print("{s}: passing control failed with {s}\n", .{ fixture.path, @errorName(err) });
-                return err;
-            };
-        } else std.testing.expectError(error.Malformed, result) catch |err| {
+        std.testing.expectError(error.Malformed, result) catch |err| {
             std.debug.print("{s}: not rejected Malformed\n", .{fixture.path});
             return err;
         };
-        var got: usize = 0;
+        const field_invalid = @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid);
+        const presence_invalid = @intFromEnum(tiffz.findings.InfoFinding.tag_presence_invalid);
+        var got_faults: usize = 0;
+        var got_presence: usize = 0;
         for (recorder.findings.items) |f| {
             if (f.source != .tiffz) continue;
-            if (f.verdict == .corrupt and f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) {
+            if (f.verdict == .corrupt and f.finding_code != field_invalid and f.finding_code != presence_invalid) {
                 std.debug.print("{s}: unexpected corrupt finding {d}\n", .{ fixture.path, f.finding_code });
                 return error.TestUnexpectedResult;
             }
-            if (f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
+            if (f.finding_code != field_invalid and f.finding_code != presence_invalid) continue;
             const p = f.payload_bytes;
-            const ifd = std.mem.readInt(u32, p[0..4], .little);
-            const tag = std.mem.readInt(u16, p[16..18], .little);
-            const reason = std.mem.readInt(u16, p[18..20], .little);
+            // Both payloads open with the IFD index, and carry tag and reason at 16..20.
+            const key = RecordKey{
+                .ifd = std.mem.readInt(u32, p[0..4], .little),
+                .tag = std.mem.readInt(u16, p[16..18], .little),
+                .reason = std.mem.readInt(u16, p[18..20], .little),
+            };
+            const wanted = if (f.finding_code == field_invalid) fixture.faults else fixture.presence;
             var expected = false;
-            for (fixture.faults) |want| expected = expected or (want.ifd == ifd and want.tag == tag and want.reason == reason);
+            for (wanted) |want| expected = expected or std.meta.eql(want, key);
             if (!expected) {
-                std.debug.print("{s}: unexpected finding 18 ifd {d} tag {d} reason {d}\n", .{ fixture.path, ifd, tag, reason });
+                std.debug.print("{s}: unexpected finding {d} ifd {d} tag {d} reason {d}\n", .{ fixture.path, f.finding_code, key.ifd, key.tag, key.reason });
                 return error.TestUnexpectedResult;
             }
-            got += 1;
+            if (f.finding_code == field_invalid) got_faults += 1 else got_presence += 1;
         }
-        std.testing.expectEqual(fixture.faults.len, got) catch |err| {
-            std.debug.print("{s}: {d} finding-18 records, want {d}\n", .{ fixture.path, got, fixture.faults.len });
+        std.testing.expectEqual(fixture.faults.len, got_faults) catch |err| {
+            std.debug.print("{s}: {d} finding-18 records, want {d}\n", .{ fixture.path, got_faults, fixture.faults.len });
+            return err;
+        };
+        std.testing.expectEqual(fixture.presence.len, got_presence) catch |err| {
+            std.debug.print("{s}: {d} presence records, want {d}\n", .{ fixture.path, got_presence, fixture.presence.len });
             return err;
         };
     }
