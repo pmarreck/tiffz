@@ -207,6 +207,18 @@ pub fn build(b: *std.Build) void {
     // libvalidate_core.a without this). Contract test:
     // tests/lerc_consumer_pkg (checks.lerc-artifact-export).
     b.installArtifact(lercz_dep.artifact("lerc"));
+
+    // liblzma (xz 5.8.3, 0BSD) decoder subset, built from the pinned upstream
+    // release by deps/liblzma. Provides the codec for Compression=34925
+    // (LZMA2 in the .xz container). Re-exported like lerc for external
+    // static-archive consumers.
+    const lzma_dep = b.dependency("liblzma", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const lzma_mod = lzma_dep.module("lzma");
+    lib_module.addImport("lzma", lzma_mod);
+    b.installArtifact(lzma_dep.artifact("lzma"));
     const lib = b.addLibrary(.{
         .name = "tiffz",
         .linkage = .static,
@@ -230,6 +242,7 @@ pub fn build(b: *std.Build) void {
     tiffz_named_module.addImport("lzwz", lzwz_mod);
     tiffz_named_module.addImport("jpegz", jpegz_mod);
     tiffz_named_module.addImport("zstd", zstdz_mod);
+    tiffz_named_module.addImport("lzma", lzma_mod);
     tiffz_named_module.addImport("lercz", lercz_mod);
 
     // Production-shaped proof rooted at the same jpegz.validate call used by
@@ -321,6 +334,7 @@ pub fn build(b: *std.Build) void {
     unit_tests_module.addImport("lzwz", lzwz_mod);
     unit_tests_module.addImport("jpegz", jpegz_mod);
     unit_tests_module.addImport("zstd", zstdz_mod);
+    unit_tests_module.addImport("lzma", lzma_mod);
     unit_tests_module.addImport("lercz", lercz_mod);
     const unit_tests = b.addTest(.{ .root_module = unit_tests_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);

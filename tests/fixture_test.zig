@@ -5328,3 +5328,77 @@ test "geokey: ModelPixelScale and a GeoKeyDirectory without ModelTiepoint are fi
     try expectGeo(run.records[1], .geokey_deviation, 3);
     try std.testing.expectEqual(@as(u16, tiffz.tags.model_tiepoint), std.mem.readInt(u16, run.records[1].payload_bytes[32..34], .little));
 }
+
+// ---- Compression 34925 (LZMA), fixtures from tests/fixtures/lzma/gen.sh ----
+// libtiff 4.7.2 encodes them (`tiffcp -c lzma`: Delta then LZMA2 in an .xz
+// stream) and its decodes (`tiffcp -c none`) are the -none oracles, in the
+// same strip or tile layout.
+
+/// Decode chunks 0..`chunks` of IFD 0 from `coded_path` and from its oracle
+/// and require identical bytes; `tiled` selects decodeTile.
+fn expectChunksMatchOracle(coded_path: []const u8, oracle_path: []const u8, tiled: bool, chunks: u32) !void {
+    const allocator = std.testing.allocator;
+    const coded = try loadFile(allocator, coded_path);
+    defer allocator.free(coded);
+    const oracle = try loadFile(allocator, oracle_path);
+    defer allocator.free(oracle);
+    var handles = [_]tiffz.source.BufferHandle{ tiffz.source.BufferHandle.init(coded), tiffz.source.BufferHandle.init(oracle) };
+    var dec_coded = try tiffz.Decoder.open(allocator, tiffz.Source.fromBuffer(&handles[0]));
+    defer dec_coded.deinit();
+    var dec_oracle = try tiffz.Decoder.open(allocator, tiffz.Source.fromBuffer(&handles[1]));
+    defer dec_oracle.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try dec_coded.validateAllStripsAndTiles(&ws);
+    var got: [4096]u8 = undefined;
+    var want: [4096]u8 = undefined;
+    for (0..chunks) |i| {
+        const k: u32 = @intCast(i);
+        const n = if (tiled) try dec_coded.decodeTile(0, k, &got, &ws) else try dec_coded.decodeStrip(0, k, &got, &ws);
+        const m = if (tiled) try dec_oracle.decodeTile(0, k, &want, &ws) else try dec_oracle.decodeStrip(0, k, &want, &ws);
+        try std.testing.expect(n > 0);
+        try std.testing.expectEqualSlices(u8, want[0..m], got[0..n]);
+    }
+}
+
+test "Compression 34925 (LZMA): libtiff's strips and tiles decode to libtiff's samples" {
+    try expectChunksMatchOracle("tests/fixtures/lzma/rgb16-lzma.tif", "tests/fixtures/lzma/rgb16-lzma-none.tif", false, 1);
+    try expectChunksMatchOracle("tests/fixtures/lzma/rgb16-be-lzma.tif", "tests/fixtures/lzma/rgb16-be-lzma-none.tif", false, 1);
+    try expectChunksMatchOracle("tests/fixtures/lzma/rgb16-tiled-lzma.tif", "tests/fixtures/lzma/rgb16-tiled-lzma-none.tif", true, 1);
+    try expectChunksMatchOracle("tests/fixtures/lzma/rgb8-planar-lzma.tif", "tests/fixtures/lzma/rgb8-planar-lzma-none.tif", false, 3);
+}
+
+/// The offset of IFD 0's StripOffsets and StripByteCounts values (one strip,
+/// LONG) in a classic little-endian file.
+fn classicStripEntry(bytes: []const u8, tag: u16) !usize {
+    const ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    const n: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+    for (0..n) |i| {
+        const e = ifd + 2 + i * 12;
+        if (std.mem.readInt(u16, bytes[e..][0..2], .little) == tag) return e + 8;
+    }
+    return error.TestExpectedEqual;
+}
+
+test "Compression 34925 (LZMA): a strip one byte short of its stream, or without the xz magic, is Malformed" {
+    const allocator = std.testing.allocator;
+    {
+        const bytes = try loadFile(allocator, "tests/fixtures/lzma/rgb16-lzma.tif");
+        defer allocator.free(bytes);
+        const at = try classicStripEntry(bytes, tiffz.tags.strip_byte_counts);
+        const count = std.mem.readInt(u32, bytes[at..][0..4], .little);
+        std.mem.writeInt(u32, bytes[at..][0..4], count - 1, .little);
+        var dest: [4096]u8 = undefined;
+        try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
+    }
+    {
+        const bytes = try loadFile(allocator, "tests/fixtures/lzma/rgb16-lzma.tif");
+        defer allocator.free(bytes);
+        const at = try classicStripEntry(bytes, tiffz.tags.strip_offsets);
+        const strip: usize = std.mem.readInt(u32, bytes[at..][0..4], .little);
+        try std.testing.expectEqualSlices(u8, &.{ 0xFD, '7', 'z', 'X', 'Z', 0x00 }, bytes[strip..][0..6]);
+        bytes[strip + 1] ^= 0x01;
+        var dest: [4096]u8 = undefined;
+        try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
+    }
+}

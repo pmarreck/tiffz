@@ -1,0 +1,19 @@
+.{
+    .name = .liblzma,
+    .version = "5.8.3",
+    .fingerprint = 0xdf036249f7fa4e85,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Upstream xz 5.8.3 release (liblzma is 0BSD). The extracted tree is
+        // byte-identical to nixpkgs' hash-verified xz-5.8.3 source.
+        .xz_src = .{
+            .url = "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.gz",
+            .hash = "N-V-__8AAPqQtACu3v9x4rIwYEMAqLR3cC5VQpwt0ympNt-B",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "lzma.zig",
+    },
+}

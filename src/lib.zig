@@ -42,6 +42,7 @@ pub const compressions = struct {
     pub const ccitt_t6 = @import("compressions/ccitt_t6.zig");
     pub const jpeg = @import("compressions/jpeg.zig");
     pub const zstd = @import("compressions/zstd.zig");
+    pub const lzma = @import("compressions/lzma.zig");
     pub const lerc = @import("compressions/lerc.zig");
 };
 pub const geotiff = @import("geotiff.zig");

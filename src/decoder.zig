@@ -32,6 +32,7 @@ const compressions_ccitt_t4 = @import("compressions/ccitt_t4.zig");
 const compressions_ccitt_t6 = @import("compressions/ccitt_t6.zig");
 const compressions_jpeg = @import("compressions/jpeg.zig");
 const compressions_zstd = @import("compressions/zstd.zig");
+const compressions_lzma = @import("compressions/lzma.zig");
 const compressions_lerc = @import("compressions/lerc.zig");
 const predictors_mod = @import("predictors.zig");
 const findings_mod = @import("findings.zig");
@@ -1744,6 +1745,7 @@ pub const Decoder = struct {
         tags.compression_deflate_adobe,
         tags.compression_packbits,
         tags.compression_zstd,
+        tags.compression_lzma,
         tags.compression_lerc,
         tags.compression_dng_lossy_jpeg,
         tags.compression_jpegxl,
@@ -1981,6 +1983,19 @@ pub const Decoder = struct {
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
                 const written = compressions_zstd.decode(scratch[0..byte_count], dest) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
+            tags.compression_lzma => blk: {
+                // LZMA2 in the .xz container (Compression=34925, libtiff
+                // tif_lzma.c). Each strip/tile is one complete .xz stream;
+                // liblzma may use at most max_codec_scratch bytes.
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = compressions_lzma.decode(scratch[0..byte_count], dest, self.limits.max_codec_scratch) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -2545,7 +2560,7 @@ test "decodeStrip: uncompressed RGB single strip" {
 // classify unsupported. Oracles are hand-derived from the dispatch switch, so
 // adding a codec to one side without the other fails here.
 test "compressionSupported: classifier over supported / never-supported / unknown codes" {
-    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 50002, 52546, 34887, 34892 };
+    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 34925, 50002, 52546, 34887, 34892 };
     for (supported) |c| {
         try std.testing.expect(Decoder.compressionSupported(c));
     }
@@ -2554,7 +2569,6 @@ test "compressionSupported: classifier over supported / never-supported / unknow
         6, // old-style JPEG (OJPEG) — deliberately never supported, SPEC §3
         9, 10, // T.85 / T.43 reserved
         34712, // JPEG2000-in-TIFF
-        34925, // LZMA2
         50001, // WebP
         0xFFFF,
     };

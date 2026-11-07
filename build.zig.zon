@@ -35,6 +35,12 @@
             .url = "git+https://github.com/pmarreck/lercz#9c9a84f1c3e463c2c85b432e3558cfa236140bf7",
             .hash = "lercz-4.2.0-y1r8kVQSCQDy9CWrAgBffLP7ypUZpf5heNGP2xLy1_nz",
         },
+        // liblzma (xz 5.8.3, 0BSD), decoder subset, built from the pinned
+        // upstream release by deps/liblzma. Provides the codec for
+        // Compression=34925 (LZMA2 in the .xz container, libtiff tif_lzma.c).
+        .liblzma = .{
+            .path = "deps/liblzma",
+        },
     },
     .paths = .{
         "build.zig",
@@ -43,5 +49,6 @@
         "include",
         "cli",
         "tests",
+        "deps",
     },
 }
