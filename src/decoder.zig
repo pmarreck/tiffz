@@ -791,8 +791,8 @@ pub const Decoder = struct {
             }
             if (layout.tolerated_tiled_tags and !self.tiled_via_strip_tags_fired) {
                 self.tiled_via_strip_tags_fired = true;
-                self.emit(.tiled_geometry_via_strip_tags_tolerated, &.{});
-                self.noteDiscrepancy(.warning, self.ifdFileOffset(ifd_index), "tiled_geometry_via_strip_tags_tolerated");
+                self.emit(.tiled_geometry_via_strip_tags, &.{});
+                self.noteDiscrepancy(.warning, self.ifdFileOffset(ifd_index), "tiled_geometry_via_strip_tags");
             }
 
             var chunk_index: u32 = 0;

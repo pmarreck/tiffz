@@ -127,7 +127,7 @@ after their parent), which can differ from tiffz's.
    SubIFDs or metadata.
 4. **Tiles stored in StripOffsets/StripByteCounts**, with TileWidth and
    TileLength present: libtiff's quad-tile and cramps-tile. tiffz already
-   tolerates this layout with its `tiled_geometry_via_strip_tags_tolerated`
+   tolerates this layout with its `tiled_geometry_via_strip_tags`
    warning.
 5. **Sony ARW IFD 3**, a Compression 7 YCbCr preview located by
    JPEGInterchangeFormat, has no strips and no X/YResolution.

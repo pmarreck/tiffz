@@ -1759,7 +1759,7 @@ fn replaceClassicIfd0Tag(bytes: []u8, old_tag: u16, new_tag: u16) !void {
 test "audit 1.0 [fixed]: cramps-tile.tif accepts tiled geometry via strip tags and emits finding 15 once" {
     try expectFixtureValidatesWithFinding(
         "tests/fixtures/labeled_good/cramps-tile.tif",
-        .tiled_geometry_via_strip_tags_tolerated,
+        .tiled_geometry_via_strip_tags,
     );
 }
 
@@ -1816,7 +1816,7 @@ test "audit 1.0 [fixed]: exact-extent clean-EOF LZW is accepted and emits findin
 test "audit 1.0 [fixed]: quad-tile.tif accepts tiled geometry via strip tags and emits finding 15 once" {
     try expectFixtureValidatesWithFinding(
         "tests/fixtures/labeled_good/quad-tile.tif",
-        .tiled_geometry_via_strip_tags_tolerated,
+        .tiled_geometry_via_strip_tags,
     );
 }
 
@@ -1873,7 +1873,7 @@ test "warning 15 classifier does not fire for canonical tile arrays" {
     try dec.validateAllStripsAndTiles(&workspace);
     try std.testing.expectEqual(
         @as(usize, 0),
-        recorder.count(.tiled_geometry_via_strip_tags_tolerated),
+        recorder.count(.tiled_geometry_via_strip_tags),
     );
 }
 
