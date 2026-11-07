@@ -103,6 +103,13 @@ pub const Decoder = struct {
     /// True while `checkUnreachedConformance` runs: every record emitted
     /// then carries `MetadataFlags.after_stop`.
     after_stop_pass: bool = false,
+    /// True while the walk or the post-stop pass handles an IFD whose
+    /// presence check is deferred: its records carry
+    /// `MetadataFlags.presence_deferred`.
+    presence_deferred_ifd: bool = false,
+    /// IFDs whose presence check did not run, in walk order, covering the
+    /// post-stop pass (`presenceDeferred`).
+    presence_deferred_list: std.ArrayListUnmanaged(presence.DeferredPresence) = .empty,
     pending_subifd_read: usize = 0,
     /// Next materialized IFD whose tag 330 list has not been queued.
     subifd_scan: usize = 0,
@@ -274,6 +281,7 @@ pub const Decoder = struct {
         if (host_byte_offset != null) flags |= findings_mod.MetadataFlags.host_offset_present;
         if (offset_is_exact) flags |= findings_mod.MetadataFlags.offset_is_exact;
         if (self.after_stop_pass) flags |= findings_mod.MetadataFlags.after_stop;
+        if (self.presence_deferred_ifd) flags |= findings_mod.MetadataFlags.presence_deferred;
         cb(
             self.finding_userdata,
             @intFromEnum(source_decoder),
@@ -450,6 +458,7 @@ pub const Decoder = struct {
         self.ifd_offsets.deinit(self.allocator);
         self.ifd_parent.deinit(self.allocator);
         self.pending_subifds.deinit(self.allocator);
+        self.presence_deferred_list.deinit(self.allocator);
         self.allocator.destroy(self.budget);
     }
 
@@ -746,17 +755,37 @@ pub const Decoder = struct {
         if (self.ifds.items.len == 0) return;
         self.after_stop_pass = true;
         defer self.after_stop_pass = false;
+        defer self.presence_deferred_ifd = false;
         const dng = self.dngContext();
         var i = self.rules_checked;
         while (i < self.ifds.items.len) : (i += 1) {
+            self.presence_deferred_ifd = presence.deferred(&self.ifds.items[i]);
+            if (self.presence_deferred_ifd) self.noteDeferredPresence(i) catch return;
             _ = self.checkIfdConformance(&self.ifds.items[i], i, dng) catch return;
             _ = self.checkJpegGeometry(&self.ifds.items[i], i, dng) catch return;
         }
         self.rules_checked = self.ifds.items.len;
     }
 
+    /// IFDs whose presence check did not run (finding 20), in walk order,
+    /// from the last `validateAllStripsAndTiles`, including IFDs the post-stop
+    /// pass checked. Reach, not a record (validate, 2026-11-07).
+    pub fn presenceDeferred(self: *const Decoder) []const presence.DeferredPresence {
+        return self.presence_deferred_list.items;
+    }
+
+    /// Record IFD `ifd_index` as deferred once: the post-stop pass can revisit
+    /// the IFD the walk stopped in.
+    fn noteDeferredPresence(self: *Decoder, ifd_index: usize) error{OutOfMemory}!void {
+        const items = self.presence_deferred_list.items;
+        if (items.len > 0 and items[items.len - 1].ifd_index == ifd_index) return;
+        try self.presence_deferred_list.append(self.allocator, .{ .ifd_index = @intCast(ifd_index), .reason = .jpeg_interchange_format_only });
+    }
+
     fn validatePages(self: *Decoder, workspace: *Workspace) errors.Error!void {
         self.rules_checked = 0;
+        defer self.presence_deferred_ifd = false;
+        self.presence_deferred_list.clearRetainingCapacity();
         const max_dest_bytes: usize = self.limits.max_decompressed_strip_bytes;
         const initial: usize = @min(@as(usize, 1024 * 1024), max_dest_bytes);
         var dest_buf = self.allocator.alloc(u8, initial) catch return error.OutOfMemory;
@@ -791,6 +820,8 @@ pub const Decoder = struct {
                 self.noteFileClaim(err, self.ifdFileOffset(ifd_index));
                 return err;
             };
+            self.presence_deferred_ifd = presence.deferred(dir);
+            if (self.presence_deferred_ifd) try self.noteDeferredPresence(ifd_index);
             if (try self.checkIfdConformance(dir, ifd_index, dng)) nonconforming = true;
             if (try self.checkJpegGeometry(dir, ifd_index, dng)) nonconforming = true;
             self.rules_checked = ifd_index + 1;

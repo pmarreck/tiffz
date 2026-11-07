@@ -212,6 +212,25 @@ export fn tiffz_facsimile_rows(decoder: ?*const Handle, out_rows: ?*u32) callcon
     return 0;
 }
 
+/// Deferred presence checks (`Decoder.presenceDeferred`): writes up to `cap`
+/// entries to the two arrays (either may be null when cap is 0) and returns
+/// the total, which may exceed cap.
+export fn tiffz_presence_deferred(
+    decoder: ?*const Handle,
+    out_ifds: ?[*]u32,
+    out_reasons: ?[*]u16,
+    cap: usize,
+) callconv(.c) usize {
+    const h = decoder orelse return 0;
+    const list = h.decoder.presenceDeferred();
+    const n = @min(cap, list.len);
+    for (list[0..n], 0..) |entry, i| {
+        if (out_ifds) |p| p[i] = entry.ifd_index;
+        if (out_reasons) |p| p[i] = @intFromEnum(entry.reason);
+    }
+    return list.len;
+}
+
 export fn tiffz_discrepancy(
     decoder: ?*const Handle,
     out_class: ?*i32,

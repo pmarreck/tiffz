@@ -185,6 +185,10 @@ pub const MetadataFlags = struct {
     /// (docs/plan_context/reach-gap.md). Payloads and verdicts are
     /// unchanged. Numbered by validate 2026-11-06.
     pub const after_stop: u32 = 1 << 4;
+    /// The record comes from an IFD whose presence check (finding 20) did not
+    /// run; `Decoder.presenceDeferred` lists those IFDs as reach. Numbered by
+    /// validate 2026-11-06; scope approved 2026-11-07.
+    pub const presence_deferred: u32 = 1 << 5;
 };
 
 /// Preserve a strict facade finding's own outcome instead of deriving one from

@@ -639,6 +639,7 @@ const FindingRecorder = struct {
         host_byte_offset: ?u64,
         offset_is_exact: bool,
         after_stop: bool,
+        presence_deferred: bool,
         payload_u32: ?u32, // decoded from a 4-byte little-endian payload, else null
         payload_u32_2: ?u32, // second LE u32 (bytes 4..8) for 8-byte payloads, else null
         payload_len: usize,
@@ -698,6 +699,7 @@ const FindingRecorder = struct {
                 null,
             .offset_is_exact = (metadata_flags & tiffz.findings.MetadataFlags.offset_is_exact) != 0,
             .after_stop = (metadata_flags & tiffz.findings.MetadataFlags.after_stop) != 0,
+            .presence_deferred = (metadata_flags & tiffz.findings.MetadataFlags.presence_deferred) != 0,
             .payload_u32 = payload_u32,
             .payload_u32_2 = payload_u32_2,
             .payload_len = payload_len,
@@ -4764,4 +4766,148 @@ test "MetadataFlags: every flag is in the C header with the same value, and no o
         }
     }
     try std.testing.expectEqual(decls.len, std.mem.count(u8, header, "#define TIFFZ_FINDING_"));
+}
+
+/// `twoIfdFile`'s IFD 0, then an IFD 1 located only by JPEGInterchangeFormat
+/// (Compression 6, tags 513 and 514, no strip or tile arrays), the Exif
+/// thumbnail form whose presence check is deferred, with Orientation
+/// `orientation` so a finding-18 fault can be planted in it.
+fn jifThumbnailFile(allocator: std.mem.Allocator, compression: u16, strip0: []const u8, orientation: u16) ![]u8 {
+    const ifd0: u32 = 8;
+    const ifd1: u32 = ifd0 + 2 + 9 * 12 + 4;
+    const strip0_off: u32 = ifd1 + 2 + 9 * 12 + 4;
+    const thumb_off: u32 = strip0_off + @as(u32, @intCast(strip0.len));
+    const buf = try allocator.alloc(u8, thumb_off + 4);
+    @memset(buf, 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    putU16(buf, 2, 42);
+    putU32(buf, 4, ifd0);
+    const Built = struct { tag: u16, typ: u16, val: u32 };
+    const first = [_]Built{
+        .{ .tag = 256, .typ = 4, .val = 2 },              .{ .tag = 257, .typ = 4, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 },              .{ .tag = 259, .typ = 3, .val = compression },
+        .{ .tag = 262, .typ = 3, .val = 1 },              .{ .tag = 273, .typ = 4, .val = strip0_off },
+        .{ .tag = 277, .typ = 3, .val = 1 },              .{ .tag = 278, .typ = 4, .val = 1 },
+        .{ .tag = 279, .typ = 4, .val = @intCast(strip0.len) },
+    };
+    const second = [_]Built{
+        .{ .tag = 256, .typ = 4, .val = 2 }, .{ .tag = 257, .typ = 4, .val = 1 },
+        .{ .tag = 258, .typ = 3, .val = 8 }, .{ .tag = 259, .typ = 3, .val = 6 },
+        .{ .tag = 262, .typ = 3, .val = 1 }, .{ .tag = 274, .typ = 3, .val = orientation },
+        .{ .tag = 277, .typ = 3, .val = 1 }, .{ .tag = 513, .typ = 4, .val = thumb_off },
+        .{ .tag = 514, .typ = 4, .val = 4 },
+    };
+    inline for (.{ .{ ifd0, &first, ifd1 }, .{ ifd1, &second, @as(u32, 0) } }) |d| {
+        putU16(buf, d[0], @intCast(d[1].len));
+        for (d[1], 0..) |e, i| {
+            const at = d[0] + 2 + i * 12;
+            putU16(buf, at, e.tag);
+            putU16(buf, at + 2, e.typ);
+            putU32(buf, at + 4, 1);
+            putU32(buf, at + 8, e.val);
+        }
+        putU32(buf, d[0] + 2 + d[1].len * 12, d[2]);
+    }
+    @memcpy(buf[strip0_off..thumb_off], strip0);
+    @memcpy(buf[thumb_off..][0..4], &[_]u8{ 0xff, 0xd8, 0xff, 0xd9 });
+    return buf;
+}
+
+/// Validate `bytes`, recording findings, and copy out the deferred-presence
+/// list; returns the validation error, if any.
+fn validateDeferred(allocator: std.mem.Allocator, bytes: []const u8, recorder: *FindingRecorder, out: *std.ArrayListUnmanaged(tiffz.ifd_presence.DeferredPresence)) !?anyerror {
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    const src = tiffz.Source.fromBuffer(&handle);
+    var dec = try tiffz.Decoder.open(allocator, src);
+    defer dec.deinit();
+    dec.setFindingCallback(&FindingRecorder.callback, @ptrCast(recorder));
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    const outcome: ?anyerror = if (dec.validateAllStripsAndTiles(&ws)) |_| null else |err| err;
+    try out.appendSlice(allocator, dec.presenceDeferred());
+    return outcome;
+}
+
+// validate, 2026-11-07: a deferred presence check is reach, listed per file;
+// records from that IFD carry MetadataFlags.presence_deferred, and the
+// verdict is the same as for the same fault in a strip-located IFD.
+test "presence deferral: a JPEGInterchangeFormat-only IFD is listed as reach and its records are flagged" {
+    const allocator = std.testing.allocator;
+    const strip = [_]u8{ 0x10, 0xf0 };
+    var outcomes: [2]?anyerror = undefined;
+    for ([_]u16{ 1, 9 }, 0..) |orientation, k| {
+        const bytes = try jifThumbnailFile(allocator, 1, &strip, orientation);
+        defer allocator.free(bytes);
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        var list: std.ArrayListUnmanaged(tiffz.ifd_presence.DeferredPresence) = .empty;
+        defer list.deinit(allocator);
+        outcomes[k] = try validateDeferred(allocator, bytes, &recorder, &list);
+        try std.testing.expectEqual(@as(usize, 1), list.items.len);
+        try std.testing.expectEqual(@as(u32, 1), list.items[0].ifd_index);
+        try std.testing.expectEqual(tiffz.ifd_presence.DeferredReason.jpeg_interchange_format_only, list.items[0].reason);
+        try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
+        for (recorder.findings.items) |f| {
+            // Only the planted IFD 1 fault comes from the deferred IFD.
+            const from_ifd1 = f.source == .tiffz and f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid) and
+                std.mem.readInt(u32, f.payload_bytes[0..4], .little) == 1;
+            try std.testing.expectEqual(from_ifd1, f.presence_deferred);
+            try std.testing.expect(!f.after_stop);
+        }
+    }
+    try std.testing.expectEqual(@as(?anyerror, null), outcomes[0]);
+    try std.testing.expectEqual(@as(?anyerror, error.Malformed), outcomes[1]);
+}
+
+test "presence deferral: the same fault in a strip-located IFD is unflagged, not listed, and the verdict is the same" {
+    const allocator = std.testing.allocator;
+    const bytes = try twoIfdFile(allocator, 1, &.{ 0x10, 0xf0 }, 9, 0);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    var list: std.ArrayListUnmanaged(tiffz.ifd_presence.DeferredPresence) = .empty;
+    defer list.deinit(allocator);
+    try std.testing.expectEqual(@as(?anyerror, error.Malformed), try validateDeferred(allocator, bytes, &recorder, &list));
+    try std.testing.expectEqual(@as(usize, 0), list.items.len);
+    try std.testing.expectEqual(@as(usize, 1), conformanceHits(&recorder, 1, 274));
+    for (recorder.findings.items) |f| try std.testing.expect(!f.presence_deferred);
+}
+
+test "presence deferral: after a decode stop, the deferred IFD is still listed and its record carries both flags" {
+    const allocator = std.testing.allocator;
+    const not_zlib = [_]u8{ 0xff, 0xff, 0xff, 0xff };
+    const bytes = try jifThumbnailFile(allocator, 8, &not_zlib, 9);
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    var list: std.ArrayListUnmanaged(tiffz.ifd_presence.DeferredPresence) = .empty;
+    defer list.deinit(allocator);
+    try std.testing.expect((try validateDeferred(allocator, bytes, &recorder, &list)) != null);
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expectEqual(@as(u32, 1), list.items[0].ifd_index);
+    try std.testing.expectEqual(@as(usize, 1), afterStopHits(&recorder, 1, 274));
+    for (recorder.findings.items) |f| {
+        if (f.after_stop) try std.testing.expect(f.presence_deferred);
+    }
+}
+
+// include/tiffz.h and ifd_presence.DeferredReason must name the same values:
+// `#define TIFFZ_PRESENCE_DEFERRED_NAME UINT16_C(value)` for each, no other.
+test "DeferredReason: every reason is in the C header with the same value, and no other" {
+    const allocator = std.testing.allocator;
+    const header = try loadFile(allocator, "include/tiffz.h");
+    defer allocator.free(header);
+    const fields = @typeInfo(tiffz.ifd_presence.DeferredReason).@"enum".fields;
+    inline for (fields) |field| {
+        var upper: [64]u8 = undefined;
+        const name = std.ascii.upperString(&upper, field.name);
+        var want_buf: [128]u8 = undefined;
+        const want = try std.fmt.bufPrint(&want_buf, "#define TIFFZ_PRESENCE_DEFERRED_{s} UINT16_C({d})\n", .{ name, field.value });
+        if (std.mem.indexOf(u8, header, want) == null) {
+            std.debug.print("include/tiffz.h lacks: {s}", .{want});
+            return error.TestExpectedEqual;
+        }
+    }
+    try std.testing.expectEqual(fields.len, std.mem.count(u8, header, "#define TIFFZ_PRESENCE_DEFERRED_"));
 }

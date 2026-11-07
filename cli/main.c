@@ -264,6 +264,8 @@ static void write_json(
 			fprintf(stdout, ",\"host_offset\":%llu", (unsigned long long)f->host_offset);
 		if (f->flags & TIFFZ_FINDING_AFTER_STOP)
 			fputs(",\"after_stop\":true", stdout);
+		if (f->flags & TIFFZ_FINDING_PRESENCE_DEFERRED)
+			fputs(",\"presence_deferred\":true", stdout);
 		if (f->payload_len > 0) {
 			fputs(",\"payload_hex\":", stdout);
 			write_payload_hex(stdout, f->payload, f->payload_len);
@@ -285,6 +287,25 @@ static void write_json(
 		}
 		if (tiffz_facsimile_rows(dec, &rows_decoded) == 0) {
 			fprintf(stdout, ",\"rows_decoded\":%u", rows_decoded);
+		}
+		{
+			/* Reach: IFDs whose presence check did not run, only when any. */
+			size_t total = tiffz_presence_deferred(dec, NULL, NULL, 0);
+			if (total > 0) {
+				uint32_t *ifds = calloc(total, sizeof *ifds);
+				uint16_t *reasons = calloc(total, sizeof *reasons);
+				if (ifds != NULL && reasons != NULL) {
+					size_t k;
+					tiffz_presence_deferred(dec, ifds, reasons, total);
+					fputs(",\"presence_deferred\":[", stdout);
+					for (k = 0; k < total; k++)
+						fprintf(stdout, "%s{\"ifd\":%u,\"reason\":%u}",
+							k > 0 ? "," : "", (unsigned)ifds[k], (unsigned)reasons[k]);
+					fputc(']', stdout);
+				}
+				free(ifds);
+				free(reasons);
+			}
 		}
 		{
 			int32_t class_id = 0;

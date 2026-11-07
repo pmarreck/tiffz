@@ -376,6 +376,9 @@ test "tiffz validate rejects the Canon 40D CR2 for its IFD0 BitsPerSample count"
     try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"payload_hex\":\"00000000" ++ "02000000" ++ "2a00000000000000" ++ "0201" ++ "0200" ++ "0300" ++ "0300000000000000") != null);
     // Partial coverage is still named: two code-16 skips.
     try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":16,"));
+    // IFD 1, the JPEGInterchangeFormat thumbnail, had no presence check:
+    // reported as reach, reason 1 (validate, 2026-11-07).
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(r.stdout, "\"presence_deferred\":[{\"ifd\":1,\"reason\":1}]"));
 }
 
 // Duplicated from tests/fixture_test.zig: this test module cannot import

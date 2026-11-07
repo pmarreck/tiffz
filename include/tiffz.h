@@ -87,6 +87,18 @@ int tiffz_limit_progress(
 /* 0 when EndOfFacsimileBlock recorded how many rows were fully decoded. */
 int tiffz_facsimile_rows(const tiffz_decoder_t *decoder, uint32_t *out_rows);
 
+/* Presence checks (finding 20) not run, one entry per IFD in walk order,
+   including IFDs checked after a stopping error. Reach, not a record.
+   Writes up to `cap` entries to out_ifds and out_reasons (either may be
+   NULL when cap is 0) and returns the total count, which may exceed cap.
+   Valid after tiffz_validate. */
+#define TIFFZ_PRESENCE_DEFERRED_JPEG_INTERCHANGE_FORMAT_ONLY UINT16_C(1)
+size_t tiffz_presence_deferred(
+    const tiffz_decoder_t *decoder,
+    uint32_t *out_ifds,
+    uint16_t *out_reasons,
+    size_t cap);
+
 /* 0 when validation recorded a file discrepancy. Class is 1 warning,
    2 error, 3 known_failure. This library does not emit known_failure;
    admission belongs to the consumer. *out_offset_known is 1 when
@@ -122,6 +134,9 @@ typedef int32_t tiffz_finding_verdict_t;
 /* The record comes from an IFD the walk reached only after a stopping error;
  * payload and verdict are unchanged. */
 #define TIFFZ_FINDING_AFTER_STOP UINT32_C(16)
+/* The record comes from an IFD whose presence check (finding 20) did not run;
+ * tiffz_presence_deferred lists those IFDs. */
+#define TIFFZ_FINDING_PRESENCE_DEFERRED UINT32_C(32)
 
 typedef void (*tiffz_finding_callback_t)(
     void *userdata,

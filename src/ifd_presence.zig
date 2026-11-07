@@ -95,17 +95,38 @@ pub const Result = struct {
 const tile_fields = [_]u16{ tags.tile_width, tags.tile_length, tags.tile_offsets, tags.tile_byte_counts };
 const strip_fields = [_]u16{ tags.strip_offsets, tags.rows_per_strip, tags.strip_byte_counts };
 
-pub fn check(dir: *const Ifd, opts: Options) Result {
-    var result: Result = .{};
+/// Why an IFD's presence check did not run. A new value is registered with
+/// validate by note, and include/tiffz.h defines each as
+/// TIFFZ_PRESENCE_DEFERRED_<NAME> (a parity test checks both ways).
+pub const DeferredReason = enum(u16) {
+    /// No strip or tile arrays, only JPEGInterchangeFormat: the Exif
+    /// compressed-thumbnail form, waiting for an interchange-format rule.
+    jpeg_interchange_format_only = 1,
+};
+
+/// One IFD whose presence check did not run: reach, reported per file
+/// through `Decoder.presenceDeferred` (validate, 2026-11-07).
+pub const DeferredPresence = struct { ifd_index: u32, reason: DeferredReason };
+
+/// True when the IFD is located only by JPEGInterchangeFormat: no strip or
+/// tile arrays, only 513 or 514. Its presence check is deferred (validate,
+/// 2026-11-05), which is reach, not a record (validate, 2026-11-07).
+pub fn deferred(dir: *const Ifd) bool {
     var any_tile = false;
     for (tile_fields) |t| any_tile = any_tile or has(dir, t);
     const any_strip_array = has(dir, tags.strip_offsets) or has(dir, tags.strip_byte_counts);
-    if (!any_tile and !any_strip_array and
-        (has(dir, tags.jpeg_interchange_format) or has(dir, tags.jpeg_interchange_format_length)))
-    {
+    return !any_tile and !any_strip_array and
+        (has(dir, tags.jpeg_interchange_format) or has(dir, tags.jpeg_interchange_format_length));
+}
+
+pub fn check(dir: *const Ifd, opts: Options) Result {
+    var result: Result = .{};
+    if (deferred(dir)) {
         result.deferred = true;
         return result;
     }
+    var any_tile = false;
+    for (tile_fields) |t| any_tile = any_tile or has(dir, t);
 
     // Records in tag order within each requirement.
     for ([_]u16{ tags.image_width, tags.image_length, tags.photometric }) |t| {

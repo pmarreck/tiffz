@@ -260,3 +260,25 @@ IFD, no allocation.
 **Controlled red.** Dropping PhotometricInterpretation from the baseline
 rows failed the KNOWN_DEFECT test (the Canon exemplar lost its record) and
 two unit tests.
+
+## Landed, and deferral as reach (2026-11-07)
+
+`tag_presence_invalid` landed as InfoFinding 20 in d610bcce. The corpus
+matched the 2026-11-05 measurement exactly.
+
+validate ruled that a deferred presence check is reach, not a record
+(TERMINOLOGY B4). A verdict-valid finding-20 record and an INFO finding
+were both rejected. Instead:
+- `Decoder.presenceDeferred()` lists, per file, every IFD whose presence
+  check did not run, in walk order and including the post-stop pass, each
+  with a reason (`ifd_presence.DeferredReason`; 1 means located only by
+  JPEGInterchangeFormat). The C call is `tiffz_presence_deferred`, which
+  takes pointer-plus-length output arrays and returns the total count. The
+  CLI JSON adds `"presence_deferred":[{"ifd":N,"reason":1}]` only when the
+  list is non-empty. The list is not capped.
+- `MetadataFlags.presence_deferred` (1 << 5) marks every record emitted
+  while handling such an IFD. File-level records never carry it. The CLI
+  JSON adds `"presence_deferred":true` to those records.
+- Header parity tests tie `TIFFZ_FINDING_*` to MetadataFlags and
+  `TIFFZ_PRESENCE_DEFERRED_*` to DeferredReason, in both directions. A new
+  reason is registered with validate by note.
