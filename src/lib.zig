@@ -31,6 +31,7 @@ pub const dng = @import("dng.zig");
 pub const findings = @import("findings.zig");
 pub const ifd_conformance = @import("ifd_conformance.zig");
 pub const ifd_presence = @import("ifd_presence.zig");
+pub const geokey_check = @import("geokey_check.zig");
 pub const jpeg_geometry = @import("jpeg_geometry.zig");
 pub const compressions = struct {
     pub const none = @import("compressions/none.zig");

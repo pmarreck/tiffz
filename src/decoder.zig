@@ -38,6 +38,7 @@ const findings_mod = @import("findings.zig");
 const conformance = @import("ifd_conformance.zig");
 const jpeg_geometry = @import("jpeg_geometry.zig");
 const presence = @import("ifd_presence.zig");
+const geokey = @import("geokey_check.zig");
 
 /// One tag 330 value plus the directory that named it. The parent index is
 /// how a pointer back at an ancestor is told from a second name for a page
@@ -401,8 +402,46 @@ pub const Decoder = struct {
             );
         }
         const required = self.checkIfdPresence(dir, ifd_index, ifd_offset);
+        const geo = try self.checkIfdGeoKeys(dir, ifd_index, ifd_offset);
         try self.checkIfdShould(dir, ifd_index, ifd_offset, dng);
-        return faults.items.len > 0 or required;
+        return faults.items.len > 0 or required or geo;
+    }
+
+    /// GeoTIFF Tier 2 and Tier 3 for one IFD (`geokey_check`), one finding per
+    /// record by the rule's class: InfoFinding 21 `geokey_invalid` (corrupt)
+    /// or 24 `geokey_deviation` (valid, a warning). True if any record is
+    /// corrupt.
+    fn checkIfdGeoKeys(self: *Decoder, dir: *const Ifd, ifd_index: usize, ifd_offset: u64) error{OutOfMemory}!bool {
+        var records: std.ArrayListUnmanaged(geokey.Record) = .empty;
+        defer records.deinit(self.allocator);
+        try geokey.check(self.allocator, dir, self.endian, &records);
+        var corrupt = false;
+        for (records.items) |record| {
+            const anchor = if (record.entry_index) |i| conformance.entryOffset(ifd_offset, i, dir.offset_width) else ifd_offset;
+            const code: findings_mod.InfoFinding, const verdict: findings_mod.Verdict = switch (record.rule.class()) {
+                .invalid => .{ .geokey_invalid, .corrupt },
+                .deviation => .{ .geokey_deviation, .valid },
+            };
+            switch (record.rule.class()) {
+                .invalid => {
+                    corrupt = true;
+                    self.noteDiscrepancy(.@"error", anchor, "geokey_invalid");
+                },
+                .deviation => self.noteDiscrepancy(.warning, anchor, "geokey_deviation"),
+            }
+            var buf: [geokey.payload_len]u8 = undefined;
+            self.emitDetailed(
+                .tiffz,
+                @intCast(@intFromEnum(code)),
+                null,
+                verdict,
+                anchor,
+                null,
+                true,
+                geokey.encodePayload(record, @intCast(ifd_index), anchor, &buf),
+            );
+        }
+        return corrupt;
     }
 
     /// InfoFinding 22, `should_deviation`, for one IFD: a "should" a writer

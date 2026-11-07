@@ -3919,7 +3919,26 @@ test "IFD-entry rules: rows that do not drive decoding classify the same in a bu
                 if (std.mem.readInt(u16, f.payload_bytes[16..18], .little) == case.tag and
                     std.mem.readInt(u16, f.payload_bytes[18..20], .little) == case.reason) hits += 1;
             }
-            const ok = if (corrupt)
+            // The built file has no other GeoTIFF tag, so a lone ModelPixelScale
+            // is also GeoTIFF Tier 2 rule 3 and a lone GeoKeyDirectory rule 1
+            // (19-008r4 Requirement 1.2): exactly one finding 24 record with
+            // that rule, a warning that leaves the clean file passing, and no
+            // finding 21 record.
+            const tier2_rule: ?u16 = switch (case.tag) {
+                tiffz.tags.model_pixel_scale => 3,
+                tiffz.tags.geo_key_directory => 1,
+                else => null,
+            };
+            var geo: usize = 0;
+            for (recorder.findings.items) |f| {
+                if (f.source != .tiffz) continue;
+                if (f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.geokey_invalid)) geo += 100;
+                if (f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.geokey_deviation)) continue;
+                geo += 1;
+                if (tier2_rule != std.mem.readInt(u16, f.payload_bytes[18..20], .little)) geo += 100;
+            }
+            const geo_ok = geo == @as(usize, if (tier2_rule != null) 1 else 0);
+            const ok = geo_ok and if (corrupt)
                 (if (result) |_| false else |err| err == error.Malformed) and hits == 1 and countConformance(&recorder) == 1
             else
                 (if (result) |_| true else |_| false) and countConformance(&recorder) == 0;
@@ -5134,4 +5153,178 @@ test "Compression 50002 (JPEG XL): a cut stream, and a frame that disagrees with
         bytes[at + 8] = 15;
         try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
     }
+}
+
+// ---- geokey_invalid (21) and geokey_deviation (24), end to end on gray16_geotiff.tif ----
+
+/// The file offset of IFD 0's GeoKeyDirectory value array, and that entry's
+/// own offset, in the little-endian classic GeoTIFF fixture.
+const GeoKeys = struct { values: usize, entry: usize, count: usize };
+
+fn geoKeyDirectory(bytes: []const u8) !GeoKeys {
+    const ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    const n: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+    for (0..n) |i| {
+        const e = ifd + 2 + i * 12;
+        if (std.mem.readInt(u16, bytes[e..][0..2], .little) != tiffz.tags.geo_key_directory) continue;
+        return .{
+            .values = std.mem.readInt(u32, bytes[e + 8 ..][0..4], .little),
+            .entry = e,
+            .count = std.mem.readInt(u32, bytes[e + 4 ..][0..4], .little),
+        };
+    }
+    return error.TestExpectedEqual;
+}
+
+fn geoShort(bytes: []u8, keys: GeoKeys, index: usize) *[2]u8 {
+    return bytes[keys.values + index * 2 ..][0..2];
+}
+
+/// The value index of the key entry with `id` (its KeyID's index).
+fn geoKeyIndex(bytes: []u8, keys: GeoKeys, id: u16) !usize {
+    const n = std.mem.readInt(u16, geoShort(bytes, keys, 3), .little);
+    for (0..n) |k| {
+        if (std.mem.readInt(u16, geoShort(bytes, keys, 4 + 4 * k), .little) == id) return 4 + 4 * k;
+    }
+    return error.TestExpectedEqual;
+}
+
+/// One validation's GeoTIFF records (findings 21 and 24, in order) and
+/// whether the file failed Malformed.
+const GeoRun = struct { records: []const FindingRecorder.Record, malformed: bool };
+
+fn geoRun(allocator: std.mem.Allocator, bytes: []const u8, recorder: *FindingRecorder) !GeoRun {
+    var malformed = false;
+    validateRecording(allocator, bytes, recorder) catch |err| switch (err) {
+        error.Malformed => malformed = true,
+        else => return err,
+    };
+    var n: usize = 0;
+    for (recorder.findings.items) |r| {
+        if (r.source == .tiffz and (r.finding_code == @intFromEnum(tiffz.findings.InfoFinding.geokey_invalid) or
+            r.finding_code == @intFromEnum(tiffz.findings.InfoFinding.geokey_deviation)))
+        {
+            recorder.findings.items[n] = r;
+            n += 1;
+        }
+    }
+    return .{ .records = recorder.findings.items[0..n], .malformed = malformed };
+}
+
+fn geoRule(r: FindingRecorder.Record) u16 {
+    return std.mem.readInt(u16, r.payload_bytes[18..20], .little);
+}
+
+/// A rule-class record: finding 21 with verdict corrupt, or finding 24 with
+/// verdict valid, carrying `rule`.
+fn expectGeo(r: FindingRecorder.Record, code: tiffz.findings.InfoFinding, rule: u16) !void {
+    try std.testing.expectEqual(@as(@TypeOf(r.finding_code), @intCast(@intFromEnum(code))), r.finding_code);
+    const verdict: tiffz.findings.Verdict = switch (code) {
+        .geokey_invalid => .corrupt,
+        .geokey_deviation => .valid,
+        else => unreachable,
+    };
+    try std.testing.expectEqual(verdict, r.verdict);
+    try std.testing.expectEqual(@as(usize, tiffz.geokey_check.payload_len), r.payload_len);
+    try std.testing.expectEqual(rule, geoRule(r));
+}
+
+test "geokey: the GeoTIFF fixture validates with no record" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    try validateRecording(allocator, bytes, &recorder);
+    try std.testing.expect(!recorder.has(.geokey_invalid));
+    try std.testing.expect(!recorder.has(.geokey_deviation));
+}
+
+test "geokey: KeyDirectoryVersion 2 is finding 21 rule 10, anchored on the GeoKeyDirectory entry, and fails" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    const keys = try geoKeyDirectory(bytes);
+    std.mem.writeInt(u16, geoShort(bytes, keys, 0), 2, .little);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const run = try geoRun(allocator, bytes, &recorder);
+    try std.testing.expect(run.malformed);
+    try std.testing.expectEqual(@as(usize, 1), run.records.len);
+    const r = run.records[0];
+    try expectGeo(r, .geokey_invalid, 10);
+    try std.testing.expectEqual(@as(?u64, keys.entry), r.byte_offset);
+    try std.testing.expectEqual(@as(u16, tiffz.tags.geo_key_directory), std.mem.readInt(u16, r.payload_bytes[16..18], .little));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, r.payload_bytes[24..28], .little));
+    try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, r.payload_bytes[28..32], .little));
+}
+
+test "geokey: NumberOfKeys one past the entries present is finding 21 rule 13 and fails" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    const keys = try geoKeyDirectory(bytes);
+    const present: u16 = @intCast((keys.count - 4) / 4);
+    std.mem.writeInt(u16, geoShort(bytes, keys, 3), present + 1, .little);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const run = try geoRun(allocator, bytes, &recorder);
+    try std.testing.expect(run.malformed);
+    try std.testing.expectEqual(@as(usize, 1), run.records.len);
+    try expectGeo(run.records[0], .geokey_invalid, 13);
+    try std.testing.expectEqual(@as(u32, 3), std.mem.readInt(u32, run.records[0].payload_bytes[24..28], .little));
+    try std.testing.expectEqual(@as(u32, present + 1), std.mem.readInt(u32, run.records[0].payload_bytes[28..32], .little));
+}
+
+test "geokey: two KeyIDs out of order are finding 24 rule 14 on the second key, and the file passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    const keys = try geoKeyDirectory(bytes);
+    const a = std.mem.readInt(u16, geoShort(bytes, keys, 4), .little);
+    const b = std.mem.readInt(u16, geoShort(bytes, keys, 8), .little);
+    std.mem.writeInt(u16, geoShort(bytes, keys, 4), b, .little);
+    std.mem.writeInt(u16, geoShort(bytes, keys, 8), a, .little);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const run = try geoRun(allocator, bytes, &recorder);
+    try std.testing.expect(!run.malformed);
+    try std.testing.expectEqual(@as(usize, 1), run.records.len);
+    try expectGeo(run.records[0], .geokey_deviation, 14);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, run.records[0].payload_bytes[20..22], .little));
+    try std.testing.expectEqual(a, std.mem.readInt(u16, run.records[0].payload_bytes[22..24], .little));
+}
+
+test "geokey: a GeoAsciiParams key one byte short of its pipe is finding 24 rule 20 on 34737, and the file passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    const keys = try geoKeyDirectory(bytes);
+    const k = try geoKeyIndex(bytes, keys, 2049);
+    const count = std.mem.readInt(u16, geoShort(bytes, keys, k + 2), .little);
+    std.mem.writeInt(u16, geoShort(bytes, keys, k + 2), count - 1, .little);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const run = try geoRun(allocator, bytes, &recorder);
+    try std.testing.expect(!run.malformed);
+    try std.testing.expectEqual(@as(usize, 1), run.records.len);
+    try expectGeo(run.records[0], .geokey_deviation, 20);
+    try std.testing.expectEqual(@as(u16, tiffz.tags.geo_ascii_params), std.mem.readInt(u16, run.records[0].payload_bytes[16..18], .little));
+    try std.testing.expectEqual(@as(u16, 2049), std.mem.readInt(u16, run.records[0].payload_bytes[22..24], .little));
+}
+
+test "geokey: ModelPixelScale and a GeoKeyDirectory without ModelTiepoint are finding 24 rules 1 and 3, and the file passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    // A private tag (32768 and up, never a fault) keeps the entries sorted.
+    try replaceClassicIfd0Tag(bytes, tiffz.tags.model_tiepoint, tiffz.tags.model_tiepoint + 1);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const run = try geoRun(allocator, bytes, &recorder);
+    try std.testing.expect(!run.malformed);
+    try std.testing.expectEqual(@as(usize, 2), run.records.len);
+    try expectGeo(run.records[0], .geokey_deviation, 1);
+    try expectGeo(run.records[1], .geokey_deviation, 3);
+    try std.testing.expectEqual(@as(u16, tiffz.tags.model_tiepoint), std.mem.readInt(u16, run.records[1].payload_bytes[32..34], .little));
 }

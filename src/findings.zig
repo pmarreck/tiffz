@@ -125,8 +125,24 @@ pub const InfoFinding = enum(u32) {
     /// there with SourceShortRead. Payload: `extent_past_eof_payload_len`
     /// bytes (docs/plan_context/extent-past-eof.md). The byte offset is the
     /// declaring entry, else the declared start, exact. Numbered by validate
-    /// 2026-11-06. 21 is reserved (geokey_invalid).
+    /// 2026-11-06.
     extent_past_eof = 23,
+    /// A GeoTIFF IFD that breaks OGC GeoTIFF 1.1 (19-008r4) where the data
+    /// has no specified decode or suggests damage: the GeoKeyDirectory
+    /// header, missing key entries, a duplicate KeyID, or a key's
+    /// TIFFTagLocation, ValueOffset or Count (`geokey_check.Rule.class` is
+    /// `.invalid`). Verdict corrupt, as for 17. One record per violation.
+    /// Payload: 36 bytes, `geokey_check.payload_len`. The byte offset is the
+    /// anchoring entry, exact. Numbered by validate 2026-11-06; layout
+    /// approved 2026-11-07.
+    geokey_invalid = 21,
+    /// A GeoTIFF writer violation where every key still decodes: the
+    /// conditional model tags of Requirement 1.2, KeyIDs out of order, or
+    /// GeoAsciiParams' pipes and NULs (`geokey_check.Rule.class` is
+    /// `.deviation`). Verdict valid; validate maps it to WARN, and it never
+    /// fails validation. Same payload, rule numbers and anchor as 21.
+    /// Numbered by validate 2026-11-07.
+    geokey_deviation = 24,
     /// A "should" a writer ignored, from the DNG should-row queue and TIFF
     /// Technical Note 3 (`ifd_conformance.ShouldRule`). Verdict valid; validate
     /// maps it to INFO, and it never changes the result. Payload: 20 bytes,

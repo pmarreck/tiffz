@@ -113,6 +113,8 @@ typedef void (*tiffz_finding_callback_t)(
 | `tag_field_invalid` (18) | 38 bytes LE: u32 IFD index, u32 entry index, u64 entry offset, u16 tag, u16 reason (1 type, 2 count, 3 value, 4 channel mismatch), u16 raw type, u64 raw count, u64 raw value/offset slot. Reason 4 adds 10 bytes (48 in all): u16 PhotometricInterpretation, u16 SamplesPerPixel used, u16 1 if stored or 0 if absent (default 1), u16 and u16 the channel counts allowed | per entry that breaks its tag's rule in `src/ifd_conformance.zig`; verdict corrupt |
 | `jpeg_segment_geometry_invalid` (19) | 44 bytes LE: u32 IFD index, u32 first violating segment, u64 TIFF entry offset, u64 SOF marker offset, u16 rule (1 RowsPerStrip, 2 TileWidth, 3 TileLength, 4 sampling factors, 5 separate-plane factors), u16 SOF type, u32 TIFF value, u32 required multiple or component (index << 16 | H << 8 | V), u32 violating segments, u32 examined segments | per Compression 7 IFD and rule whose JPEG frame headers disagree with RowsPerStrip, tile sizes, YCbCrSubSampling or PlanarConfiguration (TIFF Technical Note 2); byte offset is the first violating SOF; verdict corrupt |
 | `tag_presence_invalid` (20) | 24 bytes LE: u32 IFD index, u32 entry index (0xFFFFFFFF when anchored on the IFD), u64 anchor offset, u16 tag, u16 reason (1 required_absent, 2 excluded_present, 3 dependency_absent), u16 requirement (1 TIFF 6.0 baseline, 2 tile replacement, 3 tile dependency), u16 related tag | per field a claimed specification requires absent from, or excludes present in, an image IFD; an IFD located only by JPEGInterchangeFormat is deferred (reach, `presence_deferred`); byte offset is the anchor; verdict corrupt |
+| `geokey_invalid` (21) | 36 bytes LE: u32 IFD index, u32 entry index (0xFFFFFFFF on the IFD), u64 anchor offset, u16 tag, u16 rule (10 key_directory_version, 11 key_revision, 12 minor_revision, 13 key_entries_truncated, 15 key_duplicate, 16 tag_location_invalid, 17 location_tag_absent, 18 value_out_of_bounds, 19 short_params_inside_entries), u16 key index (0xFFFF when none), u16 KeyID, u32 element index (0xFFFFFFFF when none), u32 observed value, u16 related tag, u16 reserved | per violation of the GeoKeyDirectory structure in OGC GeoTIFF 1.1 (19-008r4) with no specified decode (Tier 3; docs/plan_context/geokey-invalid.md); verdict corrupt; layout approved by validate 2026-11-07 |
+| `geokey_deviation` (24) | the same 36 bytes as 21, rule (1 georeference_absent, 2 pixel_scale_with_transformation, 3 pixel_scale_without_tiepoint, 14 key_unsorted, 20 ascii_terminator_missing, 21 ascii_nul_inside) | per GeoTIFF 1.1 writer violation where every key still decodes (Requirement 1.2, Tier 2; key order; GeoAsciiParams terminators); verdict valid, routed as a warning |
 | `extent_past_eof` (23) | 40 bytes LE: u32 IFD index, u16 kind (1 IFD, 2 value array, 3 strip or tile), u16 declaring tag (0 for an IFD), u64 declared start, u64 declared length (saturated), u64 file size, u64 entry offset (2^64 - 1 for an IFD) | once, at the first structure that declares more bytes than the file holds; the walk then stops with SourceShortRead; byte offset is the declaring entry, else the declared start; verdict corrupt |
 | `should_deviation` (22) | 20 bytes LE: u32 IFD index, u32 entry index (0xFFFFFFFF when anchored on the IFD), u64 anchor offset, u16 tag (0 for the IFD), u16 rule (1 NewSubFileType outside DNG's values, 2 a 1.6 DNGVersion with a build number, 4 mirrored Orientation, 5 a LensInfo f-stop of 0/n, 6 DefaultScale not differing by 2.0 under CFALayout 2-5, 10 an enhanced IFD not LinearRaw, 16-bit or float, or without EnhanceParams, 13 a NUL inside a DNG UTF-8 string, 14 a tag outside its Usage IFD, 16 the first construct newer than DNGBackwardVersion, 17 Predictor 3 without SampleFormat 3, 18 the first construct newer than DNGVersion) | per should a writer ignored; verdict valid, mapped to INFO; never changes the result |
 
@@ -183,6 +185,8 @@ forward-compat unknowns.
 | `tag_field_invalid`               | fail             | detail for the `Malformed` failure: "TIFF tag has an invalid type, count or value" |
 | `jpeg_segment_geometry_invalid`   | fail             | detail for the `Malformed` failure: "JPEG-in-TIFF segment geometry disagrees with its TIFF fields" |
 | `tag_presence_invalid`            | fail             | detail for the `Malformed` failure: "TIFF field required or excluded by its specification is absent or present" |
+| `geokey_invalid`                  | fail             | detail for the `Malformed` failure: "GeoTIFF GeoKeyDirectory structure violates GeoTIFF 1.1" |
+| `geokey_deviation`                | warn             | `warning_message = "GeoTIFF tags or keys deviate from GeoTIFF 1.1"` |
 | `extent_past_eof`                 | fail             | detail for the SourceShortRead failure: "TIFF structure runs past the end of the file" |
 
 Notes on taxonomy:
@@ -319,8 +323,10 @@ pub const TiffzInfoFinding = enum(u32) {
     tag_field_invalid = 18,
     jpeg_segment_geometry_invalid = 19,
     tag_presence_invalid = 20,
+    geokey_invalid = 21,
     extent_past_eof = 23,
     should_deviation = 22,
+    geokey_deviation = 24,
     _, // forward-compat: new tiffz versions may introduce codes
 };
 
@@ -356,8 +362,10 @@ pub fn routeInfoFinding(finding: TiffzInfoFinding, payload_u32: ?u32) RoutedFind
         .tag_field_invalid     => .{ .other = "TIFF tag has an invalid type, count or value" },
         .jpeg_segment_geometry_invalid => .{ .other = "JPEG-in-TIFF segment geometry disagrees with its TIFF fields" },
         .tag_presence_invalid => .{ .other = "TIFF field required or excluded by its specification is absent or present" },
+        .geokey_invalid => .{ .other = "GeoTIFF GeoKeyDirectory structure violates GeoTIFF 1.1" },
         .extent_past_eof => .{ .other = "TIFF structure runs past the end of the file" },
         .should_deviation => .{ .info = "TIFF or DNG \"should\" not followed" },
+        .geokey_deviation => .{ .warning = "GeoTIFF tags or keys deviate from GeoTIFF 1.1" },
         _                      => .{ .other = "unknown tiffz finding code" },
     };
 }
