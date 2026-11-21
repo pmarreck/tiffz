@@ -5368,8 +5368,8 @@ test "Compression 34925 (LZMA): libtiff's strips and tiles decode to libtiff's s
     try expectChunksMatchOracle("tests/fixtures/lzma/rgb8-planar-lzma.tif", "tests/fixtures/lzma/rgb8-planar-lzma-none.tif", false, 3);
 }
 
-/// The offset of IFD 0's StripOffsets and StripByteCounts values (one strip,
-/// LONG) in a classic little-endian file.
+/// The offset of the value field of `tag` in IFD 0 of a classic little-endian
+/// file: the value itself for one LONG strip, else the offset of the values.
 fn classicStripEntry(bytes: []const u8, tag: u16) !usize {
     const ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
     const n: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
@@ -5401,4 +5401,51 @@ test "Compression 34925 (LZMA): a strip one byte short of its stream, or without
         var dest: [4096]u8 = undefined;
         try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
     }
+}
+
+// ---- Compression 50001 (WebP), fixtures from tests/fixtures/webp/gen.sh ----
+// libtiff 4.7.2 encodes them with libwebp 1.6.0, and its decodes (`tiffcp -c
+// none`) are the -none oracles, in the same strip or tile layout. The lossy
+// oracle is exact too: libtiff decodes through the same libwebp release.
+
+test "Compression 50001 (WebP): lossless, lossy, strip, tile and RGBA layouts decode to libtiff's samples" {
+    try expectChunksMatchOracle("tests/fixtures/webp/rgb8-lossless.tif", "tests/fixtures/webp/rgb8-lossless-none.tif", false, 1);
+    try expectChunksMatchOracle("tests/fixtures/webp/rgb8-lossy.tif", "tests/fixtures/webp/rgb8-lossy-none.tif", false, 1);
+    try expectChunksMatchOracle("tests/fixtures/webp/rgb8-strips.tif", "tests/fixtures/webp/rgb8-strips-none.tif", false, 4);
+    try expectChunksMatchOracle("tests/fixtures/webp/rgb8-tiled.tif", "tests/fixtures/webp/rgb8-tiled-none.tif", true, 1);
+    try expectChunksMatchOracle("tests/fixtures/webp/rgba8-lossless.tif", "tests/fixtures/webp/rgba8-lossless-none.tif", false, 1);
+}
+
+test "Compression 50001 (WebP): a strip one byte short of its WebP file is Malformed" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/webp/rgb8-lossless.tif");
+    defer allocator.free(bytes);
+    const at = try classicStripEntry(bytes, tiffz.tags.strip_byte_counts);
+    const count = std.mem.readInt(u32, bytes[at..][0..4], .little);
+    std.mem.writeInt(u32, bytes[at..][0..4], count - 1, .little);
+    var dest: [4096]u8 = undefined;
+    try std.testing.expectError(error.Malformed, validateAndDecodeStrip(allocator, bytes, &dest));
+}
+
+test "Compression 50001 (WebP): an 8-bit WebP strip relabeled BitsPerSample 16 is Malformed" {
+    // libtiff accepts only 8-bit WebP rasters. The strip's WebP file still
+    // decodes; validation would also refuse the short extent, so this calls
+    // decodeStrip directly to reach the decoder's BitsPerSample guard alone.
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/webp/rgb8-lossless.tif");
+    defer allocator.free(bytes);
+    var dest: [4096]u8 = undefined;
+    _ = try validateAndDecodeStrip(allocator, bytes, &dest);
+    const at = try classicStripEntry(bytes, tiffz.tags.bits_per_sample);
+    const values: usize = std.mem.readInt(u32, bytes[at..][0..4], .little);
+    for (0..3) |i| {
+        try std.testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, bytes[values + 2 * i ..][0..2], .little));
+        std.mem.writeInt(u16, bytes[values + 2 * i ..][0..2], 16, .little);
+    }
+    var handle = tiffz.source.BufferHandle.init(bytes);
+    var dec = try tiffz.Decoder.open(allocator, tiffz.Source.fromBuffer(&handle));
+    defer dec.deinit();
+    var ws = tiffz.Workspace.init(allocator);
+    defer ws.deinit();
+    try std.testing.expectError(error.Malformed, dec.decodeStrip(0, 0, &dest, &ws));
 }

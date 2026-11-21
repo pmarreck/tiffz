@@ -69,6 +69,7 @@ pub const compression_sgilog: u16 = 34676;   // SGILog LogL and LogLuv32 (libtif
 pub const compression_sgilog24: u16 = 34677; // SGILog24, LogLuv24 (libtiff tif_luv.c)
 pub const compression_zstd: u16 = 50000;     // GDAL/libtiff extension, M12
 pub const compression_lzma: u16 = 34925;     // LZMA2 in the .xz container (libtiff tif_lzma.c)
+pub const compression_webp: u16 = 50001;     // WebP (libtiff tif_webp.c)
 pub const compression_lerc: u16 = 34887;     // Esri LERC (GDAL/libtiff), M12
 pub const compression_jpegxl: u16 = 50002;   // JPEG XL (GDAL/libtiff)
 pub const compression_dng_jpegxl: u16 = 52546; // JPEG XL (DNG 1.7)

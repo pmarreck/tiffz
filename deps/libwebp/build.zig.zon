@@ -1,0 +1,19 @@
+.{
+    .name = .libwebp,
+    .version = "1.6.0",
+    .fingerprint = 0xa2496aa7c80d4c98,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Upstream libwebp v1.6.0 (BSD-3-Clause). The extracted tree is
+        // byte-identical to nixpkgs' libwebp 1.6.0 source.
+        .libwebp_src = .{
+            .url = "https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0.tar.gz",
+            .hash = "N-V-__8AAGkrewARcKiSyLfJKsaW0ZoqHh4hzi4mTGwekxjk",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "webp.zig",
+    },
+}

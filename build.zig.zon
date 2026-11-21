@@ -41,6 +41,12 @@
         .liblzma = .{
             .path = "deps/liblzma",
         },
+        // libwebp 1.6.0 (BSD-3-Clause), decoder only, built from the pinned
+        // upstream release by deps/libwebp. Provides the codec for
+        // Compression=50001 (WebP, libtiff tif_webp.c).
+        .libwebp = .{
+            .path = "deps/libwebp",
+        },
     },
     .paths = .{
         "build.zig",

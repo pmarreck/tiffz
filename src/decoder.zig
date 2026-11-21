@@ -33,6 +33,7 @@ const compressions_ccitt_t6 = @import("compressions/ccitt_t6.zig");
 const compressions_jpeg = @import("compressions/jpeg.zig");
 const compressions_zstd = @import("compressions/zstd.zig");
 const compressions_lzma = @import("compressions/lzma.zig");
+const compressions_webp = @import("compressions/webp.zig");
 const compressions_lerc = @import("compressions/lerc.zig");
 const predictors_mod = @import("predictors.zig");
 const findings_mod = @import("findings.zig");
@@ -1746,6 +1747,7 @@ pub const Decoder = struct {
         tags.compression_packbits,
         tags.compression_zstd,
         tags.compression_lzma,
+        tags.compression_webp,
         tags.compression_lerc,
         tags.compression_dng_lossy_jpeg,
         tags.compression_jpegxl,
@@ -1996,6 +1998,29 @@ pub const Decoder = struct {
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
                 const written = compressions_lzma.decode(scratch[0..byte_count], dest, self.limits.max_codec_scratch) catch |e| break :blk e;
+                if (written > self.limits.max_decompressed_strip_bytes) {
+                    break :blk error.LimitExceededDecompressedStripBytes;
+                }
+                break :blk written;
+            },
+            tags.compression_webp => blk: {
+                // WebP (Compression=50001, libtiff tif_webp.c): one WebP file
+                // per strip or tile, sized to it, over an 8-bit unsigned
+                // chunky raster of 3 or 4 samples. libtiff refuses any
+                // other raster, so tiffz has no specified decode for it.
+                const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+                const planar = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse tags.planar_chunky;
+                if (planar != tags.planar_chunky) break :blk error.Malformed;
+                const bps = self.uniformBitsPerSample(dir, samples) catch |e| break :blk e;
+                if (bps != 8) break :blk error.Malformed;
+                if (dir.get(tags.sample_format) != null) {
+                    const format = try dir.arrayElementU64(tags.sample_format, 0, self.endian, self.source);
+                    if (format != 1) break :blk error.Malformed;
+                }
+                const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
+                const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
+                if (got < byte_count) break :blk error.SourceShortRead;
+                const written = compressions_webp.decode(scratch[0..byte_count], dest, ext.width, ext.rows, samples) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
@@ -2560,7 +2585,7 @@ test "decodeStrip: uncompressed RGB single strip" {
 // classify unsupported. Oracles are hand-derived from the dispatch switch, so
 // adding a codec to one side without the other fails here.
 test "compressionSupported: classifier over supported / never-supported / unknown codes" {
-    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 34925, 50002, 52546, 34887, 34892 };
+    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 34925, 50001, 50002, 52546, 34887, 34892 };
     for (supported) |c| {
         try std.testing.expect(Decoder.compressionSupported(c));
     }
@@ -2569,7 +2594,6 @@ test "compressionSupported: classifier over supported / never-supported / unknow
         6, // old-style JPEG (OJPEG) — deliberately never supported, SPEC §3
         9, 10, // T.85 / T.43 reserved
         34712, // JPEG2000-in-TIFF
-        50001, // WebP
         0xFFFF,
     };
     for (unsupported) |c| {

@@ -219,6 +219,17 @@ pub fn build(b: *std.Build) void {
     const lzma_mod = lzma_dep.module("lzma");
     lib_module.addImport("lzma", lzma_mod);
     b.installArtifact(lzma_dep.artifact("lzma"));
+
+    // libwebp 1.6.0 (BSD-3-Clause), decoder only, built from the pinned
+    // upstream release by deps/libwebp. Provides the codec for
+    // Compression=50001 (WebP). Re-exported like lerc and lzma.
+    const webp_dep = b.dependency("libwebp", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const webp_mod = webp_dep.module("webp");
+    lib_module.addImport("webp", webp_mod);
+    b.installArtifact(webp_dep.artifact("webp"));
     const lib = b.addLibrary(.{
         .name = "tiffz",
         .linkage = .static,
@@ -243,6 +254,7 @@ pub fn build(b: *std.Build) void {
     tiffz_named_module.addImport("jpegz", jpegz_mod);
     tiffz_named_module.addImport("zstd", zstdz_mod);
     tiffz_named_module.addImport("lzma", lzma_mod);
+    tiffz_named_module.addImport("webp", webp_mod);
     tiffz_named_module.addImport("lercz", lercz_mod);
 
     // Production-shaped proof rooted at the same jpegz.validate call used by
@@ -335,6 +347,7 @@ pub fn build(b: *std.Build) void {
     unit_tests_module.addImport("jpegz", jpegz_mod);
     unit_tests_module.addImport("zstd", zstdz_mod);
     unit_tests_module.addImport("lzma", lzma_mod);
+    unit_tests_module.addImport("webp", webp_mod);
     unit_tests_module.addImport("lercz", lercz_mod);
     const unit_tests = b.addTest(.{ .root_module = unit_tests_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
