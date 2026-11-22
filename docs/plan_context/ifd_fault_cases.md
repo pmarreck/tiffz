@@ -447,3 +447,39 @@ is a KNOWN_DEFECT candidate with two caveats: the five files are one
 producer, and complex data has no conforming repair. Whether a de facto
 libtiff extension counts as a claimed specification is now an owner
 question.
+
+## NewSubfileType bits (validate, 2026-11-22)
+
+This was the last `ifd_conformance.pending` entry. It landed as the
+`subfile_bits` extra on the NewSubfileType row, and both rules are finding 18
+reason 3 (FAIL).
+
+- **Rule A, a bit no claimed specification defines.**
+  - The specs: TIFF 6.0 p. 36 ("Unused bits are expected to be 0") defines
+    bits 0, 1 and 2, and RFC 3949 adds bit 4 (MRC). tiffz accepts bit 4
+    without checking MRC structure, since it does not check RFC 3949
+    profiles.
+  - A DNG file adds bits 3, 4 and 16 (DNG 1.6.0.0 Chapter 3). The set applies
+    to a DNGVersion up to 1.6.0.0, the newest edition whose text tiffz has.
+    A newer or unknown version gets no rule A, because a later edition may
+    define more bits.
+  - DNG's per-role values stay should-row 1 (finding 22).
+- **Rule B, bit 2 without a transparency photometric.**
+  - TIFF 6.0 p. 36: "The PhotometricInterpretation value must be 4".
+  - Any DNG file also accepts 52527, for semantic masks (DNG 1.6.0.0 p. 16).
+    A use ahead of the declared edition is should-row 16, not a fault. The
+    iPhone 12 Pro ProRAW declares 1.4.0.0, so it passes.
+  - An absent or unreadable photometric is its own finding.
+  - In a DNG file, B is skipped when PhotometricInterpretation has its own
+    finding 18 record (reason 3 or 5), since both would describe one fault.
+    Outside DNG nothing is suppressed.
+- **Evidence.**
+  - Survey of the 263-file list: 157 IFDs carry NewSubfileType. None of the
+    110 non-DNG IFDs sets an undefined bit, and the three with bit 2 use
+    Photometric 4.
+  - A single-bit flip model over those 110 IFDs: rule A catches 87.5% of
+    flips and rule B 2.1%.
+- **Open question for validate.** DNG gives transparency masks (4, 5) no
+  photometric list, and D6 gives them the role union, which lacks 4.
+  Combined with rule B, a DNG transparency mask has no photometric that
+  passes except 52527. The corpus has no DNG transparency mask.

@@ -281,6 +281,21 @@ const Extra = enum {
     /// ImageWidth, which looks transposed, so a fault needs both the literal
     /// and the dimensionally consistent reading to fail (validate, 2026-11-04).
     mask_sub_area_bounds,
+    /// NewSubfileType bits (validate, 2026-11-22), both value faults:
+    /// - A: a bit no claimed specification defines. TIFF 6.0 p. 36: "Unused
+    ///   bits are expected to be 0"; it defines bits 0, 1 and 2, and RFC 3949
+    ///   (sections 8.1, 8.2) bit 4 (MRC), accepted without MRC structure. A
+    ///   DNG file adds bit 3 (depth), bit 4 (enhanced) and bit 16 (alternate),
+    ///   DNG 1.6.0.0 Chapter 3; for a DNGVersion newer than that edition, or
+    ///   unknown, a later edition may define more, so A does not apply.
+    /// - B: bit 2, a transparency mask, needs "PhotometricInterpretation
+    ///   value must be 4" (TIFF 6.0 p. 36). DNG semantic masks (10004.H) use
+    ///   52527 (DNG 1.6.0.0 p. 16), accepted in any DNG: a use ahead of the
+    ///   declared edition is should-row 16, not a fault. An absent or
+    ///   unreadable photometric is its own finding. In a DNG file, B is
+    ///   skipped when PhotometricInterpretation has its own record: both
+    ///   would describe one fault.
+    subfile_bits,
     /// DNG PreviewDateTime: "encoded using ISO 8601 format" (validate,
     /// 2026-11-04: definitional, so a fault).
     iso8601,
@@ -302,11 +317,8 @@ const Rule = struct {
 
 /// One row per constrained tag. Growing this table to every tag a claimed
 /// specification constrains is tracked in PLAN.md.
-/// Value sets for Compression, PhotometricInterpretation, Predictor and
-/// NewSubfileType wait for the batch that claims their other defining
-/// specifications; see `pending`.
 pub const rules = [_]Rule{
-    .{ .tag = tags.new_subfile_type, .kind = .long_only, .count = .one, .citation = "TIFF 6.0 p. 36" },
+    .{ .tag = tags.new_subfile_type, .kind = .long_only, .count = .one, .extras = &.{.subfile_bits}, .citation = "TIFF 6.0 p. 36; RFC 3949 sections 8.1, 8.2 (bit 4); DNG 1.6.0.0 Chapter 3 and p. 16 (bits 3, 4, 16; 52527 masks)" },
     .{ .tag = tags.subfile_type, .kind = .unsigned_short, .count = .one, .values = &.{.{ 1, 3 }}, .citation = "TIFF 6.0 pp. 40-41" },
     .{ .tag = tags.image_width, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
     .{ .tag = tags.image_length, .kind = .unsigned_long, .count = .one, .citation = "TIFF 6.0 p. 34 (not constrained by YCbCr subsampling: TIFF Technical Note 2, Section 21)" },
@@ -529,9 +541,7 @@ pub const rules = [_]Rule{
 /// each waiting for a named reason. Kept as data so that none silently
 /// disappears; a test pins this list.
 pub const Pending = struct { what: []const u8, citation: []const u8, waits_for: []const u8 };
-pub const pending = [_]Pending{
-    .{ .what = "NewSubfileType bits", .citation = "TIFF 6.0 p. 36; DNG 1.6.0.0 Chapter 3", .waits_for = "validate's ruling on the DNG should-rows (DNG says previews \"should use\" 1, raw 0, and so on; TIFF-FX adds bit 4, MRC, RFC 3949 p. 64)" },
-};
+pub const pending = [_]Pending{};
 
 comptime {
     // Strictly ascending, so a duplicated row cannot shadow another.
@@ -708,19 +718,7 @@ pub fn check(
             } });
             continue;
         }
-        const rule = ruleFor(entry.tag) orelse continue;
-        // A DNG row applies only in a DNG file, and only from the edition
-        // that added its tag; with an unknown version, type and count rows
-        // still apply (D2).
-        if (rule.since) |since| {
-            const d = dng orelse continue;
-            if (d.version) |v| if (v < since) continue;
-        }
-        const values: Values = if (rule.since == null) .all else if (dng.?.version == null) .none else if (dng.?.valueLists()) .all else .no_closed_lists;
-        const color_planes: ?u64 = if (dng) |d| (if (d.color_planes) |cp| @as(u64, cp) else null) else null;
-        const found = fieldReason(dir, i, rule.*, endian, values, color_planes) orelse
-            if (dng) |d| dngRestriction(dir, i, endian, d) else null;
-        if (found) |reason| {
+        if (entryReason(dir, i, endian, dng)) |reason| {
             try out.append(allocator, .{ .field_invalid = .{
                 .entry_index = index,
                 .tag = entry.tag,
@@ -732,6 +730,24 @@ pub fn check(
             } });
         }
     }
+}
+
+/// The finding 18 reason for entry `i`, if any: its row (type, count, value
+/// and extras), then the DNG Chapter 3 restrictions. Null for a tag with no
+/// row. Shared with rule B of `subfile_bits`, which asks whether
+/// PhotometricInterpretation has its own record.
+fn entryReason(dir: *const Ifd, i: usize, endian: Endian, dng: ?Dng) ?Reason {
+    const rule = ruleFor(dir.entries[i].tag) orelse return null;
+    // A DNG row applies only in a DNG file, and only from the edition that
+    // added its tag; with an unknown version, type and count rows still
+    // apply (D2).
+    if (rule.since) |since| {
+        const d = dng orelse return null;
+        if (d.version) |v| if (v < since) return null;
+    }
+    const values: Values = if (rule.since == null) .all else if (dng.?.version == null) .none else if (dng.?.valueLists()) .all else .no_closed_lists;
+    return fieldReason(dir, i, rule.*, endian, values, dng) orelse
+        if (dng) |d| dngRestriction(dir, i, endian, d) else null;
 }
 
 /// TIFF 6.0 defines types 1-12 (pp. 15-16), TIFF Technical Note 1 adds IFD (13),
@@ -758,8 +774,9 @@ fn rawSlot(entry: Entry, width: ifd_mod.OffsetWidth, endian: Endian) u64 {
 const Values = enum { all, no_closed_lists, none };
 
 /// `color_planes` is the DNG raw IFD's ColorPlanes, or null.
-fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values: Values, color_planes: ?u64) ?Reason {
+fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values: Values, dng: ?Dng) ?Reason {
     const entry = dir.entries[index];
+    const color_planes: ?u64 = if (dng) |d| (if (d.color_planes) |cp| @as(u64, cp) else null) else null;
     const type_ok = switch (rule.kind) {
         // Strict: only the defined types (owner, 2026-11-04).
         .unsigned_short => entry.field_type == .short,
@@ -953,6 +970,24 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
             const literal = top + width > full_height or left + length > full_width;
             const consistent = top + length > full_height or left + width > full_width;
             if (literal and consistent) return .value;
+        },
+        .subfile_bits => {
+            const value = element(bytes, entry.field_type, 0, endian) orelse return .count;
+            // A: bits 0, 1, 2 and 4, plus 3 and 16 in a DNG file up to the
+            // cited edition; none constrained past it or when unknown.
+            const defined: ?u64 = if (dng) |d| (if (d.valueLists()) 0x1001F else null) else 0x17;
+            if (defined) |mask| if (value & ~mask != 0) return .value;
+            // B: a transparency mask needs a transparency photometric.
+            if (value & 4 == 0) continue;
+            const k = indexOf(dir, tags.photometric) orelse continue;
+            const photometric = scalar(dir, tags.photometric, endian) orelse continue;
+            if (photometric == tags.photometric_transparency_mask) continue;
+            if (dng != null) {
+                if (photometric == tags.photometric_mask) continue;
+                const own = unreadableType(dir.entries[k].raw_type, dir.offset_width) or entryReason(dir, k, endian, dng) != null;
+                if (own) continue;
+            }
+            return .value;
         },
         .multiple_of_16, .date_time, .user_crop, .noise_profile_signs, .tone_curve_endpoints, .non_empty, .iso8601 => {},
     };
@@ -3049,8 +3084,11 @@ test "DNG Chapter 3: Compression and Predictor, gated by edition" {
     try expectDng(&e, &c, v1_4, tags.compression, null);
     e = ifd.of(8, 16, 1, 8, tags.photometric_depth);
     try expectDng(&e, &c, v1_5, tags.compression, null);
+    // Deflate suits a transparency mask. The one record is subfile_bits
+    // rule B: DNG gives masks no photometric list, the role union lacks 4,
+    // and TIFF 6.0 p. 36 needs 4 (raised with validate, 2026-11-22).
     e = ifd.of(4, 16, 1, 8, 1);
-    try expectDng(&e, &c, v1_4, tags.compression, null);
+    try expectDng(&e, &c, v1_4, tags.new_subfile_type, .value);
     // Lossy JPEG: 8-bit integer LinearRaw or PhotometricMask only.
     e = ifd.of(0, 8, 1, 34892, linear);
     try expectDng(&e, &c, v1_4, tags.compression, null);
@@ -3102,8 +3140,9 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
         .{ .nst = 9, .photometric = 1, .ok = false },
         .{ .nst = 0x10004, .photometric = tags.photometric_mask, .ok = true },
         .{ .nst = 0x10004, .photometric = 1, .ok = false },
-        // Transparency masks and unknown roles take the union.
-        .{ .nst = 4, .photometric = 1, .ok = true },
+        // Transparency masks and unknown roles take the union (NewSubFileType
+        // 4 with Photometric 1 passes it; rule B of subfile_bits then fires,
+        // below).
         .{ .nst = 7, .photometric = tags.photometric_mask, .ok = true },
         .{ .nst = 7, .photometric = 5, .ok = false },
     };
@@ -3123,6 +3162,13 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
         var undefined_value = pair.of(0, 7);
         c[1] = null;
         try expectDng(&undefined_value, &c, v1_6, tags.photometric, .value);
+    }
+    // The role union accepts a transparency mask with Photometric 1, so the
+    // record is subfile_bits rule B on NewSubFileType (validate, 2026-11-22).
+    {
+        var mask_gray = pair.of(4, 1);
+        c[1] = null;
+        try expectDng(&mask_gray, &c, v1_6, tags.new_subfile_type, .value);
     }
     // No role list without a DNG claim, above 1.6.0.0, or for an unknown version.
     var e = pair.of(0, 2);
@@ -3333,9 +3379,8 @@ test "DNG Tier 3: counts in terms of ColorPlanes, unconstrained when it is unkno
 test "the pending constraints are pinned" {
     // Removing one of these must come with a row (and its regressions) that
     // checks it, or with a ruling that it is not a constraint.
-    const expected = [_][]const u8{
-        "NewSubfileType bits",
-    };
+    // Empty since NewSubfileType bits landed as subfile_bits (2026-11-22).
+    const expected = [_][]const u8{};
     try testing.expectEqual(expected.len, pending.len);
     for (expected, pending) |want, got| try testing.expectEqualStrings(want, got.what);
 }
@@ -3551,4 +3596,96 @@ test "dng_usage: every DNG row has a Usage class and every Usage tag a DNG row" 
         };
         try testing.expect(rule.since != null);
     }
+}
+
+test "NewSubfileType rule A: a bit no claimed specification defines (validate, 2026-11-22)" {
+    const Case = struct { nst: u32, dng: ?Dng, ok: bool };
+    const cases = [_]Case{
+        // TIFF 6.0 bits 0-2 and RFC 3949 bit 4, in any combination.
+        .{ .nst = 0, .dng = null, .ok = true },
+        .{ .nst = 1, .dng = null, .ok = true },
+        .{ .nst = 2, .dng = null, .ok = true },
+        .{ .nst = 3, .dng = null, .ok = true },
+        .{ .nst = 16, .dng = null, .ok = true },
+        .{ .nst = 0x13, .dng = null, .ok = true },
+        // Bit 3, bit 5, bit 16 and bit 31 outside DNG.
+        .{ .nst = 8, .dng = null, .ok = false },
+        .{ .nst = 32, .dng = null, .ok = false },
+        .{ .nst = 0x10001, .dng = null, .ok = false },
+        .{ .nst = 0x8000_0000, .dng = null, .ok = false },
+        // DNG adds bits 3 and 16. A value DNG lists for no role, made of
+        // defined bits, is should-row 1, not this rule.
+        // (8 and 9 alone are depth maps, whose missing BitsPerSample is a
+        // DNG restriction; 0x18 has no role, so only the bits are tested.)
+        .{ .nst = 0x18, .dng = v1_6, .ok = true },
+        .{ .nst = 16, .dng = v1_6, .ok = true },
+        .{ .nst = 0x10001, .dng = v1_6, .ok = true },
+        .{ .nst = 0x10008, .dng = v1_6, .ok = true },
+        .{ .nst = 0x10001, .dng = v1_4, .ok = true },
+        .{ .nst = 32, .dng = v1_6, .ok = false },
+        .{ .nst = 0x20000, .dng = v1_4, .ok = false },
+        // A later edition may define more bits; an unknown version says
+        // nothing (D1, D2).
+        .{ .nst = 32, .dng = v1_7, .ok = true },
+        .{ .nst = 32, .dng = unknown_version, .ok = true },
+    };
+    for (cases) |case| {
+        expectDngOne(case.dng, inline16(tags.new_subfile_type, .long, 1, case.nst), null, if (case.ok) null else .value) catch |err| {
+            std.debug.print("NewSubfileType 0x{x}, dng {any}\n", .{ case.nst, case.dng });
+            return err;
+        };
+    }
+}
+
+test "NewSubfileType rule B: bit 2 needs PhotometricInterpretation 4 (TIFF 6.0 p. 36)" {
+    const ifd = struct {
+        // One channel; a transparency mask takes the one bit p. 37 requires,
+        // anything else 8 bits, so only rule B is under test.
+        fn of(nst: u32, photometric: u32) [4]Entry {
+            const bits: u32 = if (photometric == tags.photometric_transparency_mask) 1 else 8;
+            return .{ inline16(tags.new_subfile_type, .long, 1, nst), inline16(tags.bits_per_sample, .short, 1, bits), inline16(tags.photometric, .short, 1, photometric), inline16(tags.samples_per_pixel, .short, 1, 1) };
+        }
+    };
+    var c = [_]?[]u8{null} ** 4;
+    const Case = struct { nst: u32, photometric: u32, dng: ?Dng, want: ?u16 };
+    const cases = [_]Case{
+        .{ .nst = 4, .photometric = 4, .dng = null, .want = null },
+        .{ .nst = 5, .photometric = 4, .dng = null, .want = null },
+        .{ .nst = 0, .photometric = 1, .dng = null, .want = null },
+        .{ .nst = 4, .photometric = 1, .dng = null, .want = tags.new_subfile_type },
+        .{ .nst = 6, .photometric = 0, .dng = null, .want = tags.new_subfile_type },
+        // 52527 is a DNG value: outside DNG it does not satisfy bit 2.
+        .{ .nst = 4, .photometric = tags.photometric_mask, .dng = null, .want = tags.new_subfile_type },
+        // A DNG semantic mask, in any edition: a use ahead of the declared
+        // edition is should-row 16 (the iPhone 12 Pro ProRAW declares 1.4).
+        .{ .nst = 0x10004, .photometric = tags.photometric_mask, .dng = v1_6, .want = null },
+        .{ .nst = 0x10004, .photometric = tags.photometric_mask, .dng = v1_4, .want = null },
+        .{ .nst = 0x10004, .photometric = tags.photometric_mask, .dng = unknown_version, .want = null },
+        // In a DNG file, where the role row passed, B fires.
+        .{ .nst = 4, .photometric = 1, .dng = v1_6, .want = tags.new_subfile_type },
+        // Where the role row already judged the photometric, only its record
+        // stands (validate, 2026-11-22).
+        .{ .nst = 0x10004, .photometric = 1, .dng = v1_6, .want = tags.photometric },
+        .{ .nst = 7, .photometric = 0, .dng = v1_6, .want = tags.photometric },
+    };
+    for (cases) |case| {
+        var e = ifd.of(case.nst, case.photometric);
+        const reason: ?Reason = if (case.want) |t| (if (t == tags.photometric) .dng_role else .value) else null;
+        expectDng(&e, &c, case.dng, case.want orelse tags.new_subfile_type, reason) catch |err| {
+            std.debug.print("NewSubfileType 0x{x}, photometric {d}, dng {any}\n", .{ case.nst, case.photometric, case.dng });
+            return err;
+        };
+    }
+    // Outside DNG nothing is suppressed: a photometric TIFF does not define
+    // keeps its own record, and B fires beside it.
+    {
+        var e = ifd.of(4, 7);
+        var out = try faultsOfDng(&e, &c, null);
+        defer out.deinit(testing.allocator);
+        try testing.expectEqual(@as(usize, 2), out.items.len);
+        try testing.expectEqual(tags.new_subfile_type, out.items[0].field_invalid.tag);
+        try testing.expectEqual(tags.photometric, out.items[1].field_invalid.tag);
+    }
+    // No photometric: its own presence finding speaks, not B.
+    try expectDngOne(null, inline16(tags.new_subfile_type, .long, 1, 4), null, null);
 }
