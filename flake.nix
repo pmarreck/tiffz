@@ -195,9 +195,8 @@
         tiffzPkg = mkTiffz "ReleaseFast";
 
         # Run one `zig build STEP` under the fleet test floor (ReleaseSafe) with
-        # the pinned dependency cache and codec flags. checks.test and
-        # checks.explore-parity share it, so their flags cannot drift.
-        mkZigCheck = { pname, step, extraFlags ? "", passed }: pkgs.stdenv.mkDerivation {
+                # checks.explore-parity share it, so their flags cannot drift.
+        mkZigCheck = { pname, step, extraFlags ? "", postBuild ? "", passed }: pkgs.stdenv.mkDerivation {
           inherit pname;
           version = "0.1.0";
           src = self;
@@ -250,12 +249,34 @@
               echo "Tests failed or timed out after 10 minutes"
               exit 1
             }
+            ${postBuild}
           '';
 
           installPhase = ''
             mkdir -p $out
             echo "${passed}" > $out/result
           '';
+        };
+
+        # The parity replay plus the installed `tiffz-explore`, smoke-run over
+        # 20 sniper rounds (one line per case, the summary, exit 2 on a usage
+        # error), then checked against the pinned floors on two seeds
+        # (tests/explore/exe-floors-check.sh).
+        explorePkg = mkZigCheck {
+          pname = "tiffz-explore";
+          step = "explore explore-exe";
+          extraFlags = "-Dcorruption-reader-src=${corruption-reader} --prefix $out";
+          postBuild = ''
+            smoke=$TMPDIR/explore-smoke.txt
+            $out/bin/tiffz-explore --master 42 --profile sniper --rounds 20 > $smoke || { echo "tiffz-explore smoke run failed"; exit 1; }
+            [ "$(grep -c '^case' $smoke)" = 20 ] || { echo "tiffz-explore: expected 20 case lines"; cat $smoke; exit 1; }
+            grep -q '^explore sniper master 42 rounds 0-19: detect ' $smoke || { echo "tiffz-explore: no summary"; cat $smoke; exit 1; }
+            rc=0; $out/bin/tiffz-explore > /dev/null 2>&1 || rc=$?
+            [ "$rc" = 2 ] || { echo "tiffz-explore without --master exited $rc, want 2"; exit 1; }
+            bash tests/explore/exe-floors-check.sh $out/bin/tiffz-explore tests/corruption_coverage_floors 5 6
+            cat $smoke
+          '';
+          passed = "explore parity passed; tiffz-explore smoke passed";
         };
 
       in {
@@ -405,12 +426,25 @@
 
         # In-process corruption exploration: replaying the pinned floors plan
         # through corruption_reader as a library must detect exactly the
-        # pinned cases (tests/explore/explore_test.zig).
-        checks.explore-parity = mkZigCheck {
-          pname = "tiffz-explore-parity";
-          step = "explore";
-          extraFlags = "-Dcorruption-reader-src=${corruption-reader}";
-          passed = "explore parity passed";
+        # pinned cases (tests/explore/explore_test.zig). The same derivation
+        # installs `tiffz-explore` (tests/explore/main.zig, ReleaseSafe like
+        # the tests) and smoke-runs it, so packages.explore and apps.explore
+        # cost no second compile.
+        checks.explore-parity = explorePkg;
+        packages.explore = explorePkg;
+
+        # Exploration under any master and profile, over the floors' seeds.
+        # Run from the repository root:
+        #   nix run .#explore -- --master 20261122 --profile nuke
+        apps.explore = {
+          type = "app";
+          program = "${pkgs.writeShellScript "tiffz-explore-app" ''
+            if [ ! -f tests/corruption_coverage_floors ]; then
+              echo "explore: run from the tiffz repository root" >&2
+              exit 2
+            fi
+            exec ${explorePkg}/bin/tiffz-explore "$@"
+          ''}";
         };
 
         # Deterministic mutation fuzzer (Einstein outcome 5). Same ReleaseSafe
