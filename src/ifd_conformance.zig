@@ -247,6 +247,10 @@ const Extra = enum {
     palette_has_color_map,
     /// BitsPerSample of a transparency mask (PhotometricInterpretation 4):
     /// "SamplesPerPixel and BitsPerSample must be 1" (TIFF 6.0 p. 37).
+    /// Not in a DNG file of any edition: DNG describes integer and floating
+    /// point masks ("Transparent Pixels", DNG 1.6.0.0 p. 15), and its own
+    /// BitsPerSample restriction (8 to 32, p. 19) governs instead (validate,
+    /// 2026-11-22).
     one_bit_for_transparency_mask,
     /// The sample widths a predictor can difference. Both are value faults on
     /// Predictor, since no decode is defined (validate, 2026-11-05):
@@ -944,6 +948,7 @@ fn fieldReason(dir: *const Ifd, index: usize, rule: Rule, endian: Endian, values
             if (value == tags.photometric_palette and indexOf(dir, tags.colormap) == null) return .value;
         },
         .one_bit_for_transparency_mask => {
+            if (dng != null) continue;
             const photometric = scalar(dir, tags.photometric, endian) orelse continue;
             if (photometric != tags.photometric_transparency_mask) continue;
             var k: usize = 0;
@@ -1116,12 +1121,15 @@ fn role(dir: *const Ifd, endian: Endian) Role {
 /// IFDs" (p. 20) is permissive, and "should always use" LinearRaw is a
 /// should-row (validate, 2026-11-04). NewSubFileType 1 marks previews and
 /// reduced-resolution raw images alike, so it takes both lists. The text
-/// gives transparency masks no list, so they take the union, as an unknown
-/// role does (validate D6).
+/// gives transparency masks no list ("Transparent Pixels", p. 15, says only
+/// that masks sit in IFDs with NewSubFileType 4 or 5), so they take the
+/// union, as an unknown role does (validate D6). The union includes 4,
+/// which TIFF 6.0 p. 36 requires for bit 2 and DNG does not override
+/// (validate, 2026-11-22).
 fn photometricAllowed(r: Role, value: u64) bool {
     const cfa = tags.photometric_color_filter_array;
     const linear = tags.photometric_linear_raw;
-    const any_role = [_]u64{ 1, 2, 6, cfa, linear, tags.photometric_depth, tags.photometric_mask };
+    const any_role = [_]u64{ 1, 2, tags.photometric_transparency_mask, 6, cfa, linear, tags.photometric_depth, tags.photometric_mask };
     const list: []const u64 = switch (r) {
         .raw => &.{ cfa, linear },
         .preview_or_reduced => &.{ 1, 2, 6, cfa, linear },
@@ -3084,9 +3092,12 @@ test "DNG Chapter 3: Compression and Predictor, gated by edition" {
     try expectDng(&e, &c, v1_4, tags.compression, null);
     e = ifd.of(8, 16, 1, 8, tags.photometric_depth);
     try expectDng(&e, &c, v1_5, tags.compression, null);
-    // Deflate suits a transparency mask. The one record is subfile_bits
-    // rule B: DNG gives masks no photometric list, the role union lacks 4,
-    // and TIFF 6.0 p. 36 needs 4 (raised with validate, 2026-11-22).
+    // Deflate suits a transparency mask: Photometric 4 passes (validate D6,
+    // 2026-11-22).
+    e = ifd.of(4, 16, 1, 8, tags.photometric_transparency_mask);
+    try expectDng(&e, &c, v1_4, tags.compression, null);
+    // Photometric 1 passes the role union, so the one record is subfile_bits
+    // rule B on NewSubFileType.
     e = ifd.of(4, 16, 1, 8, 1);
     try expectDng(&e, &c, v1_4, tags.new_subfile_type, .value);
     // Lossy JPEG: 8-bit integer LinearRaw or PhotometricMask only.
@@ -3140,9 +3151,12 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
         .{ .nst = 9, .photometric = 1, .ok = false },
         .{ .nst = 0x10004, .photometric = tags.photometric_mask, .ok = true },
         .{ .nst = 0x10004, .photometric = 1, .ok = false },
-        // Transparency masks and unknown roles take the union (NewSubFileType
-        // 4 with Photometric 1 passes it; rule B of subfile_bits then fires,
-        // below).
+        // Transparency masks and unknown roles take the union, which includes
+        // 4 (validate D6, 2026-11-22). NewSubFileType 4 with Photometric 1
+        // passes it too; rule B of subfile_bits then fires, below.
+        .{ .nst = 4, .photometric = tags.photometric_transparency_mask, .ok = true },
+        .{ .nst = 5, .photometric = tags.photometric_transparency_mask, .ok = true },
+        .{ .nst = 7, .photometric = tags.photometric_transparency_mask, .ok = true },
         .{ .nst = 7, .photometric = tags.photometric_mask, .ok = true },
         .{ .nst = 7, .photometric = 5, .ok = false },
     };
@@ -3176,6 +3190,46 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
     try expectDng(&e, &c, null, tags.photometric, null);
     try expectDng(&e, &c, v1_7, tags.photometric, null);
     try expectDng(&e, &c, unknown_version, tags.photometric, null);
+}
+
+test "DNG transparency masks: DNG's BitsPerSample replaces TIFF's one bit (validate, 2026-11-22)" {
+    const mask = struct {
+        // One channel, Photometric 4, NewSubFileType 4.
+        fn of(photometric: u32, bits: u32, format: u32) [5]Entry {
+            return .{
+                inline16(tags.new_subfile_type, .long, 1, 4),
+                inline16(tags.bits_per_sample, .short, 1, bits),
+                inline16(tags.photometric, .short, 1, photometric),
+                inline16(tags.samples_per_pixel, .short, 1, 1),
+                inline16(tags.sample_format, .short, 1, format),
+            };
+        }
+    };
+    var c = [_]?[]u8{null} ** 5;
+    const p4 = tags.photometric_transparency_mask;
+    // DNG p. 15 masks: 8, 16 and 32-bit integer and 32-bit floating point
+    // pass, in a cited edition, above it and at an unknown version.
+    for ([_]?Dng{ v1_4, v1_6, v1_7, unknown_version }) |dng| {
+        for ([_][2]u32{ .{ 8, 1 }, .{ 16, 1 }, .{ 32, 1 }, .{ 32, 3 } }) |bf| {
+            var e = mask.of(p4, bf[0], bf[1]);
+            expectDng(&e, &c, dng, tags.bits_per_sample, null) catch |err| {
+                std.debug.print("bits {d}, format {d}\n", .{ bf[0], bf[1] });
+                return err;
+            };
+        }
+    }
+    // One bit is below DNG's 8 to 32, checked up to 1.6.0.0 only.
+    var one = mask.of(p4, 1, 1);
+    try expectDng(&one, &c, v1_6, tags.bits_per_sample, .value);
+    try expectDng(&one, &c, v1_7, tags.bits_per_sample, null);
+    // Photometric 1 passes the role union and gets one record: rule B.
+    var gray = mask.of(1, 8, 1);
+    try expectDng(&gray, &c, v1_6, tags.new_subfile_type, .value);
+    // Outside DNG, TIFF 6.0 p. 37 still requires one bit for Photometric 4.
+    var tiff = mask.of(p4, 8, 1);
+    try expectDng(&tiff, &c, null, tags.bits_per_sample, .value);
+    var tiff_one = mask.of(p4, 1, 1);
+    try expectDng(&tiff_one, &c, null, tags.bits_per_sample, null);
 }
 
 test "DNG with an unknown version: type and count only, no value rules (D2)" {

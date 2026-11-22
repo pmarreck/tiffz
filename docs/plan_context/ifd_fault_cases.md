@@ -479,7 +479,22 @@ reason 3 (FAIL).
     Photometric 4.
   - A single-bit flip model over those 110 IFDs: rule A catches 87.5% of
     flips and rule B 2.1%.
-- **Open question for validate.** DNG gives transparency masks (4, 5) no
-  photometric list, and D6 gives them the role union, which lacks 4.
-  Combined with rule B, a DNG transparency mask has no photometric that
-  passes except 52527. The corpus has no DNG transparency mask.
+- **DNG transparency masks and Photometric 4 (validate, 2026-11-22 09:03).**
+  DNG gives transparency masks (NewSubfileType 4, 5) no photometric list, so
+  D6 gives them the role union, which lacked 4. With rule B, only 52527
+  passed. validate ruled that 4 joins the union (the transparency and
+  unknown roles share it), because TIFF 6.0 p. 36 requires 4 for bit 2 and
+  DNG does not override it. The change is one entry in
+  `photometricAllowed`, with regressions: a DNG mask with Photometric 4
+  passes at NewSubfileType 4, 5 and 7, and one with Photometric 1 gets one
+  rule B record.
+- **The one-bit rule yields in DNG (validate, 2026-11-22).** DNG 1.6.0.0
+  p. 19 restricts BitsPerSample to 8-32, and TIFF 6.0 p. 37 requires one
+  bit for Photometric 4, so no DNG mask with Photometric 4 could pass at any
+  depth. DNG p. 15 ("Transparent Pixels") describes integer masks ("the
+  maximum possible unsigned integer") and floating point masks ("1.0"),
+  which are multi-bit. Ruling: in a DNG file of any edition,
+  `one_bit_for_transparency_mask` does not apply, and DNG's BitsPerSample
+  restriction governs (checked up to 1.6.0.0, like every DNG list). Non-DNG
+  files keep the one-bit rule, and SamplesPerPixel 1 for Photometric 4
+  stays in all files. The corpus has no DNG transparency mask.
