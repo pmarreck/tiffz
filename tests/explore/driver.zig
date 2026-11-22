@@ -117,7 +117,68 @@ pub const Seed = struct {
     path: []const u8,
     bytes: []const u8,
     key: Key,
+    /// libtiff's layout of the seed, when a layouts file lists it.
+    layout: ?*const Layout = null,
 };
+
+/// One seed's layout as ./corruption-coverage maps it with libtiff's
+/// tiffdump (`--layouts-out`): its class and the half-open byte ranges of
+/// its uncompressed strip and tile data.
+pub const Layout = struct {
+    bytes: u64,
+    class: []const u8,
+    free: std.ArrayListUnmanaged([2]u64) = .empty,
+};
+
+/// Seed path to layout, from "seed\tPATH\tBYTES\tCLASS" and
+/// "free\tPATH\tSTART\tEND" lines.
+pub fn parseLayouts(allocator: std.mem.Allocator, text: []const u8) !std.StringHashMapUnmanaged(Layout) {
+    var map: std.StringHashMapUnmanaged(Layout) = .empty;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, line, '\t');
+        const kind = fields.next() orelse return error.BadLayouts;
+        const path = fields.next() orelse return error.BadLayouts;
+        const a = std.fmt.parseInt(u64, fields.next() orelse return error.BadLayouts, 10) catch return error.BadLayouts;
+        const b = fields.next() orelse return error.BadLayouts;
+        if (fields.next() != null) return error.BadLayouts;
+        if (std.mem.eql(u8, kind, "seed")) {
+            const gop = try map.getOrPut(allocator, path);
+            if (gop.found_existing) return error.BadLayouts;
+            gop.value_ptr.* = .{ .bytes = a, .class = b };
+        } else if (std.mem.eql(u8, kind, "free")) {
+            const layout = map.getPtr(path) orelse return error.BadLayouts;
+            const end = std.fmt.parseInt(u64, b, 10) catch return error.BadLayouts;
+            if (end < a) return error.BadLayouts;
+            try layout.free.append(allocator, .{ a, end });
+        } else return error.BadLayouts;
+    }
+    return map;
+}
+
+/// The harness's bound on a case (corruption-coverage case_bound, first
+/// step): free when the length is unchanged and every changed byte lies in
+/// an uncompressed sample range, so the file is still a valid TIFF and no
+/// validator can detect it. `open` covers the harness's clean and open,
+/// since telling them apart needs libtiff's tiffinfo. `unknown` without a
+/// layout.
+pub const Bound = enum { free, open, unknown };
+
+pub fn bound(layout: ?*const Layout, seed: []const u8, case: []const u8) Bound {
+    const l = layout orelse return .unknown;
+    if (case.len != seed.len) return .open;
+    for (seed, case, 0..) |s, c, i| {
+        if (s == c) continue;
+        const at: u64 = i;
+        for (l.free.items) |r| {
+            if (at >= r[0] and at < r[1]) break;
+        } else return .open;
+    }
+    return .free;
+}
+
+pub const Result = struct { outcome: Outcome, bound: Bound };
 
 pub fn loadSeed(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !Seed {
     const bytes = try loadFile(io, allocator, path);
@@ -159,16 +220,26 @@ pub fn parseMaster(text: []const u8) ![32]u8 {
 
 /// Draws and validates one case. `arena` holds the profile's and the case's
 /// memory; tiffz allocates from `allocator`.
-pub fn runCase(arena: std.mem.Allocator, allocator: std.mem.Allocator, profile: cr.profiles.Profile, seed: *const Seed, master: [32]u8, round: u64) !Outcome {
+pub fn runCase(arena: std.mem.Allocator, allocator: std.mem.Allocator, profile: cr.profiles.Profile, seed: *const Seed, master: [32]u8, round: u64) !Result {
     const bytes = try arena.create([]const u8);
     bytes.* = seed.bytes;
     const reader_src = cr.source.Source.fromSlice(bytes);
     const case = try cr.api.drawCase(arena, profile, reader_src, master, round);
-    if (case.case.noop != null) return .noop;
+    if (case.case.noop != null) return .{ .outcome = .noop, .bound = .unknown };
     var view: ViewSource = .{ .view = try cr.api.view(arena, case, reader_src) };
     const v = try validate(allocator, view.source());
     defer allocator.free(v.key.codes);
-    return classify(v, seed.key);
+    const outcome = classify(v, seed.key);
+    if (seed.layout == null) return .{ .outcome = outcome, .bound = .unknown };
+    // The case's bytes, read through the same view tiffz read.
+    const case_bytes = try arena.alloc(u8, @intCast(view.view.length()));
+    var got: usize = 0;
+    while (got < case_bytes.len) {
+        const n = try view.view.readAt(got, case_bytes[got..]);
+        if (n == 0) return error.ShortView;
+        got += n;
+    }
+    return .{ .outcome = outcome, .bound = bound(seed.layout, seed.bytes, case_bytes) };
 }
 
 pub const Floors = struct {
@@ -235,11 +306,17 @@ pub const Args = struct {
     first_round: u64 = 0,
     rounds: u64 = 385,
     floors: []const u8 = floors_path,
+    /// ./corruption-coverage --layouts-out, for the free-case bound.
+    layouts: ?[]const u8 = null,
+    /// Replay the floors plan (every profile, the floors' master) instead
+    /// of a master and profile.
+    replay_floors: bool = false,
 };
 
 pub const usage =
     \\usage: tiffz-explore --master SEED [--profile NAME] [--first-round R]
-    \\                     [--rounds N] [--floors PATH]
+    \\                     [--rounds N] [--floors PATH] [--layouts PATH]
+    \\       tiffz-explore --replay-floors [--floors PATH] [--layouts PATH]
     \\
     \\Draws N corruption_reader cases in-process, round R onward, from the
     \\seeds a floors file lists (default tests/corruption_coverage_floors,
@@ -249,7 +326,16 @@ pub const usage =
     \\bolter, shotgun, nuke, ...; default shotgun). Prints one line per case,
     \\"case PROFILE SEED ROUND OUTCOME", then a summary. The case line is
     \\written before the case runs, so after a crash the last line names it.
-    \\Exit 0 when every case ran, 1 on an error, 2 on a usage error.
+    \\
+    \\With --layouts (./corruption-coverage --layouts-out), each line ends
+    \\with the case's bound: free when every changed byte is an uncompressed
+    \\sample (the file is still valid, so a detection is a false alarm), open
+    \\otherwise, unknown without a layout. --replay-floors replays the floors
+    \\plan (batch k draws per cases from seed k mod SEEDS at round k*per)
+    \\under the floors' master and prints "class PROFILE CLASS decisive=N
+    \\detect=K free=F false_alarm=A" per profile and seed class.
+    \\Exit 0 when every case ran without a false alarm, 1 on an error or a
+    \\false alarm, 2 on a usage error.
     \\
 ;
 
@@ -261,6 +347,10 @@ pub fn parseArgs(argv: []const []const u8) !Args {
     while (i < argv.len) : (i += 1) {
         const flag = argv[i];
         if (std.mem.eql(u8, flag, "-h") or std.mem.eql(u8, flag, "--help")) return error.Help;
+        if (std.mem.eql(u8, flag, "--replay-floors")) {
+            out.replay_floors = true;
+            continue;
+        }
         i += 1;
         if (i == argv.len) return error.Usage;
         const value = argv[i];
@@ -275,9 +365,13 @@ pub fn parseArgs(argv: []const []const u8) !Args {
             out.rounds = std.fmt.parseInt(u64, value, 10) catch return error.Usage;
         } else if (std.mem.eql(u8, flag, "--floors")) {
             out.floors = value;
+        } else if (std.mem.eql(u8, flag, "--layouts")) {
+            out.layouts = value;
         } else return error.Usage;
     }
-    out.master = master orelse return error.Usage;
+    if (out.replay_floors) {
+        if (master != null) return error.Usage;
+    } else out.master = master orelse return error.Usage;
     _ = std.math.add(u64, out.first_round, out.rounds) catch return error.Usage;
     return out;
 }

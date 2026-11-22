@@ -52,6 +52,7 @@ bound=""
 diag=""
 batch_decisive=0
 seeds_file=""
+layouts_out=""
 floors_file=""
 master_set=0
 trials_set=0
@@ -145,6 +146,9 @@ options:
   --tiffdump PATH            libtiff tiffdump executable (seed layout oracle)
   --tiffinfo PATH            libtiff tiffinfo executable (decode oracle)
   --pigz PATH                pigz executable (independent zlib Adler-32 check)
+  --layouts-out PATH         write each accepted seed's libtiff layout: "seed\tPATH\tBYTES\tCLASS"
+                             and "free\tPATH\tSTART\tEND" per uncompressed
+                             sample range (half-open), for tiffz-explore
 EOF
 }
 
@@ -767,6 +771,9 @@ campaign() {
 	printf 'mutation_definition=validate-mutation-v3\n'
 	printf 'shotgun_profile=shotgun_variable\n'
 	printf 'master=%s margin=%.6f confidence=0.95 trials=%s\n' "$master" "$margin" "$target"
+	if [ -n "$layouts_out" ]; then
+		: >"$layouts_out" || die "cannot write $layouts_out"
+	fi
 	printf 'reader=%s\n' "$("$cr_bin" --about 2>/dev/null || printf 'unknown\n')"
 	printf 'tiffz=%s\n' "$tiffz_bin"
 
@@ -802,6 +809,12 @@ campaign() {
 			libtiff_diag "$seed"
 			seed_diag["$seed"]="$diag"
 			printf 'layout %s class=%s free_bytes=%s bytes=%s\n' "$seed" "$class" "$(free_bytes "$ranges" "$bytes")" "$bytes"
+			if [ -n "$layouts_out" ]; then
+				{
+					printf 'seed\t%s\t%s\t%s\n' "$seed" "$bytes" "$class"
+					awk -v s="$seed" '{ printf "free\t%s\t%s\t%s\n", s, $1, $2 }' "$ranges"
+				} >>"$layouts_out" || die "cannot write $layouts_out"
+			fi
 			accepted=$((accepted + 1))
 		else
 			rejected=$((rejected + 1))
@@ -1199,6 +1212,11 @@ while [ "$#" -gt 0 ]; do
 		--pigz)
 			[ "$#" -ge 2 ] || die "--pigz needs a path"
 			pigz_bin="$2"
+			shift 2
+			;;
+		--layouts-out)
+			[ "$#" -ge 2 ] || die "--layouts-out needs a path"
+			layouts_out="$2"
 			shift 2
 			;;
 		--seeds-file)

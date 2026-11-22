@@ -258,10 +258,39 @@
           '';
         };
 
+        # The corruption-coverage campaign (checks.corruption-coverage, below).
+        # Its libtiff seed layouts land in $out/layouts for tiffz-explore's
+        # free-case bound.
+        corruptionCoverage = pkgs.runCommand "tiffz-corruption-coverage" {
+          nativeBuildInputs = [ pkgs.bash pkgs.gawk pkgs.diffutils ];
+        } ''
+          cd ${self}
+          bash ./corruption-coverage \
+            --floors tests/corruption_coverage_floors \
+            --tiffz ${tiffzPkg}/bin/tiffz \
+            --tiffdump ${pkgs.libtiff.bin}/bin/tiffdump \
+            --tiffinfo ${pkgs.libtiff.bin}/bin/tiffinfo \
+            --pigz ${pkgs.pigz}/bin/pigz \
+            --corruption-reader ${corruption-reader.packages.${system}.default}/bin/corruption-reader \
+            --generator-rev ${corruption-reader.rev} \
+            --layouts-out "$TMPDIR/layouts" \
+            >"$TMPDIR/report" 2>"$TMPDIR/err" && status=0 || status=$?
+          cat "$TMPDIR/report"
+          if [ "$status" -ne 0 ]; then
+            grep -v '^progress ' "$TMPDIR/err" >&2
+            exit 1
+          fi
+          mkdir -p $out
+          cp "$TMPDIR/report" $out/report
+          cp "$TMPDIR/layouts" $out/layouts
+        '';
+
         # The parity replay plus the installed `tiffz-explore`, smoke-run over
         # 20 sniper rounds (one line per case, the summary, exit 2 on a usage
         # error), then checked against the pinned floors on two seeds
-        # (tests/explore/exe-floors-check.sh).
+        # (tests/explore/exe-floors-check.sh) and, replaying the whole floors
+        # plan with the campaign's libtiff layouts, against its per-class
+        # counts (tests/explore/replay-check.sh).
         explorePkg = mkZigCheck {
           pname = "tiffz-explore";
           step = "explore explore-exe";
@@ -274,6 +303,7 @@
             rc=0; $out/bin/tiffz-explore > /dev/null 2>&1 || rc=$?
             [ "$rc" = 2 ] || { echo "tiffz-explore without --master exited $rc, want 2"; exit 1; }
             bash tests/explore/exe-floors-check.sh $out/bin/tiffz-explore tests/corruption_coverage_floors 5 6
+            bash tests/explore/replay-check.sh $out/bin/tiffz-explore ${corruptionCoverage}/layouts ${corruptionCoverage}/report tests/corruption_coverage_floors
             cat $smoke
           '';
           passed = "explore parity passed; tiffz-explore smoke passed";
@@ -433,7 +463,8 @@
         checks.explore-parity = explorePkg;
         packages.explore = explorePkg;
 
-        # Exploration under any master and profile, over the floors' seeds.
+        # Exploration under any master and profile, over the floors' seeds,
+        # with each case's free-case bound.
         # Run from the repository root:
         #   nix run .#explore -- --master 20261122 --profile nuke
         apps.explore = {
@@ -443,7 +474,9 @@
               echo "explore: run from the tiffz repository root" >&2
               exit 2
             fi
-            exec ${explorePkg}/bin/tiffz-explore "$@"
+            # The campaign's libtiff seed layouts, for the free-case bound; a
+            # later --layouts overrides.
+            exec ${explorePkg}/bin/tiffz-explore --layouts ${corruptionCoverage}/layouts "$@"
           ''}";
         };
 
@@ -523,27 +556,7 @@
         # writes with the same pinned tools. libtiff tiffdump maps
         # each seed, and libtiff tiffinfo plus pigz (zlib Adler-32) bound each
         # case, independently of tiffz; see docs/corruption_coverage.md.
-        checks.corruption-coverage = pkgs.runCommand "tiffz-corruption-coverage" {
-          nativeBuildInputs = [ pkgs.bash pkgs.gawk pkgs.diffutils ];
-        } ''
-          cd ${self}
-          bash ./corruption-coverage \
-            --floors tests/corruption_coverage_floors \
-            --tiffz ${tiffzPkg}/bin/tiffz \
-            --tiffdump ${pkgs.libtiff.bin}/bin/tiffdump \
-            --tiffinfo ${pkgs.libtiff.bin}/bin/tiffinfo \
-            --pigz ${pkgs.pigz}/bin/pigz \
-            --corruption-reader ${corruption-reader.packages.${system}.default}/bin/corruption-reader \
-            --generator-rev ${corruption-reader.rev} \
-            >"$TMPDIR/report" 2>"$TMPDIR/err" && status=0 || status=$?
-          cat "$TMPDIR/report"
-          if [ "$status" -ne 0 ]; then
-            grep -v '^progress ' "$TMPDIR/err" >&2
-            exit 1
-          fi
-          mkdir -p $out
-          cp "$TMPDIR/report" $out/report
-        '';
+        checks.corruption-coverage = corruptionCoverage;
 
         # Rewrite tests/corruption_coverage_floors from a fresh campaign with
         # the tools checks.corruption-coverage uses. It prints the cases added

@@ -40,7 +40,25 @@ The explore-parity derivation also builds the executable, so `packages.explore` 
 
 A crash ends the process. The last `case` line names the case, which becomes a fixed replay in `tests/fixture_test.zig`.
 
-False alarms still come from the subprocess harness: telling "free" cases (every changed byte an uncompressed sample) from the rest needs libtiff's layout of the seed, which the harness has and this driver does not.
+## Free cases in-process
+
+A free case changes only uncompressed sample bytes and keeps the length. The file is still a valid TIFF, so detecting it is a false alarm. Telling free cases apart needs libtiff's layout of each seed, which tiffz must not supply about itself.
+- `./corruption-coverage --layouts-out PATH` writes the layouts the harness already computes with tiffdump: "seed PATH BYTES CLASS" and one "free PATH START END" line per uncompressed range.
+- `checks.corruption-coverage` publishes them as `$out/layouts`.
+- `nix run .#explore` passes them as `--layouts`.
+
+No tracked copy exists, so nothing can drift.
+
+With layouts, each case line ends with its bound:
+- `free`;
+- `open`, which is the harness's clean or open (telling those apart needs tiffinfo);
+- `unknown` for a seed with no layout.
+
+A detected free case is counted as a false alarm, and the run exits 1.
+
+`--replay-floors` replays the floors plan under the floors' master. It prints the harness's per-class counts (decisive, detect, free, false_alarm). `tests/explore/replay-check.sh`, run in the explore-parity derivation, requires them to equal the subprocess harness's report for the same plan.
+
+First run: all 12 profile and class counts match, for example sniper uncompressed 189 decisive, 22 detected, 156 free, no false alarm.
 
 ## Out of scope
 

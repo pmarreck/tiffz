@@ -70,7 +70,7 @@ test "parity: the pinned floors plan replayed in-process detects exactly the pin
             while (i < plan.per) : (i += 1) {
                 const round = k * plan.per + i;
                 _ = case_arena.reset(.retain_capacity);
-                const outcome = try driver.runCase(case_arena.allocator(), std.testing.allocator, profile, seed, master, round);
+                const outcome = (try driver.runCase(case_arena.allocator(), std.testing.allocator, profile, seed, master, round)).outcome;
                 const id = try driver.caseId(case_arena.allocator(), plan.profile, seed.path, round);
                 const pinned = floors.detects.contains(id);
                 if (outcome == .detect) found += 1;
@@ -112,4 +112,47 @@ test "tiffz-explore arguments: --master required, harness defaults, bad values a
     try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--master", "1", "--rounds", "x" }));
     try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--master", "1", "--bogus", "2" }));
     try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--master", "1", "--first-round", "18446744073709551615", "--rounds", "1" }));
+}
+
+test "seed layouts parse from corruption-coverage --layouts-out, and malformed lines are refused" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const map = try driver.parseLayouts(a, "seed\tx.tif\t100\tuncompressed\nfree\tx.tif\t8\t40\nfree\tx.tif\t60\t70\nseed\ty.tif\t50\tchecksummed\n");
+    const x = map.get("x.tif").?;
+    try std.testing.expectEqual(@as(u64, 100), x.bytes);
+    try std.testing.expectEqualStrings("uncompressed", x.class);
+    try std.testing.expectEqualSlices([2]u64, &.{ .{ 8, 40 }, .{ 60, 70 } }, x.free.items);
+    try std.testing.expectEqual(@as(usize, 0), map.get("y.tif").?.free.items.len);
+    try std.testing.expectError(error.BadLayouts, driver.parseLayouts(a, "free\tx.tif\t8\t40\n"));
+    try std.testing.expectError(error.BadLayouts, driver.parseLayouts(a, "seed\tx.tif\t100\tuncompressed\nseed\tx.tif\t100\tuncompressed\n"));
+    try std.testing.expectError(error.BadLayouts, driver.parseLayouts(a, "seed\tx.tif\t100\tuncompressed\nfree\tx.tif\t40\t8\n"));
+    try std.testing.expectError(error.BadLayouts, driver.parseLayouts(a, "seed\tx.tif\tten\tuncompressed\n"));
+    try std.testing.expectError(error.BadLayouts, driver.parseLayouts(a, "range\tx.tif\t1\t2\n"));
+}
+
+test "bound follows corruption-coverage: free only when every changed byte is an uncompressed sample" {
+    var layout: driver.Layout = .{ .bytes = 8, .class = "uncompressed" };
+    var ranges = [_][2]u64{ .{ 2, 4 }, .{ 6, 8 } };
+    layout.free = .{ .items = &ranges, .capacity = ranges.len };
+    const seed = "ABCDEFGH";
+    try std.testing.expectEqual(driver.Bound.free, driver.bound(&layout, seed, "ABxDEFyH"));
+    try std.testing.expectEqual(driver.Bound.free, driver.bound(&layout, seed, "ABCxEFGy"));
+    // A changed byte just outside a range (offset 4, 5 or 1) is open.
+    try std.testing.expectEqual(driver.Bound.open, driver.bound(&layout, seed, "ABCDxFGH"));
+    try std.testing.expectEqual(driver.Bound.open, driver.bound(&layout, seed, "AxCDEFGH"));
+    try std.testing.expectEqual(driver.Bound.open, driver.bound(&layout, seed, "ABxDExGH"));
+    // A length change is open; no layout is unknown.
+    try std.testing.expectEqual(driver.Bound.open, driver.bound(&layout, seed, "ABCDEFG"));
+    try std.testing.expectEqual(driver.Bound.unknown, driver.bound(null, seed, "ABxDEFGH"));
+    // No changed byte at all is free, as an empty `cmp -l` is in the harness.
+    try std.testing.expectEqual(driver.Bound.free, driver.bound(&layout, seed, seed));
+}
+
+test "tiffz-explore arguments: --replay-floors takes no master, --layouts takes a path" {
+    const r = try driver.parseArgs(&.{ "--replay-floors", "--layouts", "l" });
+    try std.testing.expect(r.replay_floors);
+    try std.testing.expectEqualStrings("l", r.layouts.?);
+    try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--replay-floors", "--master", "1" }));
+    try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--master", "1", "--layouts" }));
 }
