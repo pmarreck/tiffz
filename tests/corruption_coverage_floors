@@ -3,7 +3,7 @@
 # Never edit by hand; see docs/corruption_coverage.md.
 master	42
 trials	385
-generator	corruption-reader 0.8.0: deterministic replayable corruption from JSON profiles	a7ea9957d6acae34aded4ef7bc7e25e5f121dc7a
+generator	corruption-reader 0.9.0: deterministic replayable corruption from JSON profiles	9a895a7865fd82cf67da46f662c57a968875e80f
 rng	random drbg 2026-08-04 v1
 case_derivation	corruption_reader case seed v1
 profile	sniper	4d7714b38405165326693e570c8d607abf0066077e6e5f945a810a7e34210d1f

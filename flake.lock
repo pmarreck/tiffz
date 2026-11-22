@@ -8,17 +8,17 @@
         "random": "random"
       },
       "locked": {
-        "lastModified": 1792779323,
-        "narHash": "sha256-4oGYXuXBoUjiL6ZjqXGfz9iHmjDEumFvT2vRU4MNkQw=",
+        "lastModified": 1793997002,
+        "narHash": "sha256-mHHw3Bn/Tdhk8FtK3TBVbBeXzeb6mKY+D++207pLYPY=",
         "ref": "yolo",
-        "rev": "a7ea9957d6acae34aded4ef7bc7e25e5f121dc7a",
-        "revCount": 89,
+        "rev": "9a895a7865fd82cf67da46f662c57a968875e80f",
+        "revCount": 117,
         "type": "git",
         "url": "ssh://git@github.com/pmarreck/corruption_reader"
       },
       "original": {
         "ref": "yolo",
-        "rev": "a7ea9957d6acae34aded4ef7bc7e25e5f121dc7a",
+        "rev": "9a895a7865fd82cf67da46f662c57a968875e80f",
         "type": "git",
         "url": "ssh://git@github.com/pmarreck/corruption_reader"
       }

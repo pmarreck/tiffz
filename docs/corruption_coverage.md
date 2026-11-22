@@ -240,3 +240,7 @@ Earlier count floors, kept from the old floors file:
   (`predictor3_deflate_fp32.tif`, round 389, item 11 of the batch at
   round 378) was not drawn. That case is also replayed in
   `tests/fixture_test.zig`, and is in the set again.
+
+## Generator repin on 2026-11-22
+
+corruption-reader moved from 0.8.0 (a7ea995) to 0.9.0 (9a895a7). 0.9.0 adds pattern zones, which tiffz-explore needs for field-level writer-bug profiles. `nix run .#corruption-floors` changed only the `generator` line. All 807 cases are the same, with none added or removed. The rng, case derivation and profile hashes are unchanged, so the four profiles draw identical cases.

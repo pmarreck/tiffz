@@ -25,7 +25,7 @@
     # Pinned so the detected-case set in tests/corruption_coverage_floors
     # stays valid; that file records this revision and goes stale without it.
     corruption-reader = {
-      url = "git+ssh://git@github.com/pmarreck/corruption_reader?ref=yolo&rev=a7ea9957d6acae34aded4ef7bc7e25e5f121dc7a";
+      url = "git+ssh://git@github.com/pmarreck/corruption_reader?ref=yolo&rev=9a895a7865fd82cf67da46f662c57a968875e80f";
     };
   };
 
