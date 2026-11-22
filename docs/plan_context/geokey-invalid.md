@@ -104,7 +104,7 @@ Notes:
 
 ### Key-value survey
 
-An independent Perl reader of the raw bytes, kept in scratch, evaluates the same rules on the 263-file pinned list. There are 110 GeoKeyDirectory IFDs in 106 files: 101 declare 1.0, 7 declare 1.1, and 2 declare neither. Under the edition ruling, 10 files gain 17 rule-35 records, all in 1.0 GDAL autotest files: a ProjectedCRS or Projection of 32767 without PCSCitationGeoKey. No other rule fires. Without the edition ruling (1.1's rules on every directory), the counts were rule 35: 20, rule 33: 6, rule 34: 2 and rule 36: 1, in 17 files.
+An independent Perl reader of the raw bytes, kept in scratch, evaluates the same rules on the 263-file pinned list. There are 110 GeoKeyDirectory IFDs in 106 files: 101 declare 1.0, 7 declare 1.1, and 2 declare neither. Under the edition ruling, 9 files gain 17 rule-35 records, all in 1.0 GDAL autotest files: a ProjectedCRS or Projection of 32767 without PCSCitationGeoKey. No other rule fires. Without the edition ruling (1.1's rules on every directory), the counts were rule 35: 20, rule 33: 6, rule 34: 2 and rule 36: 1, in 17 files.
 
 ## Payload
 

@@ -200,3 +200,17 @@ Amendments 3 and 4 are unchanged. The table itself still waits for the owner's a
 - **Tiles in strip tags: FAIL by default.** TIFF 6.0 section 15 says the tile fields replace StripOffsets, StripByteCounts and RowsPerStrip, so the specification gives no decode for tile geometry addressed through the strip tags. libtiff's pics samples (quad-tile, cramps-tile) are test-suite files and are not producer evidence. Three independent files from a real producer, for example a pre-6.0 libtiff written to the Aldus tiling draft, would make it a KNOWN_DEFECT candidate.
 - **Rename** `tiled_geometry_via_strip_tags_tolerated`: "tolerated" encodes acceptability. Approved by validate 2026-11-06 as `tiled_geometry_via_strip_tags`, same number and payload, and renamed.
 - **The two open rows** (rendering-metadata cross-field rows; DNG Chapter 3 rows that don't drive decoding) keep their shipped routing until evidence decides them. The evidence needed is a corruption campaign over fixtures carrying those tags, plus a producer survey of the corpus.
+
+## The two open rows closed, 2026-11-22
+
+validate closed both rows as FAIL on the evidence below. A row reopens only on producer evidence: three independent files make it a KNOWN_DEFECT candidate.
+
+- **Rendering-metadata cross-field row** (DefaultUserCrop, NoiseProfile, ProfileToneCurve; ImageLayer follows the row, unobserved).
+  - **Producers:** 331 files were scanned. 15 carry the tags, 12 of them real-world (Adobe, Apple, DJI, motorola, Sigma, Google, Samsung, Leica). None has a finding 18 on these tags.
+  - **Damage:** a targeted campaign changed one byte of a value per trial. DefaultUserCrop hit in 40 of 80 trials, NoiseProfile in 10 of 640 (sign or NaN flips), and ProfileToneCurve in 0 of 320, because only its endpoints are checked. The campaign should be rerun if more of the curve is checked later.
+  - **Exposure:** these values are at most 0.05% of a file.
+- **DNG Chapter 3 PhotometricInterpretation by role** (the only Chapter 3 restriction whose IFD still decodes).
+  - **Producers:** no real-world IFD breaks its role list (17 files, 41 IFDs).
+  - **Damage offline:** of every single-bit flip, 90.6% give a value TIFF does not define, 5.9% a TIFF-defined but role-forbidden value, and 3.6% another allowed value.
+  - **Damage through tiffz** (288 flips): all 17 role-forbidden values raise finding 18. For 2 of them (preview 2→10), the role row is the only record.
+  - **Payload:** a role violation is now finding 18 **reason 5 `dng_role`**, used when the TIFF row accepts the value. A TIFF-undefined value stays reason 3. So the row can be classed apart later without a payload change.

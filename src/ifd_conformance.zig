@@ -55,6 +55,12 @@ pub const Reason = enum(u16) {
     /// entry it is anchored on (validate, 2026-11-04). The payload carries
     /// a `ChannelMismatch`.
     channel_mismatch = 4,
+    /// PhotometricInterpretation is a value the TIFF row accepts and the DNG
+    /// 1.6.0.0 Chapter 3 list for the IFD's role rejects (validate,
+    /// 2026-11-22). The TIFF row runs first, so a value TIFF does not define
+    /// stays `value`. Only PhotometricInterpretation uses it; the payload is
+    /// unchanged.
+    dng_role = 5,
 };
 
 /// What a `channel_mismatch` compared: the photometric, the SamplesPerPixel
@@ -1188,7 +1194,7 @@ fn dngRestriction(dir: *const Ifd, index: usize, endian: Endian, dng: Dng) ?Reas
         tags.photometric => {
             if (!lists) return null;
             const p = element(bytes, entry.field_type, 0, endian) orelse return null;
-            if (!photometricAllowed(role(dir, endian), p)) return .value;
+            if (!photometricAllowed(role(dir, endian), p)) return .dng_role;
         },
         else => {},
     }
@@ -3106,10 +3112,17 @@ test "DNG Chapter 3: PhotometricInterpretation by the IFD's role" {
         var e = pair.of(case.nst, case.photometric);
         const ch = impliedChannels(case.photometric);
         c[1] = if (ch > 2) eights[0 .. 2 * ch] else null;
-        expectDng(&e, &c, v1_6, tags.photometric, if (case.ok) null else .value) catch |err| {
+        expectDng(&e, &c, v1_6, tags.photometric, if (case.ok) null else .dng_role) catch |err| {
             std.debug.print("NewSubFileType 0x{x}, photometric {d}\n", .{ case.nst, case.photometric });
             return err;
         };
+    }
+    // A value TIFF does not define is the TIFF row's fault (reason 3), found
+    // before any role list, so it never becomes reason 5.
+    {
+        var undefined_value = pair.of(0, 7);
+        c[1] = null;
+        try expectDng(&undefined_value, &c, v1_6, tags.photometric, .value);
     }
     // No role list without a DNG claim, above 1.6.0.0, or for an unknown version.
     var e = pair.of(0, 2);
