@@ -114,7 +114,7 @@ pub fn decodeIfdToRgba(
     }
 
     const compression = scalarU16(dir, tags.compression, dec.endian) orelse tags.compression_none;
-    const effective_photometric: u16 = if (compression == tags.compression_jpeg and photometric == tags.photometric_ycbcr)
+    const effective_photometric: u16 = if (tags.decodesYCbCrToRgb(compression) and photometric == tags.photometric_ycbcr)
         tags.photometric_rgb
     else
         photometric;

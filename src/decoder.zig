@@ -34,6 +34,7 @@ const compressions_jpeg = @import("compressions/jpeg.zig");
 const compressions_zstd = @import("compressions/zstd.zig");
 const compressions_lzma = @import("compressions/lzma.zig");
 const compressions_webp = @import("compressions/webp.zig");
+const compressions_ojpeg = @import("compressions/ojpeg.zig");
 const compressions_lerc = @import("compressions/lerc.zig");
 const predictors_mod = @import("predictors.zig");
 const findings_mod = @import("findings.zig");
@@ -133,6 +134,9 @@ pub const Decoder = struct {
     lzw_missing_eod_fired: bool = false,
     /// One-shot warning for tile geometry whose chunks use strip tag arrays.
     tiled_via_strip_tags_fired: bool = false,
+    /// The decode of the Compression 6 IFD read last (its strips and tiles
+    /// are row bands of one decode). Owned by this decoder.
+    ojpeg_decode: ?OjpegDecode = null,
     /// Counts Source bytes for max_bytes_visited. Owned by this decoder.
     budget: *parser.source.ByteBudget,
     /// Filled when a LimitExceeded error is returned. Absent otherwise.
@@ -590,6 +594,7 @@ pub const Decoder = struct {
     }
 
     pub fn deinit(self: *Decoder) void {
+        self.dropOjpegDecode();
         for (self.ifds.items) |*i| i.deinit();
         self.ifds.deinit(self.allocator);
         self.ifd_offsets.deinit(self.allocator);
@@ -843,7 +848,8 @@ pub const Decoder = struct {
     /// strip/tile decode. Mostly mirrors the IFD's PhotometricInterpretation
     /// tag, but handles a known codec-side quirk:
     ///
-    /// JPEG-in-TIFF (Compression=7) with PhotometricInterpretation=YCbCr:
+    /// JPEG-in-TIFF (Compression=7) or old-style JPEG (6) with
+    /// PhotometricInterpretation=YCbCr:
     /// jpegz (matching libjpeg-turbo's `JCS_RGB` default) internally
     /// converts YCbCr → RGB during decode, so the bytes returned from
     /// `decodeStrip` / `decodeTile` are RGB-ordered. Callers must NOT
@@ -857,7 +863,7 @@ pub const Decoder = struct {
         const dir = try self.ifd(ifd_index);
         const photometric = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse return error.Malformed;
         const compression = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse tags.compression_none;
-        if (compression == tags.compression_jpeg and photometric == tags.photometric_ycbcr) {
+        if (tags.decodesYCbCrToRgb(compression) and photometric == tags.photometric_ycbcr) {
             return tags.photometric_rgb;
         }
         return photometric;
@@ -980,17 +986,26 @@ pub const Decoder = struct {
             };
             self.presence_deferred_ifd = presence.deferred(dir);
             if (self.presence_deferred_ifd) try self.noteDeferredPresence(ifd_index);
-            if (try self.checkIfdConformance(dir, ifd_index, dng)) nonconforming = true;
+            const ifd_faulty = try self.checkIfdConformance(dir, ifd_index, dng);
+            if (ifd_faulty) nonconforming = true;
             if (try self.checkJpegGeometry(dir, ifd_index, dng)) nonconforming = true;
             self.rules_checked = ifd_index + 1;
             // No strip/tile arrays. A JPEGInterchangeFormat thumbnail (CR2
             // IFD1) is still a known page with nothing for this walk to
             // decode. Any other main-chain IFD in that shape is not an
             // image page: validate must not report it as fully checked.
-            const layout = (self.chunkLayout(dir) catch |err| {
+            const layout_opt = self.chunkLayout(dir) catch |err| {
                 self.noteFileClaim(err, self.ifdFileOffset(ifd_index));
                 return err;
-            }) orelse {
+            };
+            // Old-style JPEG is read best-effort, with or without strip or
+            // tile arrays, and every such IFD gets one finding 25 (validate
+            // 2026-11-07).
+            if (((readScalarU16(dir.*, tags.compression, self.endian) catch null) orelse tags.compression_none) == tags.compression_jpeg_old) {
+                try self.validateOjpegIfd(dir, ifd_index, layout_opt, ifd_faulty, &dest_buf, max_dest_bytes, workspace);
+                continue;
+            }
+            const layout = layout_opt orelse {
                 if (dir.get(tags.jpeg_interchange_format) != null) continue;
                 self.noteFileClaim(error.Malformed, self.ifdFileOffset(ifd_index));
                 return error.Malformed;
@@ -1434,12 +1449,12 @@ pub const Decoder = struct {
         // TIFF 6.0 §21: chunky YCbCr with chroma subsampling stores H×V-pixel
         // data units of (H·V luma + 1 Cb + 1 Cr) samples, not one full sample
         // set per pixel, so the flat per-row model below over-counts by the
-        // subsample ratio. JPEG-in-TIFF (compression 7) is excluded: jpegz
-        // returns upsampled RGB, which the flat model already sizes correctly.
+        // subsample ratio. JPEG-in-TIFF (7) and old-style JPEG (6) are excluded:
+        // jpegz returns upsampled RGB, which the flat model already sizes correctly.
         if (planar == tags.planar_chunky and samples == 3 and bits_per_pixel == 24) {
             const photometric = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse 0;
             const compression = (try readScalarU16(dir.*, tags.compression, self.endian)) orelse tags.compression_none;
-            if (photometric == tags.photometric_ycbcr and compression != tags.compression_jpeg) {
+            if (photometric == tags.photometric_ycbcr and !tags.decodesYCbCrToRgb(compression)) {
                 const sub = try readYCbCrSubSampling(dir.*, self.endian);
                 if (sub[0] > 1 or sub[1] > 1) {
                     return subsampledYCbCrExtent(
@@ -1643,6 +1658,12 @@ pub const Decoder = struct {
         /// clamped RowsPerStrip; for tile this is TileLength. Only
         /// used by CCITT.
         rows: u32,
+        /// The IFD, the strip or tile, and its first row in the image (strips)
+        /// or in the column of stacked tiles (tiles). Only used by old-style
+        /// JPEG, whose chunks are row bands of one decode.
+        ifd_index: usize = 0,
+        index: u32 = 0,
+        row_start: u32 = 0,
     };
 
     /// Internal: the codec dispatch without predictor application.
@@ -1685,6 +1706,9 @@ pub const Decoder = struct {
             .byte_count = byte_count,
             .width = width,
             .rows = this_rows,
+            .ifd_index = ifd_index,
+            .index = strip_index,
+            .row_start = std.math.mul(u32, strip_index, rps) catch std.math.maxInt(u32),
         }, dest, workspace);
     }
 
@@ -1724,16 +1748,282 @@ pub const Decoder = struct {
             .byte_count = byte_count,
             .width = tile_w,
             .rows = tile_h,
+            .ifd_index = ifd_index,
+            .index = tile_index,
+            .row_start = std.math.mul(u32, tile_index, tile_h) catch std.math.maxInt(u32),
         }, dest, workspace);
+    }
+
+    // ---- Old-style JPEG (Compression 6) ----
+
+    /// The composed and decoded stream of one Compression 6 IFD. Its strips
+    /// and tiles are row bands of this one decode, as libtiff reads them.
+    const OjpegDecode = struct {
+        ifd_index: usize,
+        header: compressions_ojpeg.HeaderSource = .none,
+        stage: OjpegStage = .not_assembled,
+        image: ?compressions_jpeg.jpegz.Image = null,
+        failure: errors.Error = error.Malformed,
+    };
+
+    /// How far finding 25's stream got (its payload).
+    const OjpegStage = enum(u16) {
+        /// No header libtiff would accept could be assembled.
+        not_assembled = 0,
+        /// A stream was assembled and did not decode.
+        assembled = 1,
+        /// The assembled stream decoded.
+        decoded = 2,
+    };
+
+    /// Bytes in a finding-25 payload: u32 IFD, u32 Compression entry, u64
+    /// anchor offset (that entry), u16 header source, u16 stage, u32 strips or
+    /// tiles, u32 of them decoded.
+    pub const ojpeg_payload_len = 28;
+
+    fn dropOjpegDecode(self: *Decoder) void {
+        if (self.ojpeg_decode) |d| if (d.image) |img| self.allocator.free(img.pixels);
+        self.ojpeg_decode = null;
+    }
+
+    /// The decode of IFD `ifd_index`'s Compression 6 stream, built on first
+    /// use and kept for its other strips or tiles. A failure to assemble or
+    /// decode is recorded, not returned, except a limit or running out of
+    /// memory.
+    fn ojpegDecoded(self: *Decoder, dir: *const Ifd, ifd_index: usize) errors.Error!*const OjpegDecode {
+        if (self.ojpeg_decode) |*d| if (d.ifd_index == ifd_index) return d;
+        self.dropOjpegDecode();
+        var d: OjpegDecode = .{ .ifd_index = ifd_index };
+        self.ojpegDecode(dir, &d) catch |err| {
+            if (err == error.OutOfMemory or errors.isLimit(err)) return err;
+            d.failure = err;
+        };
+        self.ojpeg_decode = d;
+        return &self.ojpeg_decode.?;
+    }
+
+    /// Read one region of the file, clamped to its end as libtiff clamps
+    /// old-style JPEG reads: an offset of 0 or at or past the end gives
+    /// nothing, and a count of 0 or one running past the end runs to the end.
+    fn ojpegRegion(self: *Decoder, bytes: *std.ArrayListUnmanaged(u8), offset: u64, count: u64, file_size: u64) errors.Error!void {
+        if (offset == 0 or offset >= file_size) return;
+        const len = if (count == 0 or count > file_size - offset) file_size - offset else count;
+        if (bytes.items.len + len > self.limits.max_compressed_strip_bytes) return error.LimitExceededCompressedStripBytes;
+        const at = bytes.items.len;
+        try bytes.resize(self.allocator, at + @as(usize, @intCast(len)));
+        const got = self.source.readAt(bytes.items[at..], offset) catch |err| return parser.source.preserveReadError(err);
+        if (got < len) return error.SourceShortRead;
+    }
+
+    /// One table tag's values: the bytes at each of its (up to 3) offsets,
+    /// 64 for JPEGQTables, or 16 counts and their values for the Huffman
+    /// tables. `store` holds the bytes.
+    fn ojpegTables(self: *Decoder, dir: *const Ifd, tag: u16, huffman: bool, store: *[3][]u8) errors.Error![3]?compressions_ojpeg.Table {
+        var out: [3]?compressions_ojpeg.Table = .{ null, null, null };
+        const entry = dir.get(tag) orelse return out;
+        const n: usize = @intCast(@min(entry.count, 3));
+        for (0..n) |k| {
+            const offset = try dir.arrayElementU64(tag, @intCast(k), self.endian, self.source);
+            if (offset == 0) continue;
+            var head: [16]u8 = undefined;
+            if (huffman) {
+                const got = self.source.readAt(&head, offset) catch |err| return parser.source.preserveReadError(err);
+                if (got < 16) return error.SourceShortRead;
+            }
+            var len: usize = 64;
+            if (huffman) {
+                len = 16;
+                for (head) |c| len += c;
+            }
+            store[k] = try self.allocator.alloc(u8, len);
+            const got = self.source.readAt(store[k], offset) catch |err| return parser.source.preserveReadError(err);
+            if (got < len) return error.SourceShortRead;
+            out[k] = .{ .offset = offset, .bytes = store[k] };
+        }
+        return out;
+    }
+
+    fn ojpegDecode(self: *Decoder, dir: *const Ifd, d: *OjpegDecode) errors.Error!void {
+        const file_size = self.source.sizeOf() catch return error.SourceShortRead;
+        const layout = self.chunkLayout(dir) catch null;
+
+        // The header source depends only on the input and the table tags, so
+        // it is recorded before any directory field can stop the reading.
+        // The input: the JPEGInterchangeFormat bytes, then each strip or tile.
+        var bytes: std.ArrayListUnmanaged(u8) = .empty;
+        defer bytes.deinit(self.allocator);
+        var ends: std.ArrayListUnmanaged(usize) = .empty;
+        defer ends.deinit(self.allocator);
+        if (readScalarU32(dir.*, tags.jpeg_interchange_format, self.endian) catch null) |jif| {
+            const jif_len = (readScalarU32(dir.*, tags.jpeg_interchange_format_length, self.endian) catch null) orelse 0;
+            try self.ojpegRegion(&bytes, jif, jif_len, file_size);
+        }
+        const jif_len = bytes.items.len;
+        if (layout) |l| {
+            var k: u32 = 0;
+            while (k < l.count) : (k += 1) {
+                const offset = try dir.arrayElementU64(l.offsets_tag, k, self.endian, self.source);
+                const count = try dir.arrayElementU64(l.counts_tag, k, self.endian, self.source);
+                try self.ojpegRegion(&bytes, offset, count, file_size);
+                try ends.append(self.allocator, bytes.items.len);
+            }
+        }
+
+        var store: [3][3][]u8 = .{ .{ &.{}, &.{}, &.{} }, .{ &.{}, &.{}, &.{} }, .{ &.{}, &.{}, &.{} } };
+        defer for (store) |set| for (set) |s| if (s.len > 0) self.allocator.free(s);
+        const tables: compressions_ojpeg.Tables = .{
+            .q = try self.ojpegTables(dir, tags.jpeg_q_tables, false, &store[0]),
+            .dc = try self.ojpegTables(dir, tags.jpeg_dc_tables, true, &store[1]),
+            .ac = try self.ojpegTables(dir, tags.jpeg_ac_tables, true, &store[2]),
+        };
+        const input: compressions_ojpeg.Input = .{ .bytes = bytes.items, .jif_len = jif_len, .chunk_ends = ends.items };
+        d.header = compressions_ojpeg.headerSource(input, tables);
+
+        const samples = (try readScalarU16(dir.*, tags.samples_per_pixel, self.endian)) orelse 1;
+        const planar = (try readScalarU16(dir.*, tags.planar_configuration, self.endian)) orelse tags.planar_chunky;
+        // libtiff composes separate planes from one SOS per plane; tiffz
+        // reads only the chunky layout.
+        if (samples == 3 and planar != tags.planar_chunky) return error.UnsupportedCompression;
+        const width = (try readScalarU32(dir.*, tags.image_width, self.endian)) orelse return error.Malformed;
+        const length = (try readScalarU32(dir.*, tags.image_length, self.endian)) orelse return error.Malformed;
+        const photometric = (try readScalarU16(dir.*, tags.photometric, self.endian)) orelse 0;
+        const sub = readYCbCrSubSampling(dir.*, self.endian) catch [2]u16{ 2, 2 };
+
+        var frame: compressions_ojpeg.Frame = .{
+            .samples = std.math.cast(u8, samples) orelse return error.Malformed,
+            .ycbcr = photometric == tags.photometric_ycbcr or photometric == 10,
+            .sub_h = std.math.cast(u8, sub[0]) orelse return error.Malformed,
+            .sub_v = std.math.cast(u8, sub[1]) orelse return error.Malformed,
+            .image_width = width,
+            .image_length = length,
+            .strile_width = width,
+            .strile_length = length,
+            .strile_length_total = length,
+            .restart_interval = (readScalarU16(dir.*, tags.jpeg_restart_interval, self.endian) catch null) orelse 0,
+        };
+        if (layout) |l| switch (l.kind) {
+            .strip => {
+                const rps = (try readScalarU32(dir.*, tags.rows_per_strip, self.endian)) orelse length;
+                frame.strile_length = @min(rps, length);
+            },
+            .tile => {
+                frame.strile_width = (try readScalarU32(dir.*, tags.tile_width, self.endian)) orelse return error.Malformed;
+                const tl = (try readScalarU32(dir.*, tags.tile_length, self.endian)) orelse return error.Malformed;
+                if (tl == 0) return error.Malformed;
+                frame.strile_length = tl;
+                frame.strile_length_total = std.math.mul(u32, (length + tl - 1) / tl, tl) catch return error.Malformed;
+            },
+        };
+
+        var composed = try compressions_ojpeg.compose(self.allocator, input, tables, frame);
+        defer composed.deinit(self.allocator);
+        d.stage = .assembled;
+        try enforceRasterLimits(self, composed.width, composed.height, samples);
+        const img = compressions_jpeg.jpegz.decode(self.allocator, composed.stream) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.NotImplemented => return error.UnsupportedCompression,
+            else => return error.JpegInTiffPayload,
+        };
+        if (img.bits_per_sample != 8 or img.channels != samples) {
+            self.allocator.free(img.pixels);
+            return error.Malformed;
+        }
+        d.image = img;
+        d.stage = .decoded;
+    }
+
+    /// One strip or tile of a Compression 6 IFD: its rows of the decode.
+    /// libtiff stacks strips or tiles as one frame `strile_width` wide, each
+    /// below the last, so chunk k starts at row k times the strip or tile
+    /// length.
+    fn decodeOjpegChunk(self: *Decoder, dir: *const Ifd, ext: ChunkExtent, dest: []u8) errors.Error!usize {
+        const d = try self.ojpegDecoded(dir, ext.ifd_index);
+        const img = d.image orelse return d.failure;
+        if (img.width != ext.width) return error.Malformed;
+        const row_bytes = @as(usize, img.width) * img.channels;
+        const first = @as(usize, ext.row_start);
+        if (first + ext.rows > img.height) return error.Malformed;
+        const n = row_bytes * ext.rows;
+        if (dest.len < n) return error.DestTooSmall;
+        @memcpy(dest[0..n], img.pixels[first * row_bytes ..][0..n]);
+        return n;
+    }
+
+    /// Finding 25 (validate 2026-11-07): one WARN record per Compression 6
+    /// IFD whatever its decode gives. Its strips or tiles decode best-effort,
+    /// and a failed decode is counted, never fatal, as is a geometry the
+    /// directory cannot give when the IFD already has a directory-rule fault
+    /// (which fails validation after the walk). A strip
+    /// or tile past the end of the file, a limit, or running out of memory
+    /// stays the fault it is for any codec.
+    fn validateOjpegIfd(
+        self: *Decoder,
+        dir: *const Ifd,
+        ifd_index: usize,
+        layout_opt: ?ChunkLayout,
+        /// The IFD already has a directory-rule fault, which fails validation
+        /// after the walk.
+        ifd_faulty: bool,
+        dest_buf: *[]u8,
+        max_dest_bytes: usize,
+        workspace: *Workspace,
+    ) errors.Error!void {
+        var chunks: u32 = 0;
+        var decoded: u32 = 0;
+        if (layout_opt) |layout| {
+            chunks = layout.count;
+            var k: u32 = 0;
+            while (k < layout.count) : (k += 1) {
+                self.active_chunk_offset = self.chunkFileOffset(dir, layout, k);
+                // A geometry the directory cannot give leaves the chunk
+                // undecoded when the IFD already has a directory-rule fault,
+                // which fails validation after the walk. Otherwise it stays
+                // the fault it is for any codec.
+                const ext = self.expectedChunkBytes(dir, layout.kind, k, layout.count) catch |err| {
+                    if (!ifd_faulty or err == error.OutOfMemory or errors.isLimit(err)) {
+                        self.noteFileClaim(err, self.active_chunk_offset);
+                        return err;
+                    }
+                    continue;
+                };
+                const written = self.runWithGrowingDest(dest_buf, max_dest_bytes, layout.kind, ifd_index, k, workspace) catch |err| {
+                    if (err == error.OutOfMemory or err == error.SourceShortRead or errors.isLimit(err)) {
+                        self.noteFileClaim(err, self.active_chunk_offset);
+                        return err;
+                    }
+                    continue;
+                };
+                if (written >= ext.min and written <= ext.max) decoded += 1;
+            }
+        }
+        const d = try self.ojpegDecoded(dir, ifd_index);
+        const anchor = self.tagEntryOffset(dir, ifd_index, tags.compression);
+        var entry_index: u32 = 0xFFFF_FFFF;
+        for (dir.entries, 0..) |entry, i| {
+            if (entry.tag == tags.compression) entry_index = @intCast(i);
+        }
+        var p: [ojpeg_payload_len]u8 = undefined;
+        std.mem.writeInt(u32, p[0..4], @intCast(ifd_index), .little);
+        std.mem.writeInt(u32, p[4..8], entry_index, .little);
+        std.mem.writeInt(u64, p[8..16], anchor, .little);
+        std.mem.writeInt(u16, p[16..18], @intFromEnum(d.header), .little);
+        std.mem.writeInt(u16, p[18..20], @intFromEnum(d.stage), .little);
+        std.mem.writeInt(u32, p[20..24], chunks, .little);
+        std.mem.writeInt(u32, p[24..28], decoded, .little);
+        self.emitDetailed(.tiffz, @intFromEnum(findings_mod.InfoFinding.ojpeg_best_effort), null, .valid, anchor, null, true, &p);
+        self.noteDiscrepancy(.warning, anchor, "ojpeg_best_effort");
+        self.dropOjpegDecode();
     }
 
     /// Single source of truth for which Compression codes tiffz decodes.
     /// Drives BOTH the `decodeBytes` dispatch guard below AND the walk's
     /// code-16 partial-coverage skip (`unsupported_compression_skipped`), so
     /// the two can never classify a code differently. Old-style JPEG (6) is
-    /// deliberately absent forever (SPEC §3; Peter re-affirmed 2026-08-27).
+    /// read best-effort, as libtiff reads it (owner 2026-11-07: "do
+    /// Compression 6. Overriding that 'do not reopen'").
     pub const supported_compressions = [_]u16{
         tags.compression_none,
+        tags.compression_jpeg_old,
         tags.compression_ccitt_rle,
         tags.compression_next,
         tags.compression_thunderscan,
@@ -1776,9 +2066,10 @@ pub const Decoder = struct {
         reverse_coded_bytes,
         /// The CCITT decoders read FillOrder themselves.
         codec_reads_fill_order,
-        /// Byte-oriented JPEG marker streams are never reversed. libtiff has
-        /// no JPEG XL codec; a reversed marker stream cannot decode, so it
-        /// is treated as JPEG.
+        /// Byte-oriented JPEG marker streams are never reversed. libtiff's
+        /// old-style JPEG reader reads the file itself, outside the reversal.
+        /// libtiff has no JPEG XL codec; a reversed marker stream cannot
+        /// decode, so it is treated as JPEG.
         never_reversed,
     };
 
@@ -1802,6 +2093,7 @@ pub const Decoder = struct {
             tags.compression_ccitt_t4,
             tags.compression_ccitt_t6,
             => .codec_reads_fill_order,
+            tags.compression_jpeg_old,
             tags.compression_jpeg,
             tags.compression_dng_lossy_jpeg,
             tags.compression_jpegxl,
@@ -2286,6 +2578,7 @@ pub const Decoder = struct {
                 }
                 break :blk written;
             },
+            tags.compression_jpeg_old => self.decodeOjpegChunk(dir, ext, dest),
             tags.compression_jpegxl, tags.compression_dng_jpegxl => blk: {
                 // JPEG XL (50002, GDAL and libtiff; 52546, DNG 1.7): each strip
                 // or tile is one JPEG XL stream holding the chunk's samples.
@@ -2660,17 +2953,17 @@ test "decodeStrip: uncompressed RGB single strip" {
 
 // MFIC: the supported-compression predicate as a classifier over a SET of
 // codes, not a presence check — every code the decodeBytes dispatch owns must
-// classify supported; the deliberately-never-supported and unknown codes must
+// classify supported; the undecoded and unknown codes must
 // classify unsupported. Oracles are hand-derived from the dispatch switch, so
 // adding a codec to one side without the other fails here.
 test "compressionSupported: classifier over supported / never-supported / unknown codes" {
-    const supported = [_]u16{ 1, 2, 3, 4, 5, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 34925, 50001, 50002, 52546, 34887, 34892 };
+    const supported = [_]u16{ 1, 2, 3, 4, 5, 6, 7, 8, 32946, 32773, 32766, 32809, 34676, 34677, 50000, 34925, 50001, 50002, 52546, 34887, 34892 };
     for (supported) |c| {
         try std.testing.expect(Decoder.compressionSupported(c));
     }
     const unsupported = [_]u16{
         0, // not a legal Compression value
-        6, // old-style JPEG (OJPEG) — deliberately never supported, SPEC §3
+        34661, // JBIG: no exemplar yet
         9, 10, // T.85 / T.43 reserved
         34712, // JPEG2000-in-TIFF
         0xFFFF,
@@ -2680,10 +2973,10 @@ test "compressionSupported: classifier over supported / never-supported / unknow
     }
 }
 
-test "decodeStrip: compression=6 (OJPEG, never supported) rejected as Unsupported" {
+test "decodeStrip: an undecoded compression (JBIG, 34661) is rejected as Unsupported" {
     const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
     const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
-    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00 }; // Compression = 6 (OJPEG, deprecated; per SPEC §3 we'll never support this)
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00 }; // Compression = 34661 (JBIG)
     const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00 };
     const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 };
 
@@ -2702,6 +2995,32 @@ test "decodeStrip: compression=6 (OJPEG, never supported) rejected as Unsupporte
     var dest: [4]u8 = undefined;
     try std.testing.expectError(
         error.UnsupportedCompression,
+        dec.decodeStrip(0, 0, &dest, &ws),
+    );
+}
+
+test "decodeStrip: compression 6 with neither JPEG markers nor table tags is Malformed" {
+    const w_entry: [12]u8 = .{ 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
+    const h_entry: [12]u8 = .{ 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
+    const comp_entry: [12]u8 = .{ 0x03, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00 }; // Compression = 6 (old-style JPEG)
+    const so_entry: [12]u8 = .{ 0x11, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00 };
+    const sbc_entry: [12]u8 = .{ 0x17, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 };
+
+    const strip = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const bytes = synthesize(5, .{ w_entry, h_entry, comp_entry, so_entry, sbc_entry }, &strip, 0x60);
+
+    var handle = BufferHandle.init(&bytes);
+    const src = Source.fromBuffer(&handle);
+
+    var dec = try Decoder.open(std.testing.allocator, src);
+    defer dec.deinit();
+
+    var ws = Workspace.init(std.testing.allocator);
+    defer ws.deinit();
+
+    var dest: [4]u8 = undefined;
+    try std.testing.expectError(
+        error.Malformed,
         dec.decodeStrip(0, 0, &dest, &ws),
     );
 }

@@ -374,8 +374,9 @@ test "tiffz validate rejects the Canon 40D CR2 for its IFD0 BitsPerSample count"
     try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":17,"));
     // IFD 0, entry 2, entry offset 42, tag 258, reason 2 (count), type 3, count 3.
     try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"payload_hex\":\"00000000" ++ "02000000" ++ "2a00000000000000" ++ "0201" ++ "0200" ++ "0300" ++ "0300000000000000") != null);
-    // Partial coverage is still named: two code-16 skips.
-    try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":16,"));
+    // IFDs 0 and 3 are old-style JPEG: one finding 25 each, no code-16 skip.
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":25,"));
+    try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":16,"));
     // IFD 1, the JPEGInterchangeFormat thumbnail, had no presence check:
     // reported as reach, reason 1 (validate, 2026-11-07).
     try std.testing.expectEqual(@as(usize, 1), countOccurrences(r.stdout, "\"presence_deferred\":[{\"ifd\":1,\"reason\":1}]"));
@@ -449,7 +450,8 @@ fn repairedCr2(allocator: std.mem.Allocator, original: []const u8) ![]u8 {
 test "tiffz validate accepts CR2 partial coverage with exit 0 once IFD0 is consistent" {
     // The control for the test above: the same 40D with its IFDs made
     // consistent at test time (`repairedCr2`; no fixture bytes committed). It must pass
-    // for the right reason: partial coverage, no directory-rule finding.
+    // for the right reason: old-style JPEG read best-effort, no directory-rule
+    // finding.
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     const original = blk: {
@@ -483,9 +485,10 @@ test "tiffz validate accepts CR2 partial coverage with exit 0 once IFD0 is consi
     try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":18,"));
     try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":17,"));
     try std.testing.expectEqual(@as(usize, 0), countOccurrences(r.stdout, "\"code\":20,"));
-    try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":16,"));
-    // Pinned exactly (validate, 2026-11-05): three multi_ifd_chain findings
-    // and the two skips, nothing else.
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences(r.stdout, "\"code\":25,"));
+    // Pinned exactly (validate, 2026-11-05; re-pinned 2026-11-21 when old-style
+    // JPEG replaced the code-16 skips): three multi_ifd_chain findings and one
+    // finding 25 per Compression 6 IFD, nothing else.
     try std.testing.expectEqual(@as(usize, 3), countOccurrences(r.stdout, "\"code\":2,"));
     try std.testing.expectEqual(@as(usize, 5), countOccurrences(r.stdout, "\"code\":"));
 }

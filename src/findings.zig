@@ -83,8 +83,8 @@ pub const InfoFinding = enum(u32) {
     /// Tile geometry used strip offset/count tags only. Accepted under the
     /// bounded compatibility classifier and surfaced exactly once per file.
     tiled_geometry_via_strip_tags = 15,
-    /// An otherwise well-formed IFD uses a compression tiffz deliberately
-    /// never supports (e.g. old-style JPEG, Compression=6); the walk skipped
+    /// An otherwise well-formed IFD uses a compression tiffz does not decode
+    /// (e.g. JBIG, Compression=34661); the walk skipped
     /// its chunks and continued — the file may still validate OK with this
     /// portion honestly uncovered (Peter's partial-coverage ruling,
     /// 2026-08-27). Emitted once PER SKIPPED IFD. Payload: 8 bytes,
@@ -150,6 +150,19 @@ pub const InfoFinding = enum(u32) {
     /// 0xFFFFFFFF, u64 anchor offset, u16 tag, u16 rule). Numbered by validate
     /// 2026-11-06; layout approved 2026-11-07.
     should_deviation = 22,
+    /// Old-style JPEG (Compression 6, TIFF 6.0 section 22), read best-effort
+    /// the way libtiff's tif_ojpeg.c reads it (owner 2026-11-07: "make a
+    /// best-effort parse but WARN on it regardless of result"). One record per
+    /// Compression 6 IFD, whatever its decode gives; a strip or tile that does
+    /// not decode is counted here and never fails validation. Verdict valid;
+    /// validate maps it to WARN. Payload: 28 bytes, `Decoder.ojpeg_payload_len`
+    /// (u32 IFD, u32 Compression entry, u64 anchor offset of that entry, u16
+    /// header source: 0 none, 1 JPEGInterchangeFormat stream, 2 first strip
+    /// or tile, 3 JPEGQTables/JPEGDCTables/JPEGACTables; u16 stage: 0 no
+    /// header assembled, 1 assembled but not decoded, 2 decoded; u32 strips
+    /// or tiles; u32 of them decoded). Numbered by validate 2026-11-07; the
+    /// layout goes to validate with the implementation.
+    ojpeg_best_effort = 25,
     _,
 };
 

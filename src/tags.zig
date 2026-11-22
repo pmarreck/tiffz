@@ -286,3 +286,10 @@ pub const photometric_linear_raw: u16 = 34892;     // DNG Chapter 3
 pub const photometric_depth: u16 = 51177;          // DNG 1.5.0.0 depth map IFDs
 pub const photometric_mask: u16 = 52527;           // DNG 1.6.0.0 semantic mask IFDs
 pub const compression_dng_lossy_jpeg: u16 = 34892; // DNG 1.4.0.0
+
+/// JPEG decodes that jpegz returns as RGB when PhotometricInterpretation is
+/// YCbCr: JPEG-in-TIFF (7) and old-style JPEG (6). Their chunks hold upsampled
+/// RGB, not TIFF 6.0 section 21's subsampled YCbCr data units.
+pub fn decodesYCbCrToRgb(code: u16) bool {
+    return code == compression_jpeg or code == compression_jpeg_old;
+}

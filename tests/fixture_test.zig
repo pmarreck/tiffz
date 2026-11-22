@@ -2008,24 +2008,31 @@ fn repairedCr2(allocator: std.mem.Allocator, original: []const u8) ![]u8 {
     return withEntriesInIfd(allocator, step, 3, &.{ .{ .tag = 256, .val = 1944 }, .{ .tag = 257, .val = 1296 }, .{ .tag = 262, .val = 1 } });
 }
 
-/// The partial-coverage contract for the Canon 40D CR2 (Peter's 2026-08-27
-/// ruling): the walk accepts and names its two uncovered IFDs, 0 (full-size
-/// JPEG preview) and 3 (Canon sRAW), both Compression=6 (old-style JPEG,
-/// deliberately never supported). IFD1 has no strip arrays; IFD2 is
-/// uncompressed RGB and must decode and gate normally, proven by exactly two
-/// (not three) skips. Payload contract (Einstein 2026-08-27): exactly 8 bytes,
-/// u32 LE IFD index then u32 LE compression code, in IFD order.
-fn expectCr2PartialCoverage(recorder: *const FindingRecorder) !void {
-    try std.testing.expectEqual(@as(usize, 2), recorder.count(.unsupported_compression_skipped));
+/// The old-style JPEG contract for the Canon 40D CR2: IFDs 0 (full-size JPEG
+/// preview) and 3 (Canon sRAW) are Compression 6, read best-effort, each with
+/// one finding 25 (owner and validate, 2026-11-07), in IFD order. IFD1 has no
+/// strip arrays and is not Compression 6; IFD2 is uncompressed RGB and decodes
+/// and gates normally. IFD0's strip holds a complete baseline JPEG (header in
+/// the first strip), which decodes once SamplesPerPixel says 3 (`ifd0_decodes`);
+/// IFD3's holds a lossless 15-bit stream, which libtiff's reader refuses
+/// (8-bit only), so no header is assembled.
+fn expectCr2PartialCoverage(recorder: *const FindingRecorder, ifd0_decodes: bool) !void {
+    try std.testing.expectEqual(@as(usize, 0), recorder.count(.unsupported_compression_skipped));
+    try std.testing.expectEqual(@as(usize, 2), recorder.count(.ojpeg_best_effort));
+    const Want = struct { ifd: u32, stage: u16, decoded: u32 };
+    const want = [2]Want{ .{ .ifd = 0, .stage = if (ifd0_decodes) 2 else 0, .decoded = @intFromBool(ifd0_decodes) }, .{ .ifd = 3, .stage = 0, .decoded = 0 } };
     var seen: usize = 0;
-    const expected_ifds = [2]u32{ 0, 3 };
     for (recorder.findings.items) |f| {
-        if (f.source == .tiffz and f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.unsupported_compression_skipped)) {
-            try std.testing.expectEqual(@as(usize, 8), f.payload_len);
-            try std.testing.expectEqual(@as(?u32, expected_ifds[seen]), f.payload_u32);
-            try std.testing.expectEqual(@as(?u32, 6), f.payload_u32_2);
-            seen += 1;
-        }
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.ojpeg_best_effort)) continue;
+        const p = f.payload_bytes;
+        try std.testing.expectEqual(@as(usize, tiffz.Decoder.ojpeg_payload_len), f.payload_len);
+        try std.testing.expectEqual(tiffz.findings.Verdict.valid, f.verdict);
+        try std.testing.expectEqual(want[seen].ifd, std.mem.readInt(u32, p[0..4], .little));
+        try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, p[16..18], .little)); // header in the first strip
+        try std.testing.expectEqual(want[seen].stage, std.mem.readInt(u16, p[18..20], .little));
+        try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, p[20..24], .little));
+        try std.testing.expectEqual(want[seen].decoded, std.mem.readInt(u32, p[24..28], .little));
+        seen += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), seen);
 }
@@ -2041,7 +2048,7 @@ test "CR2: the Canon 40D is corrupt for its IFD0 BitsPerSample count, and still 
     var recorder = FindingRecorder.init(allocator);
     defer recorder.deinit();
     try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &recorder));
-    try expectCr2PartialCoverage(&recorder);
+    try expectCr2PartialCoverage(&recorder, false);
     try std.testing.expectEqual(@as(usize, 1), countConformance(&recorder));
     for (recorder.findings.items) |f| {
         if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid)) continue;
@@ -2056,7 +2063,7 @@ test "CR2: the Canon 40D is corrupt for its IFD0 BitsPerSample count, and still 
     }
 }
 
-test "CR2 must-accept: the Canon 40D with its IFDs made consistent validates with two code-16 skips (partial coverage)" {
+test "CR2 must-accept: the Canon 40D with its IFDs made consistent validates, with one finding 25 per old-style JPEG IFD" {
     const allocator = std.testing.allocator;
     const original = try loadFile(allocator, "tests/fixtures/cr2/canon_eos_40d_sraw2.cr2");
     defer allocator.free(original);
@@ -2066,19 +2073,20 @@ test "CR2 must-accept: the Canon 40D with its IFDs made consistent validates wit
     defer recorder.deinit();
     // The walk must ACCEPT (per Peter's 2026-08-27 partial-coverage ruling)…
     try validateRecording(allocator, bytes, &recorder);
-    // …name the two uncovered portions, and pass for the right reason. The
-    // control is pinned to its exact findings (validate, 2026-11-05), so a
-    // new finding of any kind fails here and is re-pinned on purpose:
-    // multi_ifd_chain for IFDs 1-3 (payload: the IFD count so far) and the
-    // two code-16 skips. No directory-rule or presence finding.
-    try expectCr2PartialCoverage(&recorder);
+    // ...and pass for the right reason. The control is pinned to its exact
+    // findings (validate, 2026-11-05), so a new finding of any kind fails here
+    // and is re-pinned on purpose: multi_ifd_chain for IFDs 1-3 (payload: the
+    // IFD count so far) and one finding 25 for each Compression 6 IFD, 0 and
+    // 3 (re-pinned 2026-11-21 when old-style JPEG replaced the code-16
+    // skips). No directory-rule or presence finding.
+    try expectCr2PartialCoverage(&recorder, true);
     const Pinned = struct { code: tiffz.findings.InfoFinding, first: u32 };
     const pinned = [_]Pinned{
         .{ .code = .multi_ifd_chain, .first = 2 },
         .{ .code = .multi_ifd_chain, .first = 3 },
         .{ .code = .multi_ifd_chain, .first = 4 },
-        .{ .code = .unsupported_compression_skipped, .first = 0 },
-        .{ .code = .unsupported_compression_skipped, .first = 3 },
+        .{ .code = .ojpeg_best_effort, .first = 0 },
+        .{ .code = .ojpeg_best_effort, .first = 3 },
     };
     if (recorder.findings.items.len != pinned.len) {
         for (recorder.findings.items) |f| std.debug.print("repaired 40D finding: source {s} code {d}\n", .{ @tagName(f.source), f.finding_code });
@@ -4883,8 +4891,10 @@ test "presence deferral: a JPEGInterchangeFormat-only IFD is listed as reach and
         try std.testing.expectEqual(tiffz.ifd_presence.DeferredReason.jpeg_interchange_format_only, list.items[0].reason);
         try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
         for (recorder.findings.items) |f| {
-            // Only the planted IFD 1 fault comes from the deferred IFD.
-            const from_ifd1 = f.source == .tiffz and f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid) and
+            // Only the planted IFD 1 fault and IFD 1's finding 25 come from the
+            // deferred IFD.
+            const from_ifd1 = f.source == .tiffz and (f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid) or
+                f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.ojpeg_best_effort)) and
                 std.mem.readInt(u32, f.payload_bytes[0..4], .little) == 1;
             try std.testing.expectEqual(from_ifd1, f.presence_deferred);
             try std.testing.expect(!f.after_stop);
@@ -5502,4 +5512,132 @@ test "FillOrder 2: uncompressed data is bit-reversed too; 1-bit carries no rule 
     try std.testing.expectEqual(@as(usize, 0), try fillOrderRows("tests/fixtures/fillorder/crop-fo2.tif"));
     try expectChunksMatchOracle("tests/fixtures/fillorder/cmyk-fo2.tif", "tests/fixtures/photometric/cmyk.tif", false, 1);
     try std.testing.expectEqual(@as(usize, 1), try fillOrderRows("tests/fixtures/fillorder/cmyk-fo2.tif"));
+}
+
+// ---- Compression 6 (old-style JPEG), fixtures from tests/fixtures/ojpeg/gen.sh ----
+// One cjpeg JPEG (32x32 RGB, 4:2:0, a restart marker every MCU row) wrapped
+// in the layouts libtiff's tif_ojpeg.c reads, all of which libtiff's
+// tiff2rgba reads. djpeg's decode of that JPEG is the oracle. Every
+// Compression 6 IFD gets one finding 25 (WARN) whatever its decode gives
+// (owner 2026-11-07; validate 2026-11-07).
+
+const OjpegRecord = struct {
+    count: usize = 0,
+    ifd: u32 = 0,
+    anchor: u64 = 0,
+    header: u16 = 0,
+    stage: u16 = 0,
+    chunks: u32 = 0,
+    decoded: u32 = 0,
+};
+
+/// Validate `bytes` (it must pass) and read its finding 25 records: each is
+/// verdict valid, 28 bytes, cited at its anchor. Returns the last one and the
+/// count.
+fn ojpegRecords(bytes: []const u8) !OjpegRecord {
+    const allocator = std.testing.allocator;
+    var rec = FindingRecorder.init(allocator);
+    defer rec.deinit();
+    try validateRecording(allocator, bytes, &rec);
+    return ojpegRecordsIn(&rec);
+}
+
+fn ojpegRecordsIn(rec: *const FindingRecorder) !OjpegRecord {
+    var out: OjpegRecord = .{};
+    for (rec.findings.items) |f| {
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.ojpeg_best_effort)) continue;
+        try std.testing.expectEqual(tiffz.findings.Verdict.valid, f.verdict);
+        try std.testing.expectEqual(@as(usize, tiffz.Decoder.ojpeg_payload_len), f.payload_len);
+        const p = f.payload_bytes;
+        out = .{
+            .count = out.count + 1,
+            .ifd = std.mem.readInt(u32, p[0..4], .little),
+            .anchor = std.mem.readInt(u64, p[8..16], .little),
+            .header = std.mem.readInt(u16, p[16..18], .little),
+            .stage = std.mem.readInt(u16, p[18..20], .little),
+            .chunks = std.mem.readInt(u32, p[20..24], .little),
+            .decoded = std.mem.readInt(u32, p[24..28], .little),
+        };
+        try std.testing.expectEqual(@as(?u64, out.anchor), f.byte_offset);
+    }
+    return out;
+}
+
+/// The file offset of IFD 0's Compression entry in a classic little-endian file.
+fn classicEntryOffset(bytes: []const u8, tag: u16) !u64 {
+    const ifd: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    const n: usize = std.mem.readInt(u16, bytes[ifd..][0..2], .little);
+    for (0..n) |i| {
+        const e = ifd + 2 + i * 12;
+        if (std.mem.readInt(u16, bytes[e..][0..2], .little) == tag) return e;
+    }
+    return error.TestExpectedEqual;
+}
+
+test "Compression 6: the JPEGInterchangeFormat, table-tag and whole-JPEG-strip layouts decode to djpeg's samples, each with one finding 25" {
+    const allocator = std.testing.allocator;
+    const oracle = try loadFile(allocator, "tests/fixtures/ojpeg/ojpeg-oracle.rgb");
+    defer allocator.free(oracle);
+    try std.testing.expectEqual(@as(usize, 32 * 32 * 3), oracle.len);
+    const Case = struct { path: []const u8, strips: u32, header: u16 };
+    for ([_]Case{
+        .{ .path = "tests/fixtures/ojpeg/ojpeg-jif.tif", .strips = 1, .header = 1 },
+        .{ .path = "tests/fixtures/ojpeg/ojpeg-strip.tif", .strips = 1, .header = 2 },
+        .{ .path = "tests/fixtures/ojpeg/ojpeg-tables.tif", .strips = 2, .header = 3 },
+    }) |case| {
+        const bytes = try loadFile(allocator, case.path);
+        defer allocator.free(bytes);
+        var handle = tiffz.source.BufferHandle.init(bytes);
+        var dec = try tiffz.Decoder.open(allocator, tiffz.Source.fromBuffer(&handle));
+        defer dec.deinit();
+        var ws = tiffz.Workspace.init(allocator);
+        defer ws.deinit();
+        var got: [32 * 32 * 3]u8 = undefined;
+        var at: usize = 0;
+        for (0..case.strips) |k| at += try dec.decodeStrip(0, @intCast(k), got[at..], &ws);
+        try std.testing.expectEqual(oracle.len, at);
+        try std.testing.expectEqualSlices(u8, oracle, &got);
+        try std.testing.expectEqual(tiffz.tags.photometric_rgb, try dec.photometricAfterDecode(0));
+
+        const r = try ojpegRecords(bytes);
+        try std.testing.expectEqual(@as(usize, 1), r.count);
+        try std.testing.expectEqual(@as(u32, 0), r.ifd);
+        try std.testing.expectEqual(try classicEntryOffset(bytes, tiffz.tags.compression), r.anchor);
+        try std.testing.expectEqual(case.header, r.header);
+        try std.testing.expectEqual(@as(u16, 2), r.stage);
+        try std.testing.expectEqual(case.strips, r.chunks);
+        try std.testing.expectEqual(case.strips, r.decoded);
+    }
+}
+
+test "Compression 6: a cut strip still validates, and its finding 25 counts it undecoded" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/ojpeg/ojpeg-cut.tif");
+    defer allocator.free(bytes);
+    const r = try ojpegRecords(bytes);
+    try std.testing.expectEqual(@as(usize, 1), r.count);
+    try std.testing.expectEqual(@as(u16, 3), r.header);
+    try std.testing.expectEqual(@as(u32, 2), r.chunks);
+    try std.testing.expect(r.decoded < r.chunks);
+}
+
+test "Compression 6: an IFD with only a JPEGInterchangeFormat stream gets one finding 25 for that stream" {
+    // ojpeg-jif.tif with its strip arrays renamed to private tags: the
+    // JPEGInterchangeFormat stream is the whole image, with no strip to slice.
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/ojpeg/ojpeg-jif.tif");
+    defer allocator.free(bytes);
+    for ([_]u16{ tiffz.tags.strip_offsets, tiffz.tags.rows_per_strip, tiffz.tags.strip_byte_counts }, [_]u16{ 65000, 65001, 65002 }) |tag, private| {
+        const e = try classicEntryOffset(bytes, tag);
+        std.mem.writeInt(u16, bytes[e..][0..2], private, .little);
+    }
+    var rec = FindingRecorder.init(allocator);
+    defer rec.deinit();
+    validateRecording(allocator, bytes, &rec) catch {};
+    const r = try ojpegRecordsIn(&rec);
+    try std.testing.expectEqual(@as(usize, 1), r.count);
+    try std.testing.expectEqual(@as(u16, 1), r.header);
+    try std.testing.expectEqual(@as(u16, 2), r.stage);
+    try std.testing.expectEqual(@as(u32, 0), r.chunks);
+    try std.testing.expectEqual(@as(u32, 0), r.decoded);
 }
