@@ -18,7 +18,7 @@
     # Zig's package cache before `zig build --fetch=all`. Never put
     # credentials in a derivation. Rev must match jpegz's zon pin.
     libjxlz-src = {
-      url = "git+ssh://git@github.com/pmarreck/libjxlz?ref=yolo&rev=93b29e86281ea4ba9c681f4879318c87e8a800a4";
+      url = "git+ssh://git@github.com/pmarreck/libjxlz?ref=yolo&rev=ff81ff23bc0f4fffc00850c68677d02f65913670";
       flake = false;
     };
     # Deterministic corruption generator for checks.corruption-coverage.
@@ -93,7 +93,7 @@
         #   1. Set zigDepsHash = pkgs.lib.fakeHash;
         #   2. Run `nix build` — it fails with the correct hash;
         #   3. Replace zigDepsHash with that printed hash.
-        zigDepsHash = "sha256-L96L1DFWKYpvR4wJTGr24W9NqHLlf0zS1YbiByAbngg=";
+        zigDepsHash = "sha256-7Mii0k1kANwUdTjKHC9AtN5JwCKNNJ9qDVH+V/7sas0=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "tiffz-zig-deps";
