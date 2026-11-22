@@ -5344,6 +5344,90 @@ test "geokey: ModelPixelScale and a GeoKeyDirectory without ModelTiepoint are fi
     try std.testing.expectEqual(@as(u16, tiffz.tags.model_tiepoint), std.mem.readInt(u16, run.records[1].payload_bytes[32..34], .little));
 }
 
+// The key-value rules (30-36) are judged against the edition the directory
+// declares (validate, 2026-11-22). The fixture declares GeoTIFF 1.0
+// (MinorRevision 0); its keys are 1024 (2, geographic), 1025, 2048 (4326),
+// 2049, 2054, 2057 and 2059.
+
+fn geoSetMinorRevision(bytes: []u8, keys: GeoKeys, minor: u16) void {
+    std.mem.writeInt(u16, geoShort(bytes, keys, 2), minor, .little);
+}
+
+fn geoSetValue(bytes: []u8, keys: GeoKeys, id: u16, value: u16) !void {
+    const k = try geoKeyIndex(bytes, keys, id);
+    std.mem.writeInt(u16, geoShort(bytes, keys, k + 3), value, .little);
+}
+
+test "geokey: GeodeticCRS 2000 is finding 21 rule 31 in a 1.0 directory and fails; in 1.1 it is an EPSG range and passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    const keys = try geoKeyDirectory(bytes);
+    try geoSetValue(bytes, keys, 2048, 2000);
+    {
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        const run = try geoRun(allocator, bytes, &recorder);
+        try std.testing.expect(run.malformed);
+        try std.testing.expectEqual(@as(usize, 1), run.records.len);
+        const r = run.records[0];
+        try expectGeo(r, .geokey_invalid, 31);
+        try std.testing.expectEqual(@as(?u64, keys.entry), r.byte_offset);
+        try std.testing.expectEqual(@as(u16, 2048), std.mem.readInt(u16, r.payload_bytes[22..24], .little));
+        const k = try geoKeyIndex(bytes, keys, 2048);
+        try std.testing.expectEqual(@as(u32, @intCast(k + 3)), std.mem.readInt(u32, r.payload_bytes[24..28], .little));
+        try std.testing.expectEqual(@as(u32, 2000), std.mem.readInt(u32, r.payload_bytes[28..32], .little));
+    }
+    geoSetMinorRevision(bytes, keys, 1);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const run = try geoRun(allocator, bytes, &recorder);
+    try std.testing.expect(!run.malformed);
+    try std.testing.expectEqual(@as(usize, 0), run.records.len);
+}
+
+test "geokey: a user-defined GeodeticCRS without a datum is finding 24 rule 35, and the file passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    const keys = try geoKeyDirectory(bytes);
+    try geoSetValue(bytes, keys, 2048, 32767);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const run = try geoRun(allocator, bytes, &recorder);
+    try std.testing.expect(!run.malformed);
+    try std.testing.expectEqual(@as(usize, 1), run.records.len);
+    try expectGeo(run.records[0], .geokey_deviation, 35);
+    try std.testing.expectEqual(@as(u16, 2048), std.mem.readInt(u16, run.records[0].payload_bytes[22..24], .little));
+    try std.testing.expectEqual(@as(u32, 2050), std.mem.readInt(u32, run.records[0].payload_bytes[28..32], .little));
+}
+
+test "geokey: no GTModelTypeGeoKey is finding 24 rule 33 in a 1.1 directory only, and the file passes" {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, "tests/fixtures/geotiff/gray16_geotiff.tif");
+    defer allocator.free(bytes);
+    const keys = try geoKeyDirectory(bytes);
+    // KeyID 1023 is outside Table E.1 and keeps the keys sorted.
+    const k = try geoKeyIndex(bytes, keys, 1024);
+    std.mem.writeInt(u16, geoShort(bytes, keys, k), 1023, .little);
+    {
+        var recorder = FindingRecorder.init(allocator);
+        defer recorder.deinit();
+        const run = try geoRun(allocator, bytes, &recorder);
+        try std.testing.expect(!run.malformed);
+        try std.testing.expectEqual(@as(usize, 0), run.records.len);
+    }
+    geoSetMinorRevision(bytes, keys, 1);
+    var recorder = FindingRecorder.init(allocator);
+    defer recorder.deinit();
+    const run = try geoRun(allocator, bytes, &recorder);
+    try std.testing.expect(!run.malformed);
+    try std.testing.expectEqual(@as(usize, 1), run.records.len);
+    try expectGeo(run.records[0], .geokey_deviation, 33);
+    try std.testing.expectEqual(tiffz.geokey_check.none_u16, std.mem.readInt(u16, run.records[0].payload_bytes[20..22], .little));
+    try std.testing.expectEqual(@as(u32, 1024), std.mem.readInt(u32, run.records[0].payload_bytes[28..32], .little));
+}
+
 // ---- Compression 34925 (LZMA), fixtures from tests/fixtures/lzma/gen.sh ----
 // libtiff 4.7.2 encodes them (`tiffcp -c lzma`: Delta then LZMA2 in an .xz
 // stream) and its decodes (`tiffcp -c none`) are the -none oracles, in the

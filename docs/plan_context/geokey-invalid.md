@@ -18,9 +18,8 @@ Source: OGC GeoTIFF 1.1, document 19-008r4. Code: `src/geokey_check.zig`.
   2026-11-04, Q1b). So rule 1 runs only where a GeoKeyDirectory is present,
   while rules 2 and 3, which concern the model tags themselves, run in any
   IFD (validate confirmed, 2026-11-07, question A).
-- Key values come later in a separate key-value batch: GTModelTypeGeoKey
-  presence, the CRS keys, Requirement 3.x codes and Requirement 6.2 (ASCII
-  params present only when an ASCII key exists).
+- Key values are rules 30-36 (below), judged against the edition the
+  directory declares.
 
 ## Rules
 
@@ -67,6 +66,46 @@ Notes on the rules:
   confirmed this on 2026-11-07 (question B): the model tags hold
   fixed-structure data, not key values.
 
+## Key values (rules 30-36)
+
+validate approved these on 2026-11-22. Rules 30-32 report under 21 and rules 33-36 under 24. Each rule is judged against the edition the directory declares:
+
+- KeyDirectoryVersion 1, KeyRevision 1 and MinorRevision 0 is GeoTIFF 1.0.
+- MinorRevision 1 is GeoTIFF 1.1.
+- Any other header (rules 10-12 fire) declares no edition, and only rule 30 runs.
+- A requirement that is new in 1.1 applies only to MinorRevision 1.
+
+The 1.0 text is the GeoTIFF 1.0 specification (revision 1.0, 1995, with the 2000 revision), sections 2.7 and 6.3.
+
+| Rule | Code | Name | 1.1 (19-008r4) | 1.0 | Anchor and fields |
+|---|---|---|---|---|---|
+| 30 | 21 | key_location_mismatch | 7.2, 8.3, 12.2, ... 31.2: each key's type | the same IDs and types (2.7) | key; element its location; observed the location; related the location its type requires (0 for SHORT) |
+| 31 | 21 | value_reserved | 7.4, 8.5, 12.3, 13.3, 14.3, 16.3, 18.3, 19.3, 21.3, 25.3, 26.3, 27.4 | the "Reserved" rows of 6.3 | key; element the SHORT holding the value; observed the value |
+| 32 | 21 | vertical_units_user_defined | 16.9 | none (1.0 allows a user-defined unit) | as 31 |
+| 33 | 24 | model_type_absent | 8.1 | none | no key; observed 1024 |
+| 34 | 24 | crs_key_absent | 8.7, 8.8, 8.9 | none | key GTModelType; element its value; observed the absent KeyID |
+| 35 | 24 | user_defined_incomplete | 8.10, 12.5, 13.5, 14.5, 16.6-16.8, 18.5, 19.5, 21.5, 25.5, 26.5, 27.5 | the "GeoKey Requirements for User-Defined" lists of 2.7 | key the 32767 key; element its value; observed the absent KeyID (the first of an either-or pair) |
+| 36 | 24 | ascii_params_unreferenced | 6.2 | none (1.0 only says the tag holds the ASCII keys) | GeoAsciiParams entry; no key |
+
+Notes:
+
+- **Rule 31 in 1.0.** 1.0's ranges differ from 1.1's:
+  - its "Obsolete" rows are not faults (validate, 2026-11-22);
+  - its vertical CS "Reserved EPSG" row (5200-5999) is an allocation to EPSG, which GDAL writes (EGM96 height, 5773);
+  - its PCS and Projection tables reserve nothing.
+
+  0 (undefined, Requirement 3.1) and 32767 (user-defined, 3.2) are never reserved. Private values (32768 and up) are never faults.
+- **Rule 35 in 1.0.** Conditional entries ("GeogAngularUnitsGeoKey (if not degrees)", "GeogPrimeMeridianGeoKey (if not Greenwich)") are not checked. 1.0 lists nothing for a user-defined prime meridian, linear unit or vertical key. 1.1's 27.5 names no per-method parameter set, so only its citation is checked. GDAL's placement of a user-defined CRS's citation in GTCitationGeoKey stays WARN (validate, 2026-11-22: the yardstick is the spec).
+- **Not rules:**
+  - EPSG membership of values in 1024-32766, which would need a registry snapshot;
+  - 3.1 and 3.2 themselves;
+  - 1.0's "any vertical coordinate systems ... must be defined using the VerticalCitationGeoKey", which is outside the approved rules.
+- **Counted keys.** Only the first entry of a KeyID counts (a duplicate is rule 15). A SHORT value is read inline (location 0) or from the directory's own parameters (location 34735) when in bounds; any other location leaves rules 31-35 unevaluated for that key.
+
+### Key-value survey
+
+An independent Perl reader of the raw bytes, kept in scratch, evaluates the same rules on the 263-file pinned list. There are 110 GeoKeyDirectory IFDs in 106 files: 101 declare 1.0, 7 declare 1.1, and 2 declare neither. Under the edition ruling, 10 files gain 17 rule-35 records, all in 1.0 GDAL autotest files: a ProjectedCRS or Projection of 32767 without PCSCitationGeoKey. No other rule fires. Without the edition ruling (1.1's rules on every directory), the counts were rule 35: 20, rule 33: 6, rule 34: 2 and rule 36: 1, in 17 files.
+
 ## Payload
 
 36 bytes, little-endian:
@@ -110,3 +149,16 @@ element size.
 - An independent oracle written from 19-008r4: a Perl reader of the raw
   bytes that walks the chain and SubIFDs, kept in scratch. It is compared
   with tiffz's records file by file.
+- Rules 30-36:
+  - **Unit tests** cover each rule firing and not firing, by edition. They include 1.0's obsolete and "Reserved EPSG" rows, 0 and private values, either-or pairs, and a value held in the directory's own parameters.
+  - **End-to-end tests** on the fixture (a 1.0 directory):
+    - GeodeticCRS 2000 is rule 31 and the file fails; declared 1.1, the same value passes.
+    - GeodeticCRS 32767 without a datum is rule 35 and the file passes.
+    - GTModelType renamed is rule 33 only when the directory declares 1.1.
+  - **Five controlled reds**, each failing its targeted tests:
+    - rule 31 reported as a deviation;
+    - rule 35 reported as corrupt;
+    - every directory judged as 1.1;
+    - 1.0's vertical "Reserved EPSG" row treated as reserved;
+    - an either-or pair needing both keys.
+  - **Corpus:** tiffz's records on the 263-file list are identical, record for record, to the Perl survey.
