@@ -59,8 +59,44 @@ pub fn main(init: std.process.Init) !u8 {
     var case_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer case_arena.deinit();
     var false_alarms: u64 = 0;
+    var misplaced: u64 = 0;
 
-    if (args.replay_floors) {
+    if (args.entry_fault) |fault| {
+        // Deterministic: the profile has no draw, so master and round are fixed.
+        const master = [_]u8{0} ** 32;
+        for (seeds) |*seed| {
+            try out.print("entry\t{s}\t{d}\t{s}\t0x{x}\t", .{ seed.path, fault.tag, @tagName(fault.field), fault.xor });
+            const site = driver.findEntry(seed.bytes, fault.tag) orelse {
+                try out.writeAll("absent\n");
+                continue;
+            };
+            try out.flush();
+            _ = case_arena.reset(.retain_capacity);
+            const text = try driver.entryProfile(case_arena.allocator(), seed.bytes, site, fault);
+            var entry_loader: driver.cr.profiles.Loader = .{ .arena = case_arena.allocator() };
+            const profile = try entry_loader.loadText(text);
+            const r = try driver.runCase(case_arena.allocator(), init.gpa, profile, seed, master, 0);
+            const sp = site.span(fault.field);
+            const lo = site.offset + sp[0];
+            const placed = if (r.changed) |c| c[0] >= lo and c[1] <= lo + sp[1] else false;
+            if (!placed) misplaced += 1;
+            if (r.outcome == .detect and r.bound == .free) false_alarms += 1;
+            try out.print("{s}\t{s}\tadded=", .{ if (placed) @tagName(r.outcome) else "misplaced", @tagName(r.bound) });
+            // The case's codes minus the seed's (both sorted): what the fault added.
+            var j: usize = 0;
+            var first = true;
+            for (r.codes) |code| {
+                while (j < seed.key.codes.len and seed.key.codes[j] < code) j += 1;
+                if (j < seed.key.codes.len and seed.key.codes[j] == code) {
+                    j += 1;
+                    continue;
+                }
+                try out.print("{s}{d}", .{ if (first) "" else ",", code });
+                first = false;
+            }
+            try out.writeAll("\n");
+        }
+    } else if (args.replay_floors) {
         // The floors plan, as the parity test replays it.
         const master = try driver.parseMaster(floors.master);
         const classes = [_][]const u8{ "uncompressed", "unchecked", "checksummed", "unknown" };
@@ -122,6 +158,11 @@ pub fn main(init: std.process.Init) !u8 {
         });
     }
     try out.flush();
+    if (misplaced != 0) {
+        try stderr.print("tiffz-explore: {d} entry fault(s) changed bytes outside the targeted field\n", .{misplaced});
+        try stderr.flush();
+        return 1;
+    }
     if (false_alarms != 0) {
         try stderr.print("tiffz-explore: {d} false alarm(s): tiffz rejected a case whose every changed byte is an uncompressed sample\n", .{false_alarms});
         try stderr.flush();

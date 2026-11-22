@@ -178,7 +178,15 @@ pub fn bound(layout: ?*const Layout, seed: []const u8, case: []const u8) Bound {
     return .free;
 }
 
-pub const Result = struct { outcome: Outcome, bound: Bound };
+pub const Result = struct {
+    outcome: Outcome,
+    bound: Bound,
+    /// The case's finding codes other than 16, sorted (in `arena`).
+    codes: []const i32 = &.{},
+    /// The first changed byte and one past the last, when the length is
+    /// unchanged and some byte changed.
+    changed: ?[2]usize = null,
+};
 
 pub fn loadSeed(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !Seed {
     const bytes = try loadFile(io, allocator, path);
@@ -230,7 +238,7 @@ pub fn runCase(arena: std.mem.Allocator, allocator: std.mem.Allocator, profile: 
     const v = try validate(allocator, view.source());
     defer allocator.free(v.key.codes);
     const outcome = classify(v, seed.key);
-    if (seed.layout == null) return .{ .outcome = outcome, .bound = .unknown };
+    const codes = try arena.dupe(i32, v.key.codes);
     // The case's bytes, read through the same view tiffz read.
     const case_bytes = try arena.alloc(u8, @intCast(view.view.length()));
     var got: usize = 0;
@@ -239,7 +247,14 @@ pub fn runCase(arena: std.mem.Allocator, allocator: std.mem.Allocator, profile: 
         if (n == 0) return error.ShortView;
         got += n;
     }
-    return .{ .outcome = outcome, .bound = bound(seed.layout, seed.bytes, case_bytes) };
+    var changed: ?[2]usize = null;
+    if (case_bytes.len == seed.bytes.len) {
+        for (seed.bytes, case_bytes, 0..) |s, c, i| {
+            if (s == c) continue;
+            changed = if (changed) |r| .{ r[0], i + 1 } else .{ i, i + 1 };
+        }
+    }
+    return .{ .outcome = outcome, .bound = bound(seed.layout, seed.bytes, case_bytes), .codes = codes, .changed = changed };
 }
 
 pub const Floors = struct {
@@ -311,12 +326,15 @@ pub const Args = struct {
     /// Replay the floors plan (every profile, the floors' master) instead
     /// of a master and profile.
     replay_floors: bool = false,
+    /// Corrupt one IFD entry field per seed instead of drawing a profile.
+    entry_fault: ?EntryFault = null,
 };
 
 pub const usage =
     \\usage: tiffz-explore --master SEED [--profile NAME] [--first-round R]
     \\                     [--rounds N] [--floors PATH] [--layouts PATH]
     \\       tiffz-explore --replay-floors [--floors PATH] [--layouts PATH]
+    \\       tiffz-explore --entry-fault TAG:FIELD:XOR [--floors PATH] [--layouts PATH]
     \\
     \\Draws N corruption_reader cases in-process, round R onward, from the
     \\seeds a floors file lists (default tests/corruption_coverage_floors,
@@ -334,6 +352,15 @@ pub const usage =
     \\plan (batch k draws per cases from seed k mod SEEDS at round k*per)
     \\under the floors' master and prints "class PROFILE CLASS decisive=N
     \\detect=K free=F false_alarm=A" per profile and seed class.
+    \\
+    \\--entry-fault simulates a field-level writer bug: in each seed, the
+    \\first IFD entry for TAG gets FIELD (tag, type, count or value) XORed
+    \\with XOR, read as an integer in the file's byte order (262:tag:0x8000
+    \\renames PhotometricInterpretation to a private tag). It prints "entry
+    \\SEED TAG FIELD XOR OUTCOME BOUND added=CODES" per seed (the codes the
+    \\case has and the seed lacks), "absent" where
+    \\the seed has no such entry, and "misplaced" (exit 1) if a byte outside
+    \\that field changed.
     \\Exit 0 when every case ran without a false alarm, 1 on an error or a
     \\false alarm, 2 on a usage error.
     \\
@@ -367,11 +394,110 @@ pub fn parseArgs(argv: []const []const u8) !Args {
             out.floors = value;
         } else if (std.mem.eql(u8, flag, "--layouts")) {
             out.layouts = value;
+        } else if (std.mem.eql(u8, flag, "--entry-fault")) {
+            out.entry_fault = try EntryFault.parse(value);
         } else return error.Usage;
     }
-    if (out.replay_floors) {
+    if (out.replay_floors and out.entry_fault != null) return error.Usage;
+    if (out.replay_floors or out.entry_fault != null) {
         if (master != null) return error.Usage;
     } else out.master = master orelse return error.Usage;
     _ = std.math.add(u64, out.first_round, out.rounds) catch return error.Usage;
     return out;
+}
+
+/// An IFD entry field, for `--entry-fault`.
+pub const Field = enum { tag, type, count, value };
+
+/// `TAG:FIELD:XOR`: XOR one field of the first IFD entry for TAG with XOR,
+/// read as an integer in the file's byte order (so `262:tag:0x8000` renames
+/// PhotometricInterpretation to a private tag in either byte order).
+pub const EntryFault = struct {
+    tag: u16,
+    field: Field,
+    xor: u64,
+
+    pub fn parse(text: []const u8) !EntryFault {
+        var parts = std.mem.splitScalar(u8, text, ':');
+        const tag = std.fmt.parseInt(u16, parts.next() orelse return error.Usage, 0) catch return error.Usage;
+        const field = std.meta.stringToEnum(Field, parts.next() orelse return error.Usage) orelse return error.Usage;
+        const xor = std.fmt.parseInt(u64, parts.next() orelse return error.Usage, 0) catch return error.Usage;
+        if (parts.next() != null or xor == 0) return error.Usage;
+        return .{ .tag = tag, .field = field, .xor = xor };
+    }
+};
+
+/// Where one IFD entry sits, found by a walk of the IFD chain written for
+/// this purpose (TIFF 6.0 section 2, BigTIFF), independent of tiffz's
+/// parser. It only aims the corruption; tiffz's verdict is still the
+/// outcome.
+pub const EntrySite = struct {
+    offset: usize,
+    big_endian: bool,
+    bigtiff: bool,
+
+    pub fn width(self: EntrySite) usize {
+        return if (self.bigtiff) 20 else 12;
+    }
+
+    /// The field's offset and length within the entry.
+    pub fn span(self: EntrySite, field: Field) [2]usize {
+        return switch (field) {
+            .tag => .{ 0, 2 },
+            .type => .{ 2, 2 },
+            .count => if (self.bigtiff) .{ 4, 8 } else .{ 4, 4 },
+            .value => if (self.bigtiff) .{ 12, 8 } else .{ 8, 4 },
+        };
+    }
+};
+
+pub fn findEntry(bytes: []const u8, tag: u16) ?EntrySite {
+    if (bytes.len < 8) return null;
+    const be = if (std.mem.eql(u8, bytes[0..2], "MM")) true else if (std.mem.eql(u8, bytes[0..2], "II")) false else return null;
+    const endian: std.builtin.Endian = if (be) .big else .little;
+    const magic = std.mem.readInt(u16, bytes[2..4], endian);
+    const big = switch (magic) {
+        42 => false,
+        43 => true,
+        else => return null,
+    };
+    if (big and bytes.len < 16) return null;
+    var ifd: u64 = if (big) std.mem.readInt(u64, bytes[8..16], endian) else std.mem.readInt(u32, bytes[4..8], endian);
+    var hops: usize = 0;
+    while (ifd != 0 and hops < 256) : (hops += 1) {
+        const at = std.math.cast(usize, ifd) orelse return null;
+        const count_len: usize = if (big) 8 else 2;
+        if (at > bytes.len or bytes.len - at < count_len) return null;
+        const n = if (big) std.mem.readInt(u64, bytes[at..][0..8], endian) else std.mem.readInt(u16, bytes[at..][0..2], endian);
+        const w: usize = if (big) 20 else 12;
+        const first = at + count_len;
+        const n_entries = std.math.cast(usize, n) orelse return null;
+        if (n_entries > (bytes.len - first) / w) return null;
+        for (0..n_entries) |i| {
+            const e = first + i * w;
+            if (std.mem.readInt(u16, bytes[e..][0..2], endian) == tag) return .{ .offset = e, .big_endian = be, .bigtiff = big };
+        }
+        const next = first + n_entries * w;
+        const next_len: usize = if (big) 8 else 4;
+        if (bytes.len - next < next_len) return null;
+        ifd = if (big) std.mem.readInt(u64, bytes[next..][0..8], endian) else std.mem.readInt(u32, bytes[next..][0..4], endian);
+    }
+    return null;
+}
+
+/// A corruption_reader profile that XORs `fault.field` of the entry at
+/// `site`: a pattern zone on the entry's own bytes (first match), then an
+/// xor with the value encoded in the field's width and the file's order.
+pub fn entryProfile(arena: std.mem.Allocator, bytes: []const u8, site: EntrySite, fault: EntryFault) ![]const u8 {
+    const sp = site.span(fault.field);
+    if (sp[1] < 8 and fault.xor >> @intCast(sp[1] * 8) != 0) return error.MaskTooWide;
+    var mask: [8]u8 = undefined;
+    for (0..sp[1]) |i| {
+        const shift: u6 = @intCast(8 * (if (site.big_endian) sp[1] - 1 - i else i));
+        mask[i] = @truncate(fault.xor >> shift);
+    }
+    const entry = bytes[site.offset..][0..site.width()];
+    return std.fmt.allocPrint(arena,
+        \\{{ "profile": 1, "name": "entry_fault", "root": {{ "chain": [ {{ "kind": "pattern", "unit": "bytes", "trigger_pattern_bytes": "{x}", "occurrence": "first", "offset": {d}, "length": {d} }}, {{ "op": "xor", "mask": "{x}" }} ] }} }}
+    , .{ entry, sp[0], sp[1], mask[0..sp[1]] });
 }

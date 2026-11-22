@@ -60,7 +60,24 @@ A detected free case is counted as a false alarm, and the run exits 1.
 
 First run: all 12 profile and class counts match, for example sniper uncompressed 189 decisive, 22 detected, 156 free, no false alarm.
 
+## Field-level writer faults
+
+`tiffz-explore --entry-fault TAG:FIELD:XOR` simulates a writer that got one field of one IFD entry wrong. FIELD is tag, type, count or value. XOR is read as an integer in the file's byte order, so `262:tag:0x8000` renames PhotometricInterpretation to a private tag in II and MM files alike.
+
+In each seed:
+- A small IFD-chain walker, written apart from tiffz's parser, finds the first entry for TAG.
+- The entry's whole encoding (12 bytes, or 20 in BigTIFF) becomes the trigger of a corruption_reader pattern zone (corruption-reader 0.9.0), with an `xor` event on that field.
+- One line reports the outcome, the bound and the codes the fault added beyond the seed's. A seed without the entry is `absent`.
+- A check confirms that only the targeted field changed, or the case is `misplaced` and the run exits 1.
+
+The explore-parity derivation runs `tests/explore/entry-check.sh` on two faults whose findings follow from the specification:
+- PhotometricInterpretation renamed to a private tag: a required field is missing (finding 20), and the tag order breaks (17).
+- Compression written as LONG: the wrong type (finding 18).
+
+Every one of the 19 seeds detects both.
+
+The mode is for KNOWN_DEFECT exemplars and their near-match controls: change one field and read exactly which findings it adds. Exemplars written to disk still come from `corruption-reader` itself or from a fixture script with provenance.
+
 ## Out of scope
 
-- Pattern-zone profiles with xor masks can simulate field-level writer bugs (type, count, value, a tag renamed to a private ID) for KNOWN_DEFECT exemplars and near-match controls. That is the next step, using the same driver with custom profile text through `Loader.loadText`.
 - Structural rewrites (adding or dropping entries, reordering) stay out of scope. They need a plugin system or a tiffz-side rewrite pass, which is the owner's call.

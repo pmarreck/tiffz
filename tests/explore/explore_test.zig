@@ -156,3 +156,79 @@ test "tiffz-explore arguments: --replay-floors takes no master, --layouts takes 
     try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--replay-floors", "--master", "1" }));
     try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--master", "1", "--layouts" }));
 }
+
+test "entry faults: TAG:FIELD:XOR parses, and zero or malformed values are usage errors" {
+    const f = try driver.EntryFault.parse("262:tag:0x8000");
+    try std.testing.expectEqual(@as(u16, 262), f.tag);
+    try std.testing.expectEqual(driver.Field.tag, f.field);
+    try std.testing.expectEqual(@as(u64, 0x8000), f.xor);
+    try std.testing.expectEqual(driver.Field.count, (try driver.EntryFault.parse("0x103:count:1")).field);
+    for ([_][]const u8{ "262:tag:0", "262:tag", "262:width:1", "70000:tag:1", "262:tag:1:2", "x:tag:1" }) |bad| {
+        try std.testing.expectError(error.Usage, driver.EntryFault.parse(bad));
+    }
+    const a = try driver.parseArgs(&.{ "--entry-fault", "259:type:7" });
+    try std.testing.expectEqual(@as(u16, 259), a.entry_fault.?.tag);
+    try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--entry-fault", "259:type:7", "--master", "1" }));
+    try std.testing.expectError(error.Usage, driver.parseArgs(&.{ "--entry-fault", "259:type:7", "--replay-floors" }));
+}
+
+test "entry faults: the IFD walk finds the first entry for a tag in II, MM and BigTIFF files" {
+    // II classic: IFD0 at 8 with tags 256 and 262, next IFD at 38 with 259.
+    const ii = [_]u8{ 'I', 'I', 42, 0, 8, 0, 0, 0 } ++
+        [_]u8{ 2, 0 } ++
+        [_]u8{ 0, 1, 3, 0, 1, 0, 0, 0, 4, 0, 0, 0 } ++
+        [_]u8{ 6, 1, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0 } ++
+        [_]u8{ 38, 0, 0, 0 } ++
+        [_]u8{ 1, 0 } ++
+        [_]u8{ 3, 1, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0 } ++
+        [_]u8{ 0, 0, 0, 0 };
+    try std.testing.expectEqual(@as(usize, 22), driver.findEntry(&ii, 262).?.offset);
+    try std.testing.expectEqual(@as(usize, 40), driver.findEntry(&ii, 259).?.offset);
+    try std.testing.expect(driver.findEntry(&ii, 273) == null);
+    // A next pointer past the end stops the walk without a read out of range.
+    var cut = ii;
+    cut[34] = 0xff;
+    try std.testing.expect(driver.findEntry(&cut, 259) == null);
+    // MM classic, one entry.
+    const mm = [_]u8{ 'M', 'M', 0, 42, 0, 0, 0, 8, 0, 1, 1, 6, 0, 3, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0 };
+    const s = driver.findEntry(&mm, 262).?;
+    try std.testing.expect(s.big_endian and !s.bigtiff and s.offset == 10);
+    // BigTIFF II: IFD at 16, 8-byte count, 20-byte entries.
+    const big = [_]u8{ 'I', 'I', 43, 0, 8, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0 } ++
+        [_]u8{ 1, 0, 0, 0, 0, 0, 0, 0 } ++
+        [_]u8{ 6, 1, 3, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0 } ++
+        [_]u8{0} ** 8;
+    const b = driver.findEntry(&big, 262).?;
+    try std.testing.expect(b.bigtiff and b.offset == 24 and b.width() == 20);
+    try std.testing.expectEqual([2]usize{ 12, 8 }, b.span(.value));
+}
+
+test "entry faults: the profile targets the entry's own bytes and encodes XOR in the file's order" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mm = [_]u8{ 'M', 'M', 0, 42, 0, 0, 0, 8, 0, 1, 1, 6, 0, 3, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0 };
+    const site = driver.findEntry(&mm, 262).?;
+    const text = try driver.entryProfile(a, &mm, site, try driver.EntryFault.parse("262:tag:0x8000"));
+    try std.testing.expectEqualStrings(
+        \\{ "profile": 1, "name": "entry_fault", "root": { "chain": [ { "kind": "pattern", "unit": "bytes", "trigger_pattern_bytes": "010600030000000100010000", "occurrence": "first", "offset": 0, "length": 2 }, { "op": "xor", "mask": "8000" } ] } }
+    , text);
+    const ii = [_]u8{ 'I', 'I', 42, 0, 8, 0, 0, 0, 1, 0, 6, 1, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 };
+    const t2 = try driver.entryProfile(a, &ii, driver.findEntry(&ii, 262).?, try driver.EntryFault.parse("262:count:0x102"));
+    try std.testing.expect(std.mem.indexOf(u8, t2, "\"offset\": 4, \"length\": 4 }, { \"op\": \"xor\", \"mask\": \"02010000\" }") != null);
+    try std.testing.expectError(error.MaskTooWide, driver.entryProfile(a, &ii, driver.findEntry(&ii, 262).?, try driver.EntryFault.parse("262:type:0x10000")));
+    // The profile loads, and the case it draws changes only the tag field.
+    var loader: driver.cr.profiles.Loader = .{ .arena = a };
+    const profile = try loader.loadText(text);
+    const src_bytes = try a.create([]const u8);
+    src_bytes.* = &mm;
+    const src = driver.cr.source.Source.fromSlice(src_bytes);
+    const case = try driver.cr.api.drawCase(a, profile, src, [_]u8{0} ** 32, 0);
+    try std.testing.expect(case.case.noop == null);
+    const view = try driver.cr.api.view(a, case, src);
+    var out: [mm.len]u8 = undefined;
+    try std.testing.expectEqual(mm.len, try view.readAt(0, &out));
+    var want = mm;
+    want[10] ^= 0x80;
+    try std.testing.expectEqualSlices(u8, &want, &out);
+}

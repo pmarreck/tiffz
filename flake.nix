@@ -290,7 +290,9 @@
         # error), then checked against the pinned floors on two seeds
         # (tests/explore/exe-floors-check.sh) and, replaying the whole floors
         # plan with the campaign's libtiff layouts, against its per-class
-        # counts (tests/explore/replay-check.sh).
+        # counts (tests/explore/replay-check.sh); and two field-level writer
+        # faults must raise the findings the specification implies
+        # (tests/explore/entry-check.sh).
         explorePkg = mkZigCheck {
           pname = "tiffz-explore";
           step = "explore explore-exe";
@@ -304,6 +306,8 @@
             [ "$rc" = 2 ] || { echo "tiffz-explore without --master exited $rc, want 2"; exit 1; }
             bash tests/explore/exe-floors-check.sh $out/bin/tiffz-explore tests/corruption_coverage_floors 5 6
             bash tests/explore/replay-check.sh $out/bin/tiffz-explore ${corruptionCoverage}/layouts ${corruptionCoverage}/report tests/corruption_coverage_floors
+            bash tests/explore/entry-check.sh $out/bin/tiffz-explore tests/corruption_coverage_floors 262:tag:0x8000 20
+            bash tests/explore/entry-check.sh $out/bin/tiffz-explore tests/corruption_coverage_floors 259:type:7 18
             cat $smoke
           '';
           passed = "explore parity passed; tiffz-explore smoke passed";
