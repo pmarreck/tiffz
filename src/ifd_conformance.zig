@@ -1665,6 +1665,11 @@ pub const ShouldRule = enum(u16) {
     predictor_3_sample_format = 17,
     /// The first construct newer than DNGVersion itself.
     newer_than_dng_version = 18,
+    /// FillOrder 2 where BitsPerSample is not 1 or Compression is not 1-4:
+    /// "FillOrder = 2 should be used only when BitsPerSample = 1 and the data
+    /// is either uncompressed or compressed using CCITT 1D or 2D compression"
+    /// (TIFF 6.0 p. 32). Any TIFF, not only DNG.
+    fill_order_2 = 19,
 };
 
 /// One should-row record. `entry_index` null anchors it on the IFD.
@@ -1756,7 +1761,18 @@ pub fn checkShould(
     dng: ?Dng,
     out: *std.ArrayListUnmanaged(Should),
 ) error{OutOfMemory}!void {
-    // Rule 17 holds for any TIFF.
+    // Rules 19 and 17 hold for any TIFF, in entry order (FillOrder 266 before
+    // Predictor 317).
+    if (indexOf(dir, tags.fill_order)) |f| {
+        const bilevel = uniformValue(dir, tags.bits_per_sample, endian) == 1;
+        const ccitt_or_none = switch (scalar(dir, tags.compression, endian) orelse 1) {
+            1, 2, 3, 4 => true,
+            else => false,
+        };
+        if (scalar(dir, tags.fill_order, endian) == 2 and !(bilevel and ccitt_or_none)) {
+            try out.append(allocator, .{ .entry_index = @intCast(f), .tag = tags.fill_order, .rule = .fill_order_2 });
+        }
+    }
     if (indexOf(dir, tags.predictor)) |p| {
         if (scalar(dir, tags.predictor, endian) == 3 and uniformValue(dir, tags.sample_format, endian) != 3) {
             try out.append(allocator, .{ .entry_index = @intCast(p), .tag = tags.predictor, .rule = .predictor_3_sample_format });
@@ -3362,6 +3378,31 @@ test "should rule 17: Predictor 3 with integer samples, in any TIFF" {
     try expectShould(&p3_float, null, 0, null, &.{});
     var p2 = [_]Entry{inline16(tags.predictor, .short, 1, 2)};
     try expectShould(&p2, null, 0, null, &.{});
+}
+
+test "should rule 19: FillOrder 2 off 1-bit uncompressed or CCITT data, in any TIFF" {
+    // Fires on the FillOrder entry: 8-bit samples, LZW data, or both.
+    var bps8 = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 8), inline16(tags.fill_order, .short, 1, 2) };
+    try expectShould(&bps8, null, 0, null, &.{.{ .entry_index = 1, .tag = tags.fill_order, .rule = .fill_order_2 }});
+    var lzw = [_]Entry{ inline16(tags.compression, .short, 1, 5), inline16(tags.fill_order, .short, 1, 2) };
+    try expectShould(&lzw, null, 0, null, &.{.{ .entry_index = 1, .tag = tags.fill_order, .rule = .fill_order_2 }});
+    var lzw_bps1 = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 1), inline16(tags.compression, .short, 1, 5), inline16(tags.fill_order, .short, 1, 2) };
+    try expectShould(&lzw_bps1, null, 0, null, &.{.{ .entry_index = 2, .tag = tags.fill_order, .rule = .fill_order_2 }});
+    // Before rule 17 on Predictor, in entry order.
+    var both = [_]Entry{ inline16(tags.compression, .short, 1, 8), inline16(tags.fill_order, .short, 1, 2), inline16(tags.predictor, .short, 1, 3) };
+    try expectShould(&both, null, 0, null, &.{
+        .{ .entry_index = 1, .tag = tags.fill_order, .rule = .fill_order_2 },
+        .{ .entry_index = 2, .tag = tags.predictor, .rule = .predictor_3_sample_format },
+    });
+    // Silent: 1-bit (also by default) uncompressed or CCITT 2-4, FillOrder 1.
+    var none = [_]Entry{inline16(tags.fill_order, .short, 1, 2)};
+    try expectShould(&none, null, 0, null, &.{});
+    for ([_]u32{ 1, 2, 3, 4 }) |c| {
+        var ccitt = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 1), inline16(tags.compression, .short, 1, c), inline16(tags.fill_order, .short, 1, 2) };
+        try expectShould(&ccitt, null, 0, null, &.{});
+    }
+    var fo1 = [_]Entry{ inline16(tags.bits_per_sample, .short, 1, 8), inline16(tags.compression, .short, 1, 5), inline16(tags.fill_order, .short, 1, 1) };
+    try expectShould(&fo1, null, 0, null, &.{});
 }
 
 test "should rule 1: a NewSubFileType DNG does not define" {

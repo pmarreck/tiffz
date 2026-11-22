@@ -5350,12 +5350,15 @@ fn expectChunksMatchOracle(coded_path: []const u8, oracle_path: []const u8, tile
     var ws = tiffz.Workspace.init(allocator);
     defer ws.deinit();
     try dec_coded.validateAllStripsAndTiles(&ws);
-    var got: [4096]u8 = undefined;
-    var want: [4096]u8 = undefined;
+    // 256 KiB holds the largest chunk, fax2d.tif's one 1728x1082 1-bit strip.
+    const got = try allocator.alloc(u8, 1 << 18);
+    defer allocator.free(got);
+    const want = try allocator.alloc(u8, 1 << 18);
+    defer allocator.free(want);
     for (0..chunks) |i| {
         const k: u32 = @intCast(i);
-        const n = if (tiled) try dec_coded.decodeTile(0, k, &got, &ws) else try dec_coded.decodeStrip(0, k, &got, &ws);
-        const m = if (tiled) try dec_oracle.decodeTile(0, k, &want, &ws) else try dec_oracle.decodeStrip(0, k, &want, &ws);
+        const n = if (tiled) try dec_coded.decodeTile(0, k, got, &ws) else try dec_coded.decodeStrip(0, k, got, &ws);
+        const m = if (tiled) try dec_oracle.decodeTile(0, k, want, &ws) else try dec_oracle.decodeStrip(0, k, want, &ws);
         try std.testing.expect(n > 0);
         try std.testing.expectEqualSlices(u8, want[0..m], got[0..n]);
     }
@@ -5448,4 +5451,55 @@ test "Compression 50001 (WebP): an 8-bit WebP strip relabeled BitsPerSample 16 i
     var ws = tiffz.Workspace.init(allocator);
     defer ws.deinit();
     try std.testing.expectError(error.Malformed, dec.decodeStrip(0, 0, &dest, &ws));
+}
+
+// ---- FillOrder 2 outside CCITT, fixtures from tests/fixtures/fillorder/gen.sh ----
+// libtiff stores every coded byte bit-reversed under FillOrder 2 and reverses
+// it again before any codec but CCITT, JPEG and JBIG; tiffz reads them the
+// same way (validate, 2026-11-07). TIFF 6.0 p. 32 says FillOrder 2 "should be
+// used only when BitsPerSample = 1 and the data is either uncompressed or
+// compressed using CCITT 1D or 2D compression", so anything else carries one
+// should-row, finding 22 rule 19, on the FillOrder entry.
+
+/// Validate `path` (it must pass) and count its finding 22 rule 19 records,
+/// each anchored on FillOrder (266) with verdict valid.
+fn fillOrderRows(path: []const u8) !usize {
+    const allocator = std.testing.allocator;
+    const bytes = try loadFile(allocator, path);
+    defer allocator.free(bytes);
+    var rec = FindingRecorder.init(allocator);
+    defer rec.deinit();
+    try validateRecording(allocator, bytes, &rec);
+    var rows: usize = 0;
+    for (rec.findings.items) |f| {
+        if (f.source != .tiffz or f.finding_code != @intFromEnum(tiffz.findings.InfoFinding.should_deviation)) continue;
+        if (std.mem.readInt(u16, f.payload_bytes[18..20], .little) != 19) continue;
+        try std.testing.expectEqual(tiffz.findings.Verdict.valid, f.verdict);
+        try std.testing.expectEqual(@as(u16, 266), std.mem.readInt(u16, f.payload_bytes[16..18], .little));
+        rows += 1;
+    }
+    return rows;
+}
+
+test "FillOrder 2: libtiff's LZW, Deflate, ZSTD and LZMA copies of fax2d.tif decode to its FillOrder 1 copy, each with one rule 19 record" {
+    const oracle = "tests/fixtures/fillorder/fax2d-msb-lzw.tif";
+    for ([_][]const u8{
+        "tests/fixtures/fillorder/fax2d-lzw.tif",
+        "tests/fixtures/fillorder/fax2d-zip.tif",
+        "tests/fixtures/fillorder/fax2d-zstd.tif",
+        "tests/fixtures/fillorder/fax2d-lzma.tif",
+    }) |path| {
+        try expectChunksMatchOracle(path, oracle, false, 1);
+        try std.testing.expectEqual(@as(usize, 1), try fillOrderRows(path));
+    }
+    // The CCITT original and the FillOrder 1 oracle carry none.
+    try std.testing.expectEqual(@as(usize, 0), try fillOrderRows("tests/fixtures/ccitt_g3/fax2d.tif"));
+    try std.testing.expectEqual(@as(usize, 0), try fillOrderRows(oracle));
+}
+
+test "FillOrder 2: uncompressed data is bit-reversed too; 1-bit carries no rule 19 record, 8-bit carries one" {
+    try expectChunksMatchOracle("tests/fixtures/fillorder/crop-fo2.tif", "tests/fixtures/fillorder/crop-msb.tif", false, 1);
+    try std.testing.expectEqual(@as(usize, 0), try fillOrderRows("tests/fixtures/fillorder/crop-fo2.tif"));
+    try expectChunksMatchOracle("tests/fixtures/fillorder/cmyk-fo2.tif", "tests/fixtures/photometric/cmyk.tif", false, 1);
+    try std.testing.expectEqual(@as(usize, 1), try fillOrderRows("tests/fixtures/fillorder/cmyk-fo2.tif"));
 }

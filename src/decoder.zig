@@ -1297,6 +1297,7 @@ pub const Decoder = struct {
         const compressed = workspace.ensureScratch(byte_count) catch return error.OutOfMemory;
         const got = self.source.readAt(compressed, offset) catch |err| return parser.source.preserveReadError(err);
         if (got < byte_count) return error.SourceShortRead;
+        try self.applyFillOrder(dir, compression, compressed[0..byte_count]);
 
         const src = compressed[0..byte_count];
         const accepted = compatibleLzwExtent(lzwz.Profile.tiff6(), src, ext) catch |first_err| switch (first_err) {
@@ -1766,6 +1767,68 @@ pub const Decoder = struct {
     /// Shared codec dispatch. Reads Compression from dir, then
     /// dispatches to the matching codec. The ChunkExtent carries the
     /// per-chunk row/width (only used by CCITT).
+    /// What FillOrder 2 means for a supported codec's coded bytes, as libtiff
+    /// 4.7.2 reads them: it bit-reverses every raw strip or tile before the
+    /// codec unless the codec sets TIFF_NOBITREV (tif_fax3.c, tif_jpeg.c,
+    /// tif_jbig.c). Uncompressed data is reversed too.
+    pub const FillOrderHandling = enum {
+        /// The coded bytes are bit-reversed before the codec runs.
+        reverse_coded_bytes,
+        /// The CCITT decoders read FillOrder themselves.
+        codec_reads_fill_order,
+        /// Byte-oriented JPEG marker streams are never reversed. libtiff has
+        /// no JPEG XL codec; a reversed marker stream cannot decode, so it
+        /// is treated as JPEG.
+        never_reversed,
+    };
+
+    pub fn fillOrderHandling(comp: u16) ?FillOrderHandling {
+        return switch (comp) {
+            tags.compression_none,
+            tags.compression_packbits,
+            tags.compression_lzw,
+            tags.compression_deflate,
+            tags.compression_deflate_adobe,
+            tags.compression_zstd,
+            tags.compression_lzma,
+            tags.compression_webp,
+            tags.compression_lerc,
+            tags.compression_sgilog,
+            tags.compression_sgilog24,
+            tags.compression_next,
+            tags.compression_thunderscan,
+            => .reverse_coded_bytes,
+            tags.compression_ccitt_rle,
+            tags.compression_ccitt_t4,
+            tags.compression_ccitt_t6,
+            => .codec_reads_fill_order,
+            tags.compression_jpeg,
+            tags.compression_dng_lossy_jpeg,
+            tags.compression_jpegxl,
+            tags.compression_dng_jpegxl,
+            => .never_reversed,
+            else => null,
+        };
+    }
+
+    comptime {
+        for (supported_compressions) |c| {
+            if (fillOrderHandling(c) == null) @compileError(std.fmt.comptimePrint("Compression {d} is supported but has no FillOrder handling", .{c}));
+        }
+    }
+
+    /// Under FillOrder 2, reverse the bits of each coded byte for a codec that
+    /// libtiff reverses for. Any other FillOrder value, or an entry that does
+    /// not read as one SHORT, reads as 1, as libtiff reads it (the tag is
+    /// refused and the default stands); the entry itself is a finding 18
+    /// fault, reported by the directory rules rather than by the decode.
+    fn applyFillOrder(self: *Decoder, dir: *const Ifd, comp: u16, coded: []u8) errors.Error!void {
+        if (fillOrderHandling(comp) != .reverse_coded_bytes) return;
+        const fill = readScalarU16(dir.*, tags.fill_order, self.endian) catch null;
+        if ((fill orelse 1) != 2) return;
+        for (coded) |*b| b.* = @bitReverse(b.*);
+    }
+
     fn decodeBytes(
         self: *Decoder,
         dir: *const Ifd,
@@ -1795,7 +1858,9 @@ pub const Decoder = struct {
                 if (byte_count > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
                 }
-                break :blk compressions_none.decode(self.source, offset, byte_count, dest);
+                const written = compressions_none.decode(self.source, offset, byte_count, dest) catch |e| break :blk e;
+                self.applyFillOrder(dir, comp, dest[0..written]) catch |e| break :blk e;
+                break :blk written;
             },
             tags.compression_packbits => blk: {
                 // PackBits: read compressed strip bytes into workspace
@@ -1803,6 +1868,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = compressions_packbits.decode(scratch, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
@@ -1816,6 +1882,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = self.decodeLzw(scratch, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
@@ -1839,6 +1906,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
 
                 var rows_done: u32 = 0;
                 const written = compressions_ccitt_t6.decode(
@@ -1878,6 +1946,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
 
                 const written = compressions_ccitt_t4.decode(
                     scratch,
@@ -1917,6 +1986,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = compressions_sgilog.decode(scratch, dest, ext.width, ext.rows, kind, self.endian) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
@@ -1935,6 +2005,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = (if (comp == tags.compression_next)
                     compressions_next.decode(scratch, dest, ext.width, ext.rows)
                 else
@@ -1957,6 +2028,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = compressions_ccitt_t4.decodeModifiedHuffman(scratch, dest, ext.width, ext.rows, fill) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
@@ -1971,6 +2043,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = compressions_deflate.decode(scratch, dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
@@ -1984,6 +2057,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = compressions_zstd.decode(scratch[0..byte_count], dest) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
@@ -1997,6 +2071,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = compressions_lzma.decode(scratch[0..byte_count], dest, self.limits.max_codec_scratch) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
@@ -2020,6 +2095,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
                 const written = compressions_webp.decode(scratch[0..byte_count], dest, ext.width, ext.rows, samples) catch |e| break :blk e;
                 if (written > self.limits.max_decompressed_strip_bytes) {
                     break :blk error.LimitExceededDecompressedStripBytes;
@@ -2061,6 +2137,7 @@ pub const Decoder = struct {
                 const src_buf = workspace.ensureScratch2(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(src_buf, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, src_buf[0..byte_count]) catch |e| break :blk e;
 
                 const written = compressions_lerc.decode(
                     src_buf[0..byte_count],
@@ -2120,6 +2197,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
 
                 // Read JPEGTables tag (347) if present — TIFF Tech Note 2
                 // Mode 2. The value is eagerly cached on the Ifd at
@@ -2219,6 +2297,7 @@ pub const Decoder = struct {
                 const scratch = workspace.ensureScratch(byte_count) catch break :blk error.OutOfMemory;
                 const got = self.source.readAt(scratch, offset) catch |err| break :blk parser.source.preserveReadError(err);
                 if (got < byte_count) break :blk error.SourceShortRead;
+                self.applyFillOrder(dir, comp, scratch[0..byte_count]) catch |e| break :blk e;
 
                 var validation = compressions_jpeg.jpegz.jpegxl.validate(self.allocator, scratch, compressions_jpeg.jpegz.jpegxl.default_options) catch break :blk error.OutOfMemory;
                 defer validation.deinit(self.allocator);

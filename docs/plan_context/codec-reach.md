@@ -47,7 +47,7 @@ Within one cost tier, the order follows corpus prevalence. Each codec gets the f
 6. **34712 JPEG 2000 and 50002 / 52546 JPEG XL.** These go through jpegz's jp2z and libjxlz legs (INTENT: one jpegz instance per compilation), once exemplars exist. JPEG XL done 2026-11-07 through jpegz.jpegxl (validate, then decode the first frame), with exemplars made by libjxl's cjxl and checked by djxl; JPEG 2000 still needs an exemplar and a specification of its strip framing.
 7. **6 OJPEG.** Reopened by the owner 2026-11-07.
 
-## FillOrder 2 under non-CCITT codecs (open, 2026-11-07)
+## FillOrder 2 under non-CCITT codecs (done 2026-11-21)
 
 Found while checking LZMA against libtiff. libtiff 4.7.2's `tiffcp -c lzma`
 (likewise lzw, zip and zstd) of `tests/fixtures/ccitt_g3/fax2d.tif`, a 1-bit
@@ -62,7 +62,23 @@ BitsPerSample = 1 and the data is either uncompressed or compressed using
 CCITT 1D or 2D compression, to avoid potentially ambigous situations." That
 is a should, not a shall.
 
-Questions for validate:
+validate ruled 2026-11-07:
 
-- Should tiffz decode these as libtiff does?
-- How should the should-row be classed?
+- (a) Reverse the coded bytes before every codec, as libtiff does.
+- (b) The should-row is INFO: finding 22 should_deviation, rule 19, once per IFD when FillOrder is 2 and BitsPerSample is not 1 or Compression is not 1-4.
+
+Landed 2026-11-21:
+
+- **Single source of truth.** `Decoder.fillOrderHandling` classifies every supported Compression. A compile-time check fails the build when a supported code has no class.
+  - Reversed before the codec: none, PackBits, LZW, both Deflates, ZSTD, LZMA, WebP, LERC, SGILog, NeXT, ThunderScan.
+  - Reading FillOrder themselves: the CCITT decoders 2, 3 and 4.
+  - Never reversed: JPEG 7 and 34892, JPEG XL 50002 and 52546. libtiff has no JPEG XL codec, and a reversed marker stream cannot decode.
+- **Coverage.** Every read of coded bytes goes through `applyFillOrder`: each codec arm, the uncompressed arm (reversed after the copy) and the missing-EOD LZW path.
+- **Bad FillOrder entries.** A FillOrder value other than 2, or an entry that does not read as one SHORT, decodes as 1, as libtiff reads it. The entry stays a finding 18 fault.
+- **Rule 19** is anchored on the FillOrder entry, and is ordered before rule 17 by entry order.
+- **Fixtures** (tests/fixtures/fillorder/gen.sh):
+  - libtiff's LZW, Deflate, ZSTD and LZMA copies of fax2d.tif decode to its FillOrder 1 LZW copy, each with one rule 19 record;
+  - a 1-bit uncompressed FillOrder 2 crop decodes to its FillOrder 1 copy with no record;
+  - an 8-bit uncompressed FillOrder 2 copy of photometric/cmyk.tif decodes to the original with one record.
+- **Corpus.** No status or finding changes in the 263 pinned files, so none carries a rule 19 record.
+- **Controlled reds.** Five, each failing its targeted tests and restored: reversal disabled, rule 19 disabled, rule 19 firing only when both conditions fail, the uncompressed reversal removed, and LZMA reclassified as never reversed. Campaign case 7 (a bad type on cmyk.tif's FillOrder entry) caught a first version that failed the decode on an unreadable entry. The missing-EOD LZW path's reversal has no test of its own.
