@@ -998,11 +998,12 @@ pub const Decoder = struct {
                 self.noteFileClaim(err, self.ifdFileOffset(ifd_index));
                 return err;
             };
-            // Old-style JPEG is read best-effort, with or without strip or
-            // tile arrays, and every such IFD gets one finding 25 (validate
-            // 2026-11-07).
+            // Old-style JPEG strips and tiles are read best-effort and each
+            // such IFD gets one finding 25 (validate 2026-11-07); a
+            // JPEGInterchangeFormat-only IFD is checked as a whole JPEG
+            // (validate 2026-11-22).
             if (((readScalarU16(dir.*, tags.compression, self.endian) catch null) orelse tags.compression_none) == tags.compression_jpeg_old) {
-                try self.validateOjpegIfd(dir, ifd_index, layout_opt, ifd_faulty, &dest_buf, max_dest_bytes, workspace);
+                if (try self.validateOjpegIfd(dir, ifd_index, layout_opt, ifd_faulty, &dest_buf, max_dest_bytes, workspace)) nonconforming = true;
                 continue;
             }
             const layout = layout_opt orelse {
@@ -1967,7 +1968,10 @@ pub const Decoder = struct {
         dest_buf: *[]u8,
         max_dest_bytes: usize,
         workspace: *Workspace,
-    ) errors.Error!void {
+    ) errors.Error!bool {
+        // The EXIF and TIFF/EP thumbnail form: no strip or tile arrays, only a
+        // JPEGInterchangeFormat stream.
+        if (layout_opt == null and dir.get(tags.jpeg_interchange_format) != null) return self.validateJifStream(dir);
         var chunks: u32 = 0;
         var decoded: u32 = 0;
         if (layout_opt) |layout| {
@@ -2013,6 +2017,39 @@ pub const Decoder = struct {
         self.emitDetailed(.tiffz, @intFromEnum(findings_mod.InfoFinding.ojpeg_best_effort), null, .valid, anchor, null, true, &p);
         self.noteDiscrepancy(.warning, anchor, "ojpeg_best_effort");
         self.dropOjpegDecode();
+        return false;
+    }
+
+    /// A Compression 6 IFD with no strip or tile arrays is the EXIF and
+    /// TIFF/EP thumbnail form (EXIF specifies Compression 6 for a JPEG
+    /// thumbnail). Its JPEGInterchangeFormat stream is checked as a whole
+    /// JPEG by jpegz, with jpegz's findings and verdicts, and gets no
+    /// finding 25: it follows its own specification (validate, 2026-11-22,
+    /// provisional pending BDFN). A stream jpegz cannot decode is jpegz's
+    /// reach finding. The stream is read as libtiff reads it: a count of 0,
+    /// or one past the end, runs to the end. Returns whether a finding was
+    /// corrupt.
+    fn validateJifStream(self: *Decoder, dir: *const Ifd) errors.Error!bool {
+        const file_size = self.source.sizeOf() catch return error.SourceShortRead;
+        const offset = (readScalarU32(dir.*, tags.jpeg_interchange_format, self.endian) catch null) orelse 0;
+        const count = (readScalarU32(dir.*, tags.jpeg_interchange_format_length, self.endian) catch null) orelse 0;
+        var bytes: std.ArrayListUnmanaged(u8) = .empty;
+        defer bytes.deinit(self.allocator);
+        self.active_chunk_offset = offset;
+        self.ojpegRegion(&bytes, offset, count, file_size) catch |err| {
+            self.noteFileClaim(err, offset);
+            return err;
+        };
+        var validation = try compressions_jpeg.jpegz.validate(self.allocator, bytes.items);
+        defer validation.deinit(self.allocator);
+        var corrupt = false;
+        for (validation.findings.items) |finding| {
+            const verdict = findings_mod.classicFindingVerdict(finding.code, finding.severity);
+            if (verdict == .corrupt) corrupt = true;
+            const host_offset: ?u64 = if (finding.offset) |leaf| offset + leaf else null;
+            self.emitDetailed(.jpegz, @intCast(@intFromEnum(finding.code)), null, verdict, finding.offset, host_offset, host_offset != null, finding.detail orelse &.{});
+        }
+        return corrupt or !validation.isValid();
     }
 
     /// Single source of truth for which Compression codes tiffz decodes.

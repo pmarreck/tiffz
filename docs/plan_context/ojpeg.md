@@ -67,8 +67,8 @@ The Compression 6 branch of `validateAllStripsAndTiles` works as follows:
   - a strip or tile past the end of the file (finding 23);
   - a limit;
   - running out of memory.
-- **An IFD with no strip or tile arrays** (the EXIF-style thumbnail and preview IFDs) is read from its JPEGInterchangeFormat stream alone.
-- **One finding 25** is emitted per Compression 6 IFD, anchored on the Compression entry.
+- **One finding 25** is emitted per Compression 6 IFD with strip or tile arrays, anchored on the Compression entry.
+- **An IFD with no strip or tile arrays** (the EXIF and TIFF/EP thumbnail form; EXIF specifies Compression 6 for a JPEG thumbnail) gets no finding 25: it follows its own specification. Its JPEGInterchangeFormat stream is checked as a whole JPEG by jpegz, with jpegz's findings and verdicts, and a stream jpegz cannot decode is jpegz's reach finding (validate, 2026-11-22; provisional while BDFN decides whether these IFDs should WARN too).
 
 ## Evidence
 

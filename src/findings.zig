@@ -153,15 +153,18 @@ pub const InfoFinding = enum(u32) {
     /// Old-style JPEG (Compression 6, TIFF 6.0 section 22), read best-effort
     /// the way libtiff's tif_ojpeg.c reads it (owner 2026-11-07: "make a
     /// best-effort parse but WARN on it regardless of result"). One record per
-    /// Compression 6 IFD, whatever its decode gives; a strip or tile that does
+    /// Compression 6 IFD with strip or tile arrays, whatever its decode gives
+    /// (an IFD with only a JPEGInterchangeFormat stream, the EXIF thumbnail
+    /// form, is checked as a whole JPEG by jpegz instead; validate
+    /// 2026-11-22); a strip or tile that does
     /// not decode is counted here and never fails validation. Verdict valid;
     /// validate maps it to WARN. Payload: 28 bytes, `Decoder.ojpeg_payload_len`
     /// (u32 IFD, u32 Compression entry, u64 anchor offset of that entry, u16
     /// header source: 0 none, 1 JPEGInterchangeFormat stream, 2 first strip
     /// or tile, 3 JPEGQTables/JPEGDCTables/JPEGACTables; u16 stage: 0 no
     /// header assembled, 1 assembled but not decoded, 2 decoded; u32 strips
-    /// or tiles; u32 of them decoded). Numbered by validate 2026-11-07; the
-    /// layout goes to validate with the implementation.
+    /// or tiles; u32 of them decoded). Numbered by validate 2026-11-07; layout
+    /// approved 2026-11-22.
     ojpeg_best_effort = 25,
     _,
 };

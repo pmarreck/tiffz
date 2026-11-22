@@ -4813,13 +4813,17 @@ test "MetadataFlags: every flag is in the C header with the same value, and no o
 /// `twoIfdFile`'s IFD 0, then an IFD 1 located only by JPEGInterchangeFormat
 /// (Compression 6, tags 513 and 514, no strip or tile arrays), the Exif
 /// thumbnail form whose presence check is deferred, with Orientation
-/// `orientation` so a finding-18 fault can be planted in it.
+/// `orientation` so a finding-18 fault can be planted in it. The thumbnail is
+/// a real JPEG (tests/fixtures/ojpeg/ojpeg-source.jpg), since jpegz checks
+/// the stream as a whole JPEG.
 fn jifThumbnailFile(allocator: std.mem.Allocator, compression: u16, strip0: []const u8, orientation: u16) ![]u8 {
+    const jpeg = try loadFile(allocator, "tests/fixtures/ojpeg/ojpeg-source.jpg");
+    defer allocator.free(jpeg);
     const ifd0: u32 = 8;
     const ifd1: u32 = ifd0 + 2 + 9 * 12 + 4;
     const strip0_off: u32 = ifd1 + 2 + 9 * 12 + 4;
     const thumb_off: u32 = strip0_off + @as(u32, @intCast(strip0.len));
-    const buf = try allocator.alloc(u8, thumb_off + 4);
+    const buf = try allocator.alloc(u8, thumb_off + jpeg.len);
     @memset(buf, 0);
     buf[0] = 'I';
     buf[1] = 'I';
@@ -4838,7 +4842,7 @@ fn jifThumbnailFile(allocator: std.mem.Allocator, compression: u16, strip0: []co
         .{ .tag = 258, .typ = 3, .val = 8 }, .{ .tag = 259, .typ = 3, .val = 6 },
         .{ .tag = 262, .typ = 3, .val = 1 }, .{ .tag = 274, .typ = 3, .val = orientation },
         .{ .tag = 277, .typ = 3, .val = 1 }, .{ .tag = 513, .typ = 4, .val = thumb_off },
-        .{ .tag = 514, .typ = 4, .val = 4 },
+        .{ .tag = 514, .typ = 4, .val = @intCast(jpeg.len) },
     };
     inline for (.{ .{ ifd0, &first, ifd1 }, .{ ifd1, &second, @as(u32, 0) } }) |d| {
         putU16(buf, d[0], @intCast(d[1].len));
@@ -4852,7 +4856,7 @@ fn jifThumbnailFile(allocator: std.mem.Allocator, compression: u16, strip0: []co
         putU32(buf, d[0] + 2 + d[1].len * 12, d[2]);
     }
     @memcpy(buf[strip0_off..thumb_off], strip0);
-    @memcpy(buf[thumb_off..][0..4], &[_]u8{ 0xff, 0xd8, 0xff, 0xd9 });
+    @memcpy(buf[thumb_off..], jpeg);
     return buf;
 }
 
@@ -4891,11 +4895,12 @@ test "presence deferral: a JPEGInterchangeFormat-only IFD is listed as reach and
         try std.testing.expectEqual(tiffz.ifd_presence.DeferredReason.jpeg_interchange_format_only, list.items[0].reason);
         try std.testing.expectEqual(@as(usize, if (orientation == 9) 1 else 0), conformanceHits(&recorder, 1, 274));
         for (recorder.findings.items) |f| {
-            // Only the planted IFD 1 fault and IFD 1's finding 25 come from the
-            // deferred IFD.
-            const from_ifd1 = f.source == .tiffz and (f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid) or
-                f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.ojpeg_best_effort)) and
-                std.mem.readInt(u32, f.payload_bytes[0..4], .little) == 1;
+            // Only the planted IFD 1 fault and any jpegz record on its
+            // thumbnail stream come from the deferred IFD; it gets no finding
+            // 25 (validate, 2026-11-22).
+            try std.testing.expect(!(f.source == .tiffz and f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.ojpeg_best_effort)));
+            const from_ifd1 = f.source == .jpegz or (f.source == .tiffz and f.finding_code == @intFromEnum(tiffz.findings.InfoFinding.tag_field_invalid) and
+                std.mem.readInt(u32, f.payload_bytes[0..4], .little) == 1);
             try std.testing.expectEqual(from_ifd1, f.presence_deferred);
             try std.testing.expect(!f.after_stop);
         }
@@ -5621,23 +5626,42 @@ test "Compression 6: a cut strip still validates, and its finding 25 counts it u
     try std.testing.expect(r.decoded < r.chunks);
 }
 
-test "Compression 6: an IFD with only a JPEGInterchangeFormat stream gets one finding 25 for that stream" {
-    // ojpeg-jif.tif with its strip arrays renamed to private tags: the
-    // JPEGInterchangeFormat stream is the whole image, with no strip to slice.
+test "Compression 6: an IFD with only a JPEGInterchangeFormat stream is checked as a whole JPEG and gets no finding 25" {
+    // IFD 1 of `jifThumbnailFile` is the EXIF thumbnail form: Compression 6
+    // with only JPEGInterchangeFormat (513) and its length (514), entries 7
+    // and 8, holding a real JPEG.
     const allocator = std.testing.allocator;
-    const bytes = try loadFile(allocator, "tests/fixtures/ojpeg/ojpeg-jif.tif");
+    const bytes = try jifThumbnailFile(allocator, 1, &.{ 0x10, 0xf0 }, 1);
     defer allocator.free(bytes);
-    for ([_]u16{ tiffz.tags.strip_offsets, tiffz.tags.rows_per_strip, tiffz.tags.strip_byte_counts }, [_]u16{ 65000, 65001, 65002 }) |tag, private| {
-        const e = try classicEntryOffset(bytes, tag);
-        std.mem.writeInt(u16, bytes[e..][0..2], private, .little);
+    {
+        var rec = FindingRecorder.init(allocator);
+        defer rec.deinit();
+        try validateRecording(allocator, bytes, &rec);
+        try std.testing.expectEqual(@as(usize, 0), (try ojpegRecordsIn(&rec)).count);
+        for (rec.findings.items) |f| try std.testing.expect(f.verdict != .corrupt);
     }
+    // A cut stream is jpegz's corrupt finding and the file fails; still no
+    // finding 25 (validate, 2026-11-22).
+    const ifd0: usize = std.mem.readInt(u32, bytes[4..8], .little);
+    const ifd1: usize = std.mem.readInt(u32, bytes[ifd0 + 2 + 9 * 12 ..][0..4], .little);
+    const jif_entry = ifd1 + 2 + 7 * 12;
+    const len_entry = ifd1 + 2 + 8 * 12;
+    try std.testing.expectEqual(tiffz.tags.jpeg_interchange_format, std.mem.readInt(u16, bytes[jif_entry..][0..2], .little));
+    try std.testing.expectEqual(tiffz.tags.jpeg_interchange_format_length, std.mem.readInt(u16, bytes[len_entry..][0..2], .little));
+    const jif: u64 = std.mem.readInt(u32, bytes[jif_entry + 8 ..][0..4], .little);
+    const len = std.mem.readInt(u32, bytes[len_entry + 8 ..][0..4], .little);
+    std.mem.writeInt(u32, bytes[len_entry + 8 ..][0..4], len / 2, .little);
     var rec = FindingRecorder.init(allocator);
     defer rec.deinit();
-    validateRecording(allocator, bytes, &rec) catch {};
-    const r = try ojpegRecordsIn(&rec);
-    try std.testing.expectEqual(@as(usize, 1), r.count);
-    try std.testing.expectEqual(@as(u16, 1), r.header);
-    try std.testing.expectEqual(@as(u16, 2), r.stage);
-    try std.testing.expectEqual(@as(u32, 0), r.chunks);
-    try std.testing.expectEqual(@as(u32, 0), r.decoded);
+    try std.testing.expectError(error.Malformed, validateRecording(allocator, bytes, &rec));
+    try std.testing.expectEqual(@as(usize, 0), (try ojpegRecordsIn(&rec)).count);
+    var corrupt: usize = 0;
+    for (rec.findings.items) |f| {
+        if (f.verdict != .corrupt) continue;
+        // Only jpegz grades the file: the directory is sound.
+        try std.testing.expectEqual(@TypeOf(f.source).jpegz, f.source);
+        corrupt += 1;
+        if (f.host_byte_offset) |at| try std.testing.expect(at >= jif and at <= jif + len);
+    }
+    try std.testing.expect(corrupt > 0);
 }
